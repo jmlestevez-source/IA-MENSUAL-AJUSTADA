@@ -6,6 +6,21 @@ from data_loader import download_prices, get_constituents_at_date
 from backtest import run_backtest
 from utils import unify_ticker, save_cache, load_cache
 from datetime import datetime, timedelta
+from pathlib import Path
+import streamlit as st
+import pandas as pd
+
+# Ruta segura para archivos locales
+BASE_DIR = Path(__file__).resolve().parent
+DATA_PATH = BASE_DIR / "data" / "tu_archivo.xlsx"
+
+# Cargar datos
+@st.cache_data
+def load_data():
+    return pd.read_excel(DATA_PATH)
+
+df = load_data()
+st.write(df)
 
 st.set_page_config(page_title="Inercia Alcista – S&P500 & Nasdaq-100", layout="wide")
 
