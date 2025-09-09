@@ -328,29 +328,25 @@ def download_prices(tickers, start_date, end_date):
                 # Continuar con los siguientes lotes
                 continue
         
-        print(f"Resumen: {successful_batches} lotes exitosos, {failed_batches} lotes fallidos")
-        print(f"Total tickers procesados: {len(all_prices)}")
-        
-        # Verificar si tenemos datos
-        if not all_prices:
-            print("❌ No se pudieron descargar datos de ningún ticker")
-            return None
-        
-        # Crear DataFrame final
-        prices_df = pd.DataFrame(all_prices)
-        
-        # Eliminar columnas con todos NaN
-        prices_df = prices_df.dropna(axis=1, how='all')
-        
-        if prices_df.empty:
-            print("❌ DataFrame de precios está vacío después de limpieza")
-            return None
-        
-        print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
-        return prices_df
-        
-    except Exception as e:
-        print(f"❌ Error crítico en download_prices: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+        # En la sección final de download_prices, cambia esta parte:
+
+print(f"Resumen: {successful_batches} lotes exitosos, {failed_batches} lotes fallidos")
+print(f"Total tickers procesados: {len(all_prices)}")
+
+# Verificar si tenemos datos
+if not all_prices:
+    print("❌ No se pudieron descargar datos de ningún ticker")
+    return None
+
+# Crear DataFrame final
+prices_df = pd.DataFrame(all_prices)
+
+# Eliminar columnas con todos NaN
+prices_df = prices_df.dropna(axis=1, how='all')
+
+if prices_df.empty:
+    print("❌ DataFrame de precios está vacío después de limpieza")
+    return None
+
+print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
+return prices_df
