@@ -226,6 +226,38 @@ def get_constituents_at_date(index_name, start_date, end_date):
     
     return tickers_data, None
 
+def download_prices_with_retry(tickers, start_date, end_date, max_retries=3):
+    """
+    Descarga precios con reintentos y manejo de errores mejorado
+    """
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                print(f"Reintento {attempt} de descarga de precios...")
+                time.sleep(random.uniform(2, 5))  # Esperar más entre reintentos
+            
+            # Descargar datos (sin pdr_override)
+            data = yf.download(
+                tickers, 
+                start=start_date, 
+                end=end_date, 
+                group_by='ticker',
+                progress=False,
+                threads=True,
+                timeout=30
+            )
+            
+            if data.empty:
+                raise ValueError("No se recibieron datos")
+            
+            return data
+            
+        except Exception as e:
+            print(f"Error en intento {attempt + 1}: {e}")
+            if attempt == max_retries - 1:
+                raise e
+            continue
+
 def download_prices(tickers, start_date, end_date):
     """
     Descarga precios históricos para una lista de tickers con logging detallado
@@ -296,15 +328,12 @@ def download_prices(tickers, start_date, end_date):
                 processed_count = 0
                 if len(batch) == 1:
                     ticker = batch[0]
-                    try:
-                        if 'Adj Close' in batch_data.columns:
-                            all_prices[ticker] = batch_data['Adj Close']
-                            processed_count += 1
-                        elif 'Close' in batch_data.columns:
-                            all_prices[ticker] = batch_data['Close']
-                            processed_count += 1
-                    except Exception as single_ticker_e:
-                        print(f"⚠️  Error procesando ticker individual {ticker}: {single_ticker_e}")
+                    if 'Adj Close' in batch_data.columns:
+                        all_prices[ticker] = batch_data['Adj Close']
+                        processed_count += 1
+                    elif 'Close' in batch_data.columns:
+                        all_prices[ticker] = batch_data['Close']
+                        processed_count += 1
                 else:
                     for ticker in batch:
                         try:
@@ -325,28 +354,28 @@ def download_prices(tickers, start_date, end_date):
             except Exception as batch_e:
                 failed_batches += 1
                 print(f"❌ Error en lote {batch_num}: {batch_e}")
-                # Continuar con los siguientes lotes
                 continue
         
-        # En la sección final de download_prices, cambia esta parte:
-
-print(f"Resumen: {successful_batches} lotes exitosos, {failed_batches} lotes fallidos")
-print(f"Total tickers procesados: {len(all_prices)}")
-
-# Verificar si tenemos datos
-if not all_prices:
-    print("❌ No se pudieron descargar datos de ningún ticker")
-    return None
-
-# Crear DataFrame final
-prices_df = pd.DataFrame(all_prices)
-
-# Eliminar columnas con todos NaN
-prices_df = prices_df.dropna(axis=1, how='all')
-
-if prices_df.empty:
-    print("❌ DataFrame de precios está vacío después de limpieza")
-    return None
-
-print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
-return prices_df
+        print(f"Resumen: {successful_batches} lotes exitosos, {failed_batches} lotes fallidos")
+        print(f"Total tickers procesados: {len(all_prices)}")
+        
+        if not all_prices:
+            raise ValueError("No se pudieron descargar datos de ningún ticker")
+        
+        # Crear DataFrame final
+        prices_df = pd.DataFrame(all_prices)
+        
+        # Eliminar columnas con todos NaN
+        prices_df = prices_df.dropna(axis=1, how='all')
+        
+        if prices_df.empty:
+            raise ValueError("DataFrame de precios está vacío después de limpieza")
+        
+        print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
+        return prices_df
+        
+    except Exception as e:
+        print(f"❌ Error crítico en download_prices: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
