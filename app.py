@@ -3,15 +3,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
+import yfinance as yf
 
 # Importar nuestros módulos
 from data_loader import download_prices, get_constituents_at_date
 from backtest import run_backtest
 from utils import unify_ticker
-
-# Configuración de yfinance (agregar después de los imports)
-import yfinance as yf
-yf.set_tz_cache_limit(3600)  # Cache de 1 hora
 
 # -------------------------------------------------
 # Configuración de la app
