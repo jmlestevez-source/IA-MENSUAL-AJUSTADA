@@ -4,7 +4,9 @@ import requests
 from io import StringIO
 import os
 import pickle
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
+import random
 
 # Directorio para caché
 CACHE_DIR = "cache"
@@ -16,39 +18,102 @@ def get_sp500_tickers_cached():
     
     # Verificar si existe caché válido (menos de 7 días)
     if os.path.exists(cache_file):
-        cache_time = os.path.getmtime(cache_file)
-        if (datetime.now().timestamp() - cache_time) < (7 * 24 * 3600):  # 7 días
+        try:
             with open(cache_file, 'rb') as f:
-                return pickle.load(f)
+                cached_data = pickle.load(f)
+                cache_time = cached_data.get('timestamp', 0)
+                if (datetime.now().timestamp() - cache_time) < (7 * 24 * 3600):  # 7 días
+                    print("Usando tickers S&P 500 desde caché")
+                    return cached_data
+        except Exception as e:
+            print(f"Error leyendo caché S&P 500: {e}")
     
-    # Si no hay caché válido, hacer scraping
-    try:
-        headers = {
+    # Si no hay caché válido, hacer scraping con múltiples intentos
+    headers_list = [
+        {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        },
+        {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        },
+        {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        tables = pd.read_html(StringIO(response.text), match="Ticker")
-        df = tables[0]
-        
-        # Guardar en caché
-        tickers_data = {
-            'tickers': df['Symbol'].tolist(),
-            'data': df.to_dict('records'),
-            'date': datetime.now()
-        }
-        
-        with open(cache_file, 'wb') as f:
-            pickle.dump(tickers_data, f)
+    ]
+    
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    
+    for attempt in range(3):
+        try:
+            headers = random.choice(headers_list)
+            print(f"Intento {attempt + 1} de scraping S&P 500...")
             
-        return tickers_data
-        
-    except Exception as e:
-        print(f"Error obteniendo tickers S&P 500: {e}")
-        # Fallback: lista básica de tickers comunes
-        fallback_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'JPM', 'JNJ', 'V']
-        return {'tickers': fallback_tickers, 'data': [], 'date': datetime.now()}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            tables = pd.read_html(StringIO(response.text))
+            
+            if not tables:
+                raise ValueError("No se encontraron tablas en la página")
+            
+            # Buscar la tabla principal (usualmente la primera)
+            df = tables[0]
+            
+            # Verificar columnas esperadas
+            expected_columns = ['Symbol', 'Security', 'GICS Sector']
+            if 'Symbol' not in df.columns and 'Ticker' in df.columns:
+                df = df.rename(columns={'Ticker': 'Symbol'})
+            
+            if 'Symbol' not in df.columns:
+                # Intentar encontrar la columna de tickers
+                ticker_columns = [col for col in df.columns if 'symbol' in col.lower() or 'ticker' in col.lower()]
+                if ticker_columns:
+                    df = df.rename(columns={ticker_columns[0]: 'Symbol'})
+                else:
+                    raise ValueError("No se encontró columna de símbolos")
+            
+            tickers = df['Symbol'].tolist()
+            
+            # Limpiar tickers
+            tickers = [str(t).strip().upper() for t in tickers if str(t).strip()]
+            tickers = [t for t in tickers if t and t != 'nan']
+            
+            if not tickers:
+                raise ValueError("No se encontraron tickers válidos")
+            
+            print(f"Obtenidos {len(tickers)} tickers S&P 500")
+            
+            # Guardar en caché
+            tickers_data = {
+                'tickers': tickers,
+                'data': df.to_dict('records'),
+                'timestamp': datetime.now().timestamp(),
+                'date': datetime.now()
+            }
+            
+            with open(cache_file, 'wb') as f:
+                pickle.dump(tickers_data, f)
+            
+            # Esperar un poco para evitar bloqueos
+            time.sleep(random.uniform(1, 2))
+            
+            return tickers_data
+            
+        except Exception as e:
+            print(f"Intento {attempt + 1} falló: {e}")
+            if attempt < 2:  # No esperar después del último intento
+                time.sleep(random.uniform(2, 4))
+            continue
+    
+    # Fallback: lista básica de tickers comunes
+    print("Usando fallback de tickers S&P 500")
+    fallback_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'JPM', 'JNJ', 'V', 'PG', 'MA', 'HD', 'DIS', 'PYPL']
+    return {
+        'tickers': fallback_tickers, 
+        'data': [{'Symbol': t} for t in fallback_tickers], 
+        'timestamp': datetime.now().timestamp(),
+        'date': datetime.now()
+    }
 
 def get_nasdaq100_tickers_cached():
     """Obtiene los tickers del Nasdaq-100 con caché"""
@@ -56,39 +121,97 @@ def get_nasdaq100_tickers_cached():
     
     # Verificar si existe caché válido (menos de 7 días)
     if os.path.exists(cache_file):
-        cache_time = os.path.getmtime(cache_file)
-        if (datetime.now().timestamp() - cache_time) < (7 * 24 * 3600):  # 7 días
+        try:
             with open(cache_file, 'rb') as f:
-                return pickle.load(f)
+                cached_data = pickle.load(f)
+                cache_time = cached_data.get('timestamp', 0)
+                if (datetime.now().timestamp() - cache_time) < (7 * 24 * 3600):  # 7 días
+                    print("Usando tickers Nasdaq-100 desde caché")
+                    return cached_data
+        except Exception as e:
+            print(f"Error leyendo caché Nasdaq-100: {e}")
     
-    # Si no hay caché válido, hacer scraping
-    try:
-        headers = {
+    # Headers para evitar bloqueos
+    headers_list = [
+        {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        },
+        {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
-        url = "https://en.wikipedia.org/wiki/NASDAQ-100"
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        tables = pd.read_html(StringIO(response.text), match="Ticker")
-        df = tables[0]
-        
-        # Guardar en caché
-        tickers_data = {
-            'tickers': df['Ticker'].tolist(),
-            'data': df.to_dict('records'),
-            'date': datetime.now()
-        }
-        
-        with open(cache_file, 'wb') as f:
-            pickle.dump(tickers_data, f)
+    ]
+    
+    url = "https://en.wikipedia.org/wiki/NASDAQ-100"
+    
+    for attempt in range(3):
+        try:
+            headers = random.choice(headers_list)
+            print(f"Intento {attempt + 1} de scraping Nasdaq-100...")
             
-        return tickers_data
-        
-    except Exception as e:
-        print(f"Error obteniendo tickers Nasdaq-100: {e}")
-        # Fallback: lista básica de tickers comunes
-        fallback_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'ADBE', 'PEP', 'COST']
-        return {'tickers': fallback_tickers, 'data': [], 'date': datetime.now()}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            tables = pd.read_html(StringIO(response.text))
+            
+            if not tables:
+                raise ValueError("No se encontraron tablas en la página")
+            
+            # Buscar la tabla principal
+            df = tables[0]
+            
+            # Verificar columna de tickers
+            ticker_column = None
+            for col in df.columns:
+                if 'Ticker' in str(col) or 'Symbol' in str(col):
+                    ticker_column = col
+                    break
+            
+            if ticker_column is None:
+                # Intentar con la primera columna
+                ticker_column = df.columns[0]
+            
+            tickers = df[ticker_column].tolist()
+            
+            # Limpiar tickers
+            tickers = [str(t).strip().upper() for t in tickers if str(t).strip()]
+            tickers = [t for t in tickers if t and t != 'nan']
+            
+            if not tickers:
+                raise ValueError("No se encontraron tickers válidos")
+            
+            print(f"Obtenidos {len(tickers)} tickers Nasdaq-100")
+            
+            # Guardar en caché
+            tickers_data = {
+                'tickers': tickers,
+                'data': df.to_dict('records'),
+                'timestamp': datetime.now().timestamp(),
+                'date': datetime.now()
+            }
+            
+            with open(cache_file, 'wb') as f:
+                pickle.dump(tickers_data, f)
+            
+            # Esperar un poco
+            time.sleep(random.uniform(1, 2))
+            
+            return tickers_data
+            
+        except Exception as e:
+            print(f"Intento {attempt + 1} falló: {e}")
+            if attempt < 2:
+                time.sleep(random.uniform(2, 4))
+            continue
+    
+    # Fallback
+    print("Usando fallback de tickers Nasdaq-100")
+    fallback_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'ADBE', 'PEP', 'COST', 'AVGO', 'CMCSA', 'CSCO', 'INTC', 'QCOM']
+    return {
+        'tickers': fallback_tickers, 
+        'data': [{'Ticker': t} for t in fallback_tickers], 
+        'timestamp': datetime.now().timestamp(),
+        'date': datetime.now()
+    }
 
 def get_constituents_at_date(index_name, start_date, end_date):
     """
@@ -101,68 +224,124 @@ def get_constituents_at_date(index_name, start_date, end_date):
     else:
         raise ValueError(f"Índice {index_name} no soportado")
     
-    # Crear DataFrame con los datos
-    if tickers_data['data']:
-        df = pd.DataFrame(tickers_data['data'])
-    else:
-        df = pd.DataFrame({'Symbol': tickers_data['tickers']}) if index_name == "SP500" else pd.DataFrame({'Ticker': tickers_data['tickers']})
-    
-    return df, None
+    return tickers_data, None
+
+def download_prices_with_retry(tickers, start_date, end_date, max_retries=3):
+    """
+    Descarga precios con reintentos y manejo de errores mejorado
+    """
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                print(f"Reintento {attempt} de descarga de precios...")
+                time.sleep(random.uniform(2, 5))  # Esperar más entre reintentos
+            
+            # Configurar yfinance con mejores prácticas
+            yf.pdr_override()  # Usar pandas_datareader si está disponible
+            
+            # Descargar datos
+            data = yf.download(
+                tickers, 
+                start=start_date, 
+                end=end_date, 
+                group_by='ticker',
+                progress=False,
+                threads=True,
+                timeout=30
+            )
+            
+            if data.empty:
+                raise ValueError("No se recibieron datos")
+            
+            return data
+            
+        except Exception as e:
+            print(f"Error en intento {attempt + 1}: {e}")
+            if attempt == max_retries - 1:
+                raise e
+            continue
 
 def download_prices(tickers, start_date, end_date):
     """
     Descarga precios históricos para una lista de tickers
     """
     try:
-        # Unificar formato de tickers
-        if isinstance(tickers, pd.DataFrame):
-            # Extraer tickers del DataFrame
+        # Extraer tickers del DataFrame o lista
+        if isinstance(tickers, dict) and 'tickers' in tickers:
+            ticker_list = tickers['tickers']
+        elif isinstance(tickers, pd.DataFrame):
             if 'Symbol' in tickers.columns:
                 ticker_list = tickers['Symbol'].tolist()
             elif 'Ticker' in tickers.columns:
                 ticker_list = tickers['Ticker'].tolist()
             else:
                 ticker_list = tickers.iloc[:, 0].tolist()
+        elif isinstance(tickers, list):
+            ticker_list = tickers
         else:
-            ticker_list = list(tickers)
+            ticker_list = [str(tickers)]
         
-        # Limpiar tickers (eliminar espacios y vacíos)
-        ticker_list = [str(t).strip() for t in ticker_list if str(t).strip()]
+        # Limpiar tickers
+        ticker_list = [str(t).strip().upper() for t in ticker_list if str(t).strip()]
+        ticker_list = [t.replace('.', '-') for t in ticker_list]  # Convertir puntos a guiones
+        ticker_list = [t for t in ticker_list if t and t != 'nan']
         
         if not ticker_list:
             raise ValueError("No se encontraron tickers válidos")
         
         print(f"Descargando datos para {len(ticker_list)} tickers...")
         
-        # Descargar datos
-        data = yfinance.download(ticker_list, start=start_date, end=end_date, group_by='ticker')
+        # Dividir en lotes más pequeños para evitar errores
+        batch_size = 50
+        all_prices = {}
         
-        if data.empty:
-            raise ValueError("No se pudieron descargar datos")
-        
-        # Procesar datos para crear un DataFrame limpio
-        prices = {}
-        for ticker in ticker_list:
+        for i in range(0, len(ticker_list), batch_size):
+            batch = ticker_list[i:i + batch_size]
+            print(f"Descargando lote {i//batch_size + 1}: {len(batch)} tickers")
+            
             try:
-                if len(ticker_list) > 1:
-                    ticker_data = data[ticker]
-                else:
-                    ticker_data = data
+                # Esperar entre lotes
+                if i > 0:
+                    time.sleep(random.uniform(1, 3))
                 
-                if not ticker_data.empty and 'Adj Close' in ticker_data.columns:
-                    prices[ticker] = ticker_data['Adj Close']
-                elif not ticker_data.empty and 'Close' in ticker_data.columns:
-                    prices[ticker] = ticker_data['Close']
+                batch_data = download_prices_with_retry(batch, start_date, end_date)
+                
+                # Procesar datos del lote
+                if len(batch) == 1:
+                    ticker = batch[0]
+                    if 'Adj Close' in batch_data.columns:
+                        all_prices[ticker] = batch_data['Adj Close']
+                    elif 'Close' in batch_data.columns:
+                        all_prices[ticker] = batch_data['Close']
+                else:
+                    for ticker in batch:
+                        try:
+                            ticker_data = batch_data[ticker]
+                            if 'Adj Close' in ticker_data.columns:
+                                all_prices[ticker] = ticker_data['Adj Close']
+                            elif 'Close' in ticker_data.columns:
+                                all_prices[ticker] = ticker_data['Close']
+                        except Exception as e:
+                            print(f"Error procesando {ticker}: {e}")
+                            continue
+                            
             except Exception as e:
-                print(f"Error procesando {ticker}: {e}")
+                print(f"Error en lote {i//batch_size + 1}: {e}")
                 continue
         
-        if not prices:
-            raise ValueError("No se pudieron procesar los datos descargados")
+        if not all_prices:
+            raise ValueError("No se pudieron descargar datos de ningún ticker")
         
         # Crear DataFrame final
-        prices_df = pd.DataFrame(prices)
+        prices_df = pd.DataFrame(all_prices)
         
+        # Eliminar columnas con todos NaN
+        prices_df = prices_df.dropna(axis=1, how='all')
+        
+        if prices_df.empty:
+            raise ValueError("DataFrame de precios está vacío después de limpieza")
+        
+        print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
         return prices_df
         
     except Exception as e:
