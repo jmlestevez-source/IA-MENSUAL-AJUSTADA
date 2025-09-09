@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
----------- True Range mensual (aproximado) ----------
+# ---------- True Range mensual (aproximado) ----------
 def monthly_true_range(close):
 prev = close.shift(1)
 high = low = close
@@ -8,7 +8,7 @@ tr = np.maximum(high - low,
 np.maximum(np.abs(high - prev),
 np.abs(low - prev)))
 return tr
----------- Inercia Alcista (igual que AFL) ----------
+# ---------- Inercia Alcista (igual que AFL) ----------
 def inertia_score(monthly_close, corte=680):
 # ROC
 roc1 = monthly_close.pct_change(10) * 0.4
@@ -36,7 +36,7 @@ return pd.DataFrame({
     "Score": score,
     "ScoreAdjusted": score_adj
 }).fillna(0)
----------- Backtest rotacional ----------
+# ---------- Backtest rotacional ----------
 def run_backtest(prices, benchmark, comission=0.003, top_n=10, corte=680):
 # Mensualizar
 prices_m = prices.resample('ME').last()
