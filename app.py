@@ -9,6 +9,10 @@ from data_loader import download_prices, get_constituents_at_date
 from backtest import run_backtest
 from utils import unify_ticker
 
+# Configuración de yfinance (agregar después de los imports)
+import yfinance as yf
+yf.set_tz_cache_limit(3600)  # Cache de 1 hora
+
 # -------------------------------------------------
 # Configuración de la app
 # -------------------------------------------------
@@ -53,25 +57,6 @@ if run_button:
     try:
         with st.spinner("Descargando datos..."):
             # Obtener constituyentes
-            df_constituents, error = get_constituents_at_date(index_choice, start_date, end_date)
-            
-            if error:
-                st.error(f"Error obteniendo constituyentes: {error}")
-                st.stop()
-            
-            if df_constituents is None or df_constituents.empty:
-                st.error("No se pudieron obtener los constituyentes del índice")
-                st.stop()
-            
-            st.success(f"✅ Obtenidos {len(df_constituents)} constituyentes")
-            
-            # Descargar precios
-            # En la sección donde descargas precios, actualiza esta parte:
-
-if run_button:
-    try:
-        with st.spinner("Descargando datos..."):
-            # Obtener constituyentes
             constituents_data, error = get_constituents_at_date(index_choice, start_date, end_date)
             
             if error:
@@ -89,7 +74,7 @@ if run_button:
                 st.error("No se encontraron tickers válidos")
                 st.stop()
             
-            # Descargar precios con manejo de errores mejorado
+            # Descargar precios
             prices_df = download_prices(constituents_data, start_date, end_date)
             
             if prices_df is None or prices_df.empty:
