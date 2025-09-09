@@ -7,6 +7,7 @@ import pickle
 from datetime import datetime, timedelta
 import time
 import random
+import streamlit as st
 
 # Directorio para caché
 CACHE_DIR = "cache"
@@ -28,7 +29,7 @@ def get_sp500_tickers_cached():
         except Exception as e:
             print(f"Error leyendo caché S&P 500: {e}")
     
-    # Si no hay caché válido, hacer scraping con múltiples intentos
+    # Headers para evitar bloqueos
     headers_list = [
         {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -60,7 +61,6 @@ def get_sp500_tickers_cached():
             df = tables[0]
             
             # Verificar columnas esperadas
-            expected_columns = ['Symbol', 'Security', 'GICS Sector']
             if 'Symbol' not in df.columns and 'Ticker' in df.columns:
                 df = df.rename(columns={'Ticker': 'Symbol'})
             
@@ -236,10 +236,7 @@ def download_prices_with_retry(tickers, start_date, end_date, max_retries=3):
                 print(f"Reintento {attempt} de descarga de precios...")
                 time.sleep(random.uniform(2, 5))  # Esperar más entre reintentos
             
-            # Configurar yfinance con mejores prácticas
-            yf.pdr_override()  # Usar pandas_datareader si está disponible
-            
-            # Descargar datos
+            # Descargar datos (sin pdr_override)
             data = yf.download(
                 tickers, 
                 start=start_date, 
