@@ -263,7 +263,7 @@ def download_prices_with_retry(tickers, start_date, end_date, max_retries=3):
 
 def download_prices(tickers, start_date, end_date):
     """
-    Descarga precios históricos para una lista de tickers
+    Descarga precios históricos para una lista de tickers con logging detallado
     """
     try:
         # Extraer tickers del DataFrame o lista
@@ -290,44 +290,77 @@ def download_prices(tickers, start_date, end_date):
             raise ValueError("No se encontraron tickers válidos")
         
         print(f"Descargando datos para {len(ticker_list)} tickers...")
+        print(f"Primeros 10 tickers: {ticker_list[:10]}")
+        
+        # Probar primero con un ticker individual para diagnosticar
+        print("Probando descarga con ticker de prueba...")
+        try:
+            test_ticker = ticker_list[0] if ticker_list else 'SPY'
+            test_data = yf.download(test_ticker, start=start_date, end=end_date, progress=False, timeout=30)
+            if test_data.empty:
+                print(f"❌ No se pudo descargar {test_ticker}")
+            else:
+                print(f"✅ Prueba exitosa con {test_ticker}: {len(test_data)} registros")
+        except Exception as test_e:
+            print(f"❌ Error en prueba con {test_ticker}: {test_e}")
         
         # Dividir en lotes más pequeños para evitar errores
-        batch_size = 50
+        batch_size = 10  # Más pequeño para debugging
         all_prices = {}
+        successful_batches = 0
+        failed_batches = 0
         
         for i in range(0, len(ticker_list), batch_size):
             batch = ticker_list[i:i + batch_size]
-            print(f"Descargando lote {i//batch_size + 1}: {len(batch)} tickers")
+            batch_num = i//batch_size + 1
+            total_batches = (len(ticker_list) + batch_size - 1) // batch_size
+            
+            print(f"Descargando lote {batch_num}/{total_batches}: {len(batch)} tickers")
+            print(f"Tickers: {batch}")
             
             try:
                 # Esperar entre lotes
                 if i > 0:
-                    time.sleep(random.uniform(1, 3))
+                    wait_time = random.uniform(1, 3)
+                    print(f"Esperando {wait_time:.1f} segundos...")
+                    time.sleep(wait_time)
                 
                 batch_data = download_prices_with_retry(batch, start_date, end_date)
                 
                 # Procesar datos del lote
+                processed_count = 0
                 if len(batch) == 1:
                     ticker = batch[0]
                     if 'Adj Close' in batch_data.columns:
                         all_prices[ticker] = batch_data['Adj Close']
+                        processed_count += 1
                     elif 'Close' in batch_data.columns:
                         all_prices[ticker] = batch_data['Close']
+                        processed_count += 1
                 else:
                     for ticker in batch:
                         try:
                             ticker_data = batch_data[ticker]
                             if 'Adj Close' in ticker_data.columns:
                                 all_prices[ticker] = ticker_data['Adj Close']
+                                processed_count += 1
                             elif 'Close' in ticker_data.columns:
                                 all_prices[ticker] = ticker_data['Close']
-                        except Exception as e:
-                            print(f"Error procesando {ticker}: {e}")
+                                processed_count += 1
+                        except Exception as ticker_e:
+                            print(f"⚠️  Error procesando {ticker}: {ticker_e}")
                             continue
-                            
-            except Exception as e:
-                print(f"Error en lote {i//batch_size + 1}: {e}")
+                
+                successful_batches += 1
+                print(f"✅ Lote {batch_num}: {processed_count} tickers procesados")
+                
+            except Exception as batch_e:
+                failed_batches += 1
+                print(f"❌ Error en lote {batch_num}: {batch_e}")
                 continue
+        
+        print(f"Resumen: {successful_batches} lotes exitosos, {failed_batches} lotes fallidos")
+        print(f"Total tickers procesados: {len(all_prices)}")
         
         if not all_prices:
             raise ValueError("No se pudieron descargar datos de ningún ticker")
@@ -345,5 +378,7 @@ def download_prices(tickers, start_date, end_date):
         return prices_df
         
     except Exception as e:
-        print(f"Error en download_prices: {e}")
+        print(f"❌ Error crítico en download_prices: {e}")
+        import traceback
+        traceback.print_exc()
         return None
