@@ -66,10 +66,37 @@ if run_button:
             st.success(f"✅ Obtenidos {len(df_constituents)} constituyentes")
             
             # Descargar precios
-            prices_df = download_prices(df_constituents, start_date, end_date)
+            # En la sección donde descargas precios, actualiza esta parte:
+
+if run_button:
+    try:
+        with st.spinner("Descargando datos..."):
+            # Obtener constituyentes
+            constituents_data, error = get_constituents_at_date(index_choice, start_date, end_date)
+            
+            if error:
+                st.error(f"Error obteniendo constituyentes: {error}")
+                st.stop()
+            
+            if constituents_data is None:
+                st.error("No se pudieron obtener los constituyentes del índice")
+                st.stop()
+            
+            tickers_count = len(constituents_data.get('tickers', []))
+            st.success(f"✅ Obtenidos {tickers_count} constituyentes")
+            
+            if tickers_count == 0:
+                st.error("No se encontraron tickers válidos")
+                st.stop()
+            
+            # Descargar precios con manejo de errores mejorado
+            prices_df = download_prices(constituents_data, start_date, end_date)
             
             if prices_df is None or prices_df.empty:
                 st.error("No se pudieron descargar los precios históricos")
+                # Mostrar información de debugging
+                if isinstance(constituents_data, dict) and 'tickers' in constituents_data:
+                    st.info(f"Tickers intentados: {constituents_data['tickers'][:10]}...")
                 st.stop()
             
             st.success(f"✅ Descargados precios para {len(prices_df.columns)} tickers")
