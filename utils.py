@@ -24,12 +24,18 @@ def load_tickers_nasdaq100():
     return df, changes
 
 def unify_ticker(ticker):
-    mapping = {
-        "FB": "META",
-        "GOOG": "GOOGL",
-        "NLSN": "NLSN_delisted",  # ejemplo
-    }
-    return mapping.get(ticker, ticker)
+    """
+    Unifica el formato de los tickers
+    """
+    if pd.isna(ticker) or ticker is None:
+        return None
+    
+    ticker = str(ticker).strip().upper()
+    
+    # Manejar casos especiales
+    ticker = ticker.replace('.', '-')  # Convertir puntos a guiones
+    
+    return ticker if ticker else None
 
 def save_cache(df, filename):
     with open(os.path.join(CACHE_DIR, filename), "wb") as f:
