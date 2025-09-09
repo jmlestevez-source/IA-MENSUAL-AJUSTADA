@@ -3,12 +3,16 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
-import yfinance as yf
+import time
 
 # Importar nuestros módulos
 from data_loader import download_prices, get_constituents_at_date
 from backtest import run_backtest
 from utils import unify_ticker
+
+# Configuración de yfinance
+import yfinance as yf
+yf.set_tz_cache_limit(3600)  # Cache de 1 hora
 
 # -------------------------------------------------
 # Configuración de la app
@@ -71,25 +75,42 @@ if run_button:
                 st.error("No se encontraron tickers válidos")
                 st.stop()
             
-            # Descargar precios
+            # Mostrar algunos tickers de ejemplo
+            sample_tickers = constituents_data.get('tickers', [])[:10]
+            st.info(f"Tickers de ejemplo: {', '.join(sample_tickers)}")
+            
+            # Descargar precios de constituyentes
             prices_df = download_prices(constituents_data, start_date, end_date)
             
             if prices_df is None or prices_df.empty:
-                st.error("No se pudieron descargar los precios históricos")
-                # Mostrar información de debugging
+                st.error("No se pudieron descargar los precios históricos de los constituyentes")
                 if isinstance(constituents_data, dict) and 'tickers' in constituents_data:
-                    st.info(f"Tickers intentados: {constituents_data['tickers'][:10]}...")
+                    tickers_mostrados = constituents_data['tickers'][:10]
+                    st.info(f"Tickers intentados: {', '.join(tickers_mostrados)}...")
                 st.stop()
             
             st.success(f"✅ Descargados precios para {len(prices_df.columns)} tickers")
             
-            # Benchmark (SPY para S&P 500, QQQ para Nasdaq-100)
+            # Descargar benchmark (SPY para S&P 500, QQQ para Nasdaq-100)
             benchmark_ticker = "SPY" if index_choice == "SP500" else "QQQ"
+            st.info(f"Descargando benchmark: {benchmark_ticker}")
+            
+            # Descargar benchmark por separado
             benchmark_df = download_prices([benchmark_ticker], start_date, end_date)
             
             if benchmark_df is None or benchmark_df.empty:
-                st.warning(f"No se pudo descargar el benchmark {benchmark_ticker}, usando precios medios")
-                benchmark_df = prices_df.mean(axis=1).to_frame(name=benchmark_ticker)
+                st.warning(f"No se pudo descargar el benchmark {benchmark_ticker}")
+                # Intentar con datos alternativos
+                try:
+                    # Usar el promedio de los constituyentes como benchmark alternativo
+                    st.info("Usando promedio de constituyentes como benchmark alternativo")
+                    benchmark_series = prices_df.mean(axis=1)
+                    benchmark_df = pd.DataFrame({benchmark_ticker: benchmark_series})
+                except Exception as avg_error:
+                    st.error(f"Tampoco se pudo crear benchmark alternativo: {avg_error}")
+                    st.stop()
+            else:
+                st.success(f"✅ Benchmark {benchmark_ticker} descargado correctamente")
         
         with st.spinner("Ejecutando backtest..."):
             # Ejecutar backtest
