@@ -1,8 +1,3 @@
-------------------------------------------------```
-"""
-Inercia Alcista – Backtest rotacional mensual
-S&P 500 y Nasdaq-100
-"""
 import sys
 import traceback
 import streamlit as st
