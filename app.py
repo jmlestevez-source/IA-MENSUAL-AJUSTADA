@@ -1,10 +1,8 @@
-import sys
-import traceback
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
 from datetime import datetime, timedelta
-from pathlib import Path
 
 # Importar nuestros módulos
 from data_loader import download_prices, get_constituents_at_date
@@ -12,99 +10,184 @@ from backtest import run_backtest
 from utils import unify_ticker
 
 # -------------------------------------------------
-# 1. Config de página (SIEMPRE PRIMERO)
+# Configuración de la app
 # -------------------------------------------------
-st.set_page_config(page_title="Inercia Alcista – S&P500 & Nasdaq-100",
-                   layout="wide")
 
-# -------------------------------------------------
-# 2. Catch-all para que **cualquier** error se muestre
-# -------------------------------------------------
-try:
-    # -------------------------------------------------
-    # 3. Título
-    # -------------------------------------------------
-    st.markdown("# 📊 Inercia Alcista – Backtest Rotacional")
-    st.markdown("**Estrategia mensual** sobre los componentes del **S&P 500** y/o **Nasdaq-100**.")
+st.set_page_config(
+    page_title="IA Mensual Ajustada",
+    page_icon="📈",
+    layout="wide"
+)
 
-    # -------------------------------------------------
-    # 4. Sidebar
-    # -------------------------------------------------
-    idx_choice = st.sidebar.multiselect("Selecciona índice(s)",
-                                        ["S&P 500", "Nasdaq-100"],
-                                        default=["S&P 500"])
-
-    benchmark = st.sidebar.selectbox("Benchmark", ["SPY", "QQQ", "IWM"], index=0)
-
-    start = st.sidebar.date_input("Inicio", value=datetime(2015, 1, 1))
-    end = st.sidebar.date_input("Fin", value=datetime.today())
-
-    if st.sidebar.button("▶️ Ejecutar backtest"):
-        if not idx_choice:
-            st.warning("⚠️ Selecciona al menos un índice")
-            st.stop()
-
-        with st.spinner("Descargando precios y ejecutando backtest..."):
-            # 1. Tickers históricos
-            all_ticks = []
-            if "S&P 500" in idx_choice:
-                df_sp, _ = get_constituents_at_date("SP500", start, end)
-                all_ticks += df_sp["Symbol"].tolist()
-            if "Nasdaq-100" in idx_choice:
-                df_nq, _ = get_constituents_at_date("NASDAQ100", start, end)
-                all_ticks += df_nq["Symbol"].tolist()
-            all_ticks = list({unify_ticker(t.replace("-", ".")) for t in all_ticks if t})
-
-            # 2. Descargar precios
-            prices = download_prices(all_ticks, start, end)
-            bench = download_prices([benchmark], start, end)[benchmark].dropna()
-
-            # 3. Backtest
-            bt, monthly_picks = run_backtest(prices, bench, comission=0.0030, top_n=10)
-
-        # -------------------------------------------------
-        # 5. Métricas
-        # -------------------------------------------------
-        cagr = (bt["Equity"].iloc[-1] / bt["Equity"].iloc[0]) ** (252 / len(bt)) - 1
-        vol = bt["Returns"].std() * np.sqrt(252)
-        sharpe = cagr / vol if vol else 0
-        maxdd = bt["Drawdown"].min()
-
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("CAGR", f"{cagr:.2%}")
-        col2.metric("Volatilidad", f"{vol:.2%}")
-        col3.metric("Sharpe", f"{sharpe:.2f}")
-        col4.metric("Max Drawdown", f"{maxdd:.2%}")
-        col5.metric("Final Equity", f"${bt['Equity'].iloc[-1]:,.0f}")
-
-        # -------------------------------------------------
-        # 6. Gráficos
-        # -------------------------------------------------
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=bt.index, y=bt["Equity"], name="Estrategia"))
-        fig.add_trace(go.Scatter(x=bench.index, y=(bench/bench.iloc[0])*bt["Equity"].iloc[0], name=benchmark))
-        fig.update_layout(title="Equity Curve", xaxis_title="Fecha", yaxis_title="USD", template="plotly_white")
-        st.plotly_chart(fig, use_container_width=True)
-
-        fig_dd = go.Figure(go.Scatter(x=bt.index, y=bt["Drawdown"], fill='tozeroy', name="Drawdown"))
-        fig_dd.update_layout(title="Drawdown", template="plotly_white")
-        st.plotly_chart(fig_dd, use_container_width=True)
-
-        # -------------------------------------------------
-        # 7. Tabla de selecciones
-        # -------------------------------------------------
-        st.markdown("### 📥 Selecciones mensuales (Top 10)")
-        st.dataframe(monthly_picks.style.format({"Inercia": "{:.2f}", "ScoreAdj": "{:.2f}"}))
-
-        csv = monthly_picks.to_csv(index=False)
-        st.download_button("Descargar CSV", csv, "selecciones_mensuales.csv", "text/csv")
+st.title("📈 Estrategia mensual sobre los componentes del S&P 500 y/o Nasdaq-100")
 
 # -------------------------------------------------
-# Fin del try global → mostrar cualquier crash
+# Sidebar - Parámetros
 # -------------------------------------------------
-except Exception as e:
-    st.error("❌ Excepción no capturada:")
-    st.code("".join(traceback.format_exception(e, e, e.__traceback__)))
-    with open("/tmp/crash.log", "w") as f:
-        traceback.print_exc(file=f)
-    st.stop()
+
+st.sidebar.header("Parámetros de backtest")
+
+# Selector de índice
+index_choice = st.sidebar.selectbox(
+    "Selecciona el índice:",
+    ["SP500", "NDX"]
+)
+
+# Fechas
+end_date = st.sidebar.date_input("Fecha final", datetime.today())
+start_date = st.sidebar.date_input("Fecha inicial", end_date - timedelta(days=365*5))
+
+# Parámetros del backtest
+top_n = st.sidebar.slider("Número de activos", 5, 30, 10)
+commission = st.sidebar.number_input("Comisión por operación (%)", 0.0, 1.0, 0.3) / 100
+corte = st.sidebar.number_input("Corte de score", 0, 1000, 680)
+
+# Botón de ejecución
+run_button = st.sidebar.button("🏃 Ejecutar backtest")
+
+# -------------------------------------------------
+# Main content
+# -------------------------------------------------
+
+if run_button:
+    try:
+        with st.spinner("Descargando datos..."):
+            # Obtener constituyentes
+            df_constituents, error = get_constituents_at_date(index_choice, start_date, end_date)
+            
+            if error:
+                st.error(f"Error obteniendo constituyentes: {error}")
+                st.stop()
+            
+            if df_constituents is None or df_constituents.empty:
+                st.error("No se pudieron obtener los constituyentes del índice")
+                st.stop()
+            
+            st.success(f"✅ Obtenidos {len(df_constituents)} constituyentes")
+            
+            # Descargar precios
+            prices_df = download_prices(df_constituents, start_date, end_date)
+            
+            if prices_df is None or prices_df.empty:
+                st.error("No se pudieron descargar los precios históricos")
+                st.stop()
+            
+            st.success(f"✅ Descargados precios para {len(prices_df.columns)} tickers")
+            
+            # Benchmark (SPY para S&P 500, QQQ para Nasdaq-100)
+            benchmark_ticker = "SPY" if index_choice == "SP500" else "QQQ"
+            benchmark_df = download_prices([benchmark_ticker], start_date, end_date)
+            
+            if benchmark_df is None or benchmark_df.empty:
+                st.warning(f"No se pudo descargar el benchmark {benchmark_ticker}, usando precios medios")
+                benchmark_df = prices_df.mean(axis=1).to_frame(name=benchmark_ticker)
+        
+        with st.spinner("Ejecutando backtest..."):
+            # Ejecutar backtest
+            bt_results, picks_df = run_backtest(
+                prices=prices_df,
+                benchmark=benchmark_df[benchmark_ticker],
+                commission=commission,
+                top_n=top_n,
+                corte=corte
+            )
+            
+            if bt_results.empty:
+                st.error("El backtest no generó resultados")
+                st.stop()
+            
+            st.success("✅ Backtest completado")
+            
+            # -------------------------------------------------
+            # Métricas principales
+            # -------------------------------------------------
+            
+            final_equity = bt_results["Equity"].iloc[-1]
+            total_return = (final_equity / bt_results["Equity"].iloc[0]) - 1
+            max_drawdown = bt_results["Drawdown"].min()
+            volatility = bt_results["Returns"].std() * (12 ** 0.5)  # Anualizada
+            sharpe_ratio = (bt_results["Returns"].mean() * 12) / (volatility + 1e-8)  # Sharpe anualizado
+            
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Equity Final", f"${final_equity:,.0f}")
+            col2.metric("Retorno Total", f"{total_return:.2%}")
+            col3.metric("Máximo Drawdown", f"{max_drawdown:.2%}")
+            col4.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
+            
+            # -------------------------------------------------
+            # Gráficos
+            # -------------------------------------------------
+            
+            # Gráfico de equity
+            fig_equity = go.Figure()
+            fig_equity.add_trace(go.Scatter(
+                x=bt_results.index,
+                y=bt_results["Equity"],
+                mode='lines',
+                name='Estrategia',
+                line=dict(width=3)
+            ))
+            
+            # Benchmark
+            if not benchmark_df.empty:
+                bench_equity = (10000 * (1 + benchmark_df[benchmark_ticker].pct_change().fillna(0))).cumprod()
+                bench_equity.index = bt_results.index[:len(bench_equity)]  # Alinear fechas
+                fig_equity.add_trace(go.Scatter(
+                    x=bench_equity.index,
+                    y=bench_equity,
+                    mode='lines',
+                    name=f'Benchmark ({benchmark_ticker})',
+                    line=dict(width=2, dash='dash')
+                ))
+            
+            fig_equity.update_layout(
+                title="Evolución del Equity",
+                xaxis_title="Fecha",
+                yaxis_title="Equity ($)",
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig_equity, use_container_width=True)
+            
+            # Gráfico de drawdown
+            fig_dd = go.Figure()
+            fig_dd.add_trace(go.Scatter(
+                x=bt_results.index,
+                y=bt_results["Drawdown"] * 100,
+                mode='lines',
+                name='Drawdown',
+                fill='tozeroy',
+                line=dict(color='red', width=2)
+            ))
+            fig_dd.update_layout(
+                title="Drawdown",
+                xaxis_title="Fecha",
+                yaxis_title="Drawdown (%)",
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig_dd, use_container_width=True)
+            
+            # -------------------------------------------------
+            # Picks seleccionados
+            # -------------------------------------------------
+            
+            if not picks_df.empty:
+                st.subheader("Últimos picks seleccionados")
+                latest_picks = picks_df[picks_df["Date"] == picks_df["Date"].max()]
+                st.dataframe(latest_picks.round(2))
+                
+                # Gráfico de picks por fecha
+                picks_by_date = picks_df.groupby("Date").size()
+                fig_picks = px.bar(
+                    x=picks_by_date.index,
+                    y=picks_by_date.values,
+                    labels={'x': 'Fecha', 'y': 'Número de Picks'},
+                    title="Número de Picks por Fecha"
+                )
+                st.plotly_chart(fig_picks, use_container_width=True)
+            
+    except Exception as e:
+        st.error(f"❌ Excepción no capturada: {str(e)}")
+        st.exception(e)
+
+else:
+    st.info("👈 Configura los parámetros en el panel lateral y haz clic en 'Ejecutar backtest'")
