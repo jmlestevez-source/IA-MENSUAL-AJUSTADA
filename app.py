@@ -1,7 +1,3 @@
-(⚠️ **Sin pins rígidos** – Streamlit Cloud resolverá lo que sea compatible con la imagen 3.11)
-
---------------------------------------------------
-app.py
 ------------------------------------------------```
 """
 Inercia Alcista – Backtest rotacional mensual
