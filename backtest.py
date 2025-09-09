@@ -2,12 +2,12 @@ import pandas as pd
 import numpy as np
 # ---------- True Range mensual (aproximado) ----------
 def monthly_true_range(close):
-prev = close.shift(1)
-high = low = close
-tr = np.maximum(high - low,
-np.maximum(np.abs(high - prev),
-np.abs(low - prev)))
-return tr
+    prev = close.shift(1)
+    high = low = close
+    tr = np.maximum(high - low,
+                    np.maximum(np.abs(high - prev),
+                               np.abs(low - prev)))
+    return tr
 # ---------- Inercia Alcista (igual que AFL) ----------
 def inertia_score(monthly_close, corte=680):
 # ROC
