@@ -45,58 +45,52 @@ def inertia_score(monthly_prices_df, corte=680):
     # Calcular SMA(14)
     sma14 = close.rolling(14).mean()
 
-    # Evitar división por cero - CORREGIDO Y REFORZADO
-    try:
-        # Paso 1: Calcular la razón ATR/SMA con protección
-        with np.errstate(divide='ignore', invalid='ignore'):
-            ratio_raw = atr14 / sma14
-            
-        # Paso 2: Reemplazar valores no finitos (inf, -inf, nan) con NaN
-        ratio_clean = ratio_raw.replace([np.inf, -np.inf], np.nan)
+    # Evitar división por cero - REFORZADO PARA EVITAR OVERFLOW
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        # Paso 1: Calcular la razón ATR/SMA
+        raw_ratio = atr14 / sma14
         
-        # Paso 3: Reemplazar ceros con NaN
-        ratio_no_zero = ratio_clean.replace(0, np.nan)
+        # Paso 2: Sanear valores extremos/indefinidos
+        # Reemplazar inf, -inf, nan con NaN
+        clean_ratio = raw_ratio.replace([np.inf, -np.inf], np.nan)
+        # Reemplazar 0 con NaN para evitar problemas en forward fill
+        clean_ratio = clean_ratio.replace(0, np.nan)
         
-        # Paso 4: Forward fill para propagar el último valor válido
-        ratio_ffilled = ratio_no_zero.ffill()
+        # Paso 3: Forward fill para propagar el último valor válido
+        filled_ratio = clean_ratio.ffill()
         
-        # Paso 5: Rellenar cualquier NaN restante al inicio con un valor pequeño
-        ratio_filled = ratio_ffilled.fillna(1e-10)
+        # Paso 4: Rellenar cualquier NaN restante al inicio con un valor pequeño
+        filled_ratio = filled_ratio.fillna(1e-10)
         
-        # Paso 6: Aplicar el factor de escala
-        denominator = ratio_filled * 0.4
+        # Paso 5: Aplicar el factor de escala
+        denominator = filled_ratio * 0.4
         
-        # Paso 7: Asegurar que el denominador no sea cero para la división final
-        denominator_safe = denominator.replace(0, 1e-10)
+        # Paso 6: Asegurar que el denominador no sea cero ni demasiado pequeño
+        # para evitar overflow en la división
+        safe_denominator = np.where(np.abs(denominator) < 1e-10, 1e-10, denominator)
         
-        # Paso 8: Calcular inercia con protección adicional
-        with np.errstate(divide='ignore', invalid='ignore'):
-            inercia_alcista = f1 / denominator_safe
-            
-        # Reemplazar cualquier valor no finito resultante
+        # Paso 7: Calcular inercia con protección
+        inercia_alcista = f1 / safe_denominator
+        
+        # Paso 8: Sanear el resultado final
         inercia_alcista = inercia_alcista.replace([np.inf, -np.inf], np.nan).fillna(0)
         
-    except Exception as e:
-        print(f"Error en cálculo de inercia: {e}")
-        # Fallback seguro
-        denominator_safe = pd.Series(1e-10, index=f1.index)
-        inercia_alcista = f1 / denominator_safe
-
     # Aplicar corte
     score = np.where(inercia_alcista < corte, 0, np.maximum(inercia_alcista, 0))
-
-    # Penalización por volatilidad
-    atr14_safe = atr14.replace(0, 1e-10).replace([np.inf, -np.inf], 1e-10)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        score_adj = score / atr14_safe
-    score_adj = score_adj.replace([np.inf, -np.inf], np.nan).fillna(0)
+    
+    # Penalización por volatilidad - también protegida
+    with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
+        # Asegurar ATR14 no sea cero
+        safe_atr14 = np.where(np.abs(atr14) < 1e-10, 1e-10, atr14)
+        score_adj = score / safe_atr14
+        score_adj = score_adj.replace([np.inf, -np.inf], np.nan).fillna(0)
 
     return pd.DataFrame({
         "InerciaAlcista": inercia_alcista,
         "ATR14": atr14,
         "Score": score,
         "ScoreAdjusted": score_adj
-    }).fillna(0)
+    }).fillna(0) # Rellenar cualquier NaN final con 0
 
 def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
     try:
@@ -193,9 +187,9 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                     continue
 
                 # Calcular retornos
-                rets = pd.Series(index=valid_tickers)
+                rets = pd.Series(index=valid_tickers, dtype=float) # Especificar dtype
                 for ticker in valid_tickers:
-                    if prev_prices[ticker] != 0:
+                    if prev_prices[ticker] != 0 and not pd.isna(prev_prices[ticker]) and not pd.isna(available_prices[ticker]):
                         rets[ticker] = (available_prices[ticker] / prev_prices[ticker]) - 1
                     else:
                         rets[ticker] = 0
