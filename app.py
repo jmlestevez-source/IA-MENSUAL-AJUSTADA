@@ -9,7 +9,7 @@ import yfinance as yf
 # Importar nuestros módulos
 from data_loader import download_prices, get_constituents_at_date
 from backtest import run_backtest
-from utils import unify_ticker
+from utils import unify_ticker  # Asumiendo que existe; si no, quítalo
 
 # -------------------------------------------------
 # Configuración de la app
@@ -79,7 +79,7 @@ if run_button:
             # Descargar precios de constituyentes
             prices_df = download_prices(constituents_data, start_date, end_date)
             
-            if prices_df is None or prices_df.empty:
+            if prices_df.empty:
                 st.error("No se pudieron descargar los precios históricos de los constituyentes")
                 # Mostrar información de debugging
                 if isinstance(constituents_data, dict) and 'tickers' in constituents_data:
@@ -96,7 +96,7 @@ if run_button:
             # Descargar benchmark por separado
             benchmark_df = download_prices([benchmark_ticker], start_date, end_date)
             
-            if benchmark_df is None or benchmark_df.empty:
+            if benchmark_df.empty:
                 st.warning(f"No se pudo descargar el benchmark {benchmark_ticker}")
                 # Intentar con datos alternativos
                 try:
@@ -111,17 +111,18 @@ if run_button:
                 st.success(f"✅ Benchmark {benchmark_ticker} descargado correctamente")
         
         with st.spinner("Ejecutando backtest..."):
-            # Ejecutar backtest
+            # Ejecutar backtest (usar benchmark_series si df vacío)
+            benchmark_series = benchmark_df[benchmark_ticker] if not benchmark_df.empty else pd.Series()
             bt_results, picks_df = run_backtest(
                 prices=prices_df,
-                benchmark=benchmark_df[benchmark_ticker],
+                benchmark=benchmark_series,
                 commission=commission,
                 top_n=top_n,
                 corte=corte
             )
             
             if bt_results.empty:
-                st.error("El backtest no generó resultados")
+                st.error("El backtest no generó resultados (posiblemente datos insuficientes)")
                 st.stop()
             
             st.success("✅ Backtest completado")
@@ -158,7 +159,7 @@ if run_button:
             
             # Benchmark
             if not benchmark_df.empty:
-                bench_equity = (10000 * (1 + benchmark_df[benchmark_ticker].pct_change().fillna(0))).cumprod()
+                bench_equity = (10000 * (1 + benchmark_df[benchmark_ticker].pct_change(fill_method=None).fillna(0))).cumprod()  # Agregado fill_method=None
                 bench_equity.index = bt_results.index[:len(bench_equity)]  # Alinear fechas
                 fig_equity.add_trace(go.Scatter(
                     x=bench_equity.index,
