@@ -142,11 +142,21 @@ if run_button:
             ))
             # Benchmark
             if not benchmark_df.empty:
-                bench_equity = (10000 * (1 + benchmark_df[benchmark_ticker].pct_change(fill_method=None).fillna(0))).cumprod()  # Agregado fill_method=None
-                bench_equity.index = bt_results.index[:len(bench_equity)]  # Alinear fechas
+                bench_equity = (10000 * (1 + benchmark_df[benchmark_ticker].pct_change(fill_method=None).fillna(0))).cumprod()
+                # Corrección: Alinear correctamente las fechas
+                # Asegurarse de que bench_equity tenga el mismo índice que bt_results
+                bench_equity_aligned = pd.Series(index=bt_results.index, dtype=float)
+                # Copiar los valores existentes
+                for i, date in enumerate(bench_equity.index):
+                    if date in bench_equity_aligned.index:
+                        bench_equity_aligned[date] = bench_equity.iloc[i]
+                
+                # Rellenar valores faltantes con forward fill
+                bench_equity_aligned = bench_equity_aligned.ffill().bfill()
+                
                 fig_equity.add_trace(go.Scatter(
-                    x=bench_equity.index,
-                    y=bench_equity,
+                    x=bench_equity_aligned.index,
+                    y=bench_equity_aligned.values,
                     mode='lines',
                     name=f'Benchmark ({benchmark_ticker})',
                     line=dict(width=2, dash='dash')
