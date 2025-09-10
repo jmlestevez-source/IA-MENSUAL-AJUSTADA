@@ -20,7 +20,7 @@ def inertia_score(monthly_prices_df, corte=680):
     """
     if monthly_prices_df.empty:
         return pd.DataFrame()
-    
+
     # Asegurarse de que tenemos las columnas necesarias
     required_cols = ['High', 'Low', 'Close']
     if not all(col in monthly_prices_df.columns for col in required_cols):
@@ -33,36 +33,55 @@ def inertia_score(monthly_prices_df, corte=680):
         high = monthly_prices_df['High']
         low = monthly_prices_df['Low']
         close = monthly_prices_df['Close']
-    
+
     # Calcular ROC (10 períodos)
     roc_10 = close.pct_change(10, fill_method=None)
     f1 = roc_10 * 0.6  # Combinación de los dos ROC
-    
+
     # Calcular ATR(14)
     tr = monthly_true_range(high, low, close)
     atr14 = tr.rolling(14).mean()
-    
+
     # Calcular SMA(14)
     sma14 = close.rolling(14).mean()
-    
-    # Evitar división por cero - CORREGIDO
-    denominator = (atr14 / sma14).replace([np.inf, -np.inf], np.nan).replace(0, np.nan).ffill().fillna(0) * 0.4
-    denominator = denominator.replace(0, 1e-8)  # Evitar división por cero
-    
-    inercia_alcista = f1 / denominator
-    
+
+    # Evitar división por cero - CORREGIDO Y REFORZADO
+    # Paso 1: Calcular la razón ATR/SMA
+    ratio_raw = atr14 / sma14
+
+    # Paso 2: Reemplazar valores no finitos (inf, -inf, nan) con NaN
+    ratio_clean = ratio_raw.replace([np.inf, -np.inf], np.nan)
+
+    # Paso 3: Reemplazar ceros con NaN
+    ratio_no_zero = ratio_clean.replace(0, np.nan)
+
+    # Paso 4: Forward fill para propagar el último valor válido
+    ratio_ffilled = ratio_no_zero.ffill()
+
+    # Paso 5: Rellenar cualquier NaN restante al inicio con 0
+    ratio_filled = ratio_ffilled.fillna(0)
+
+    # Paso 6: Aplicar el factor de escala
+    denominator = ratio_filled * 0.4
+
+    # Paso 7: Asegurar que el denominador no sea cero para la división final
+    denominator_safe = denominator.replace(0, 1e-10) # Valor muy pequeño pero no cero
+
+    inercia_alcista = f1 / denominator_safe
+
     # Aplicar corte
     score = np.where(inercia_alcista < corte, 0, np.maximum(inercia_alcista, 0))
-    
+
     # Penalización por volatilidad
-    score_adj = score / atr14.replace(0, 1e-8)
-    
+    atr14_safe = atr14.replace(0, 1e-10) # Valor muy pequeño pero no cero
+    score_adj = score / atr14_safe
+
     return pd.DataFrame({
         "InerciaAlcista": inercia_alcista,
         "ATR14": atr14,
         "Score": score,
         "ScoreAdjusted": score_adj
-    }).fillna(0)
+    }).fillna(0) # Rellenar cualquier NaN final con 0
 
 def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
     try:
@@ -73,7 +92,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
         else:
             prices_m = prices.resample('ME').last()
             prices_df_m = prices_m.copy()
-            
+
             # Asegurar que tenemos las columnas necesarias
             if len(prices_df_m.columns) == 1:
                 col_name = prices_df_m.columns[0]
@@ -90,16 +109,16 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                     prices_df_m['High'] = prices_df_m[first_col]
                 if 'Low' not in prices_df_m.columns:
                     prices_df_m['Low'] = prices_df_m[first_col]
-        
+
         # Mensualizar benchmark
         if isinstance(benchmark, pd.Series):
             bench_m = benchmark.resample('ME').last()
         else:
             bench_m = benchmark.resample('ME').last()
-        
+
         if prices_df_m.empty or bench_m.empty:
             raise ValueError("No hay datos mensuales suficientes para el backtest")
-        
+
         equity = [10000]
         dates = [prices_df_m.index[0]]
         picks_list = []
@@ -121,43 +140,43 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                 historical_data = prices_df_m.loc[:prev_date].copy()
                 if len(historical_data) < 15:  # Necesitamos suficientes datos
                     continue
-                    
+
                 df_score = inertia_score(historical_data, corte=corte)
                 if df_score.empty or len(df_score) < 14:
                     continue
-                
+
                 # Obtener el último score ajustado para cada ticker
                 if isinstance(df_score["ScoreAdjusted"], pd.DataFrame):
                     # Caso múltiples tickers
                     last_scores = df_score["ScoreAdjusted"].iloc[-1]
                 else:
                     # Caso un solo ticker
-                    last_scores = pd.Series([df_score["ScoreAdjusted"].iloc[-1]], 
+                    last_scores = pd.Series([df_score["ScoreAdjusted"].iloc[-1]],
                                           index=[prices_df_m.columns[0]])
-                
+
                 last_scores = last_scores.dropna().sort_values(ascending=False)
-                
+
                 if len(last_scores) == 0:
                     continue
-                    
+
                 selected = last_scores.head(top_n).index.tolist()
-                
+
                 if not selected:
                     continue
 
                 # Calcular retorno mensual
                 weight = 1.0 / len(selected)
-                
+
                 # Obtener precios disponibles para los tickers seleccionados
                 available_prices = prices_m.loc[date]
                 prev_prices = prices_m.loc[prev_date]
-                
+
                 # Filtrar solo tickers seleccionados que tienen datos
                 valid_tickers = [t for t in selected if t in available_prices.index and t in prev_prices.index]
-                
+
                 if len(valid_tickers) == 0:
                     continue
-                
+
                 # Calcular retornos
                 rets = pd.Series(index=valid_tickers)
                 for ticker in valid_tickers:
@@ -165,7 +184,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                         rets[ticker] = (available_prices[ticker] / prev_prices[ticker]) - 1
                     else:
                         rets[ticker] = 0
-                
+
                 rets = rets.fillna(0)
                 port_ret = (rets * weight).sum() - commission
                 new_eq = equity[-1] * (1 + port_ret)
@@ -179,9 +198,9 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                         inercia_val = df_score["InerciaAlcista"].iloc[-1]
                         if isinstance(inercia_val, pd.Series):
                             inercia_val = inercia_val.get(ticker, 0)
-                        
+
                         score_adj_val = last_scores.get(ticker, 0)
-                        
+
                         picks_list.append({
                             "Date": date.strftime("%Y-%m-%d"),
                             "Rank": rank,
@@ -192,7 +211,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                     except Exception as e:
                         print(f"Error procesando pick {ticker}: {e}")
                         continue
-                        
+
             except Exception as e:
                 print(f"Error en iteración {i}: {e}")
                 continue
@@ -211,7 +230,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
         })
         picks_df = pd.DataFrame(picks_list)
         return bt, picks_df
-        
+
     except Exception as e:
         print(f"Error en run_backtest: {e}")
         empty_bt = pd.DataFrame(columns=["Equity", "Returns", "Drawdown"])
