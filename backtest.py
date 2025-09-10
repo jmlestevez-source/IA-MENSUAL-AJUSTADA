@@ -45,8 +45,8 @@ def inertia_score(monthly_prices_df, corte=680):
     # Calcular SMA(14)
     sma14 = close.rolling(14).mean()
     
-    # Evitar división por cero
-    denominator = (atr14 / sma14).replace(0, np.nan).fillna(method='ffill').fillna(0) * 0.4
+    # Evitar división por cero - CORREGIDO
+    denominator = (atr14 / sma14).replace([np.inf, -np.inf], np.nan).replace(0, np.nan).ffill().fillna(0) * 0.4
     denominator = denominator.replace(0, 1e-8)  # Evitar división por cero
     
     inercia_alcista = f1 / denominator
