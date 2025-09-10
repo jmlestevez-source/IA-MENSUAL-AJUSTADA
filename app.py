@@ -5,34 +5,30 @@ import plotly.express as px
 from datetime import datetime, timedelta
 import time
 import yfinance as yf
-
 # Importar nuestros módulos
 from data_loader import download_prices, get_constituents_at_date
 from backtest import run_backtest
-from utils import unify_ticker  # Asumiendo que existe; si no, quítalo
+# from utils import unify_ticker  # Comentado ya que no se usa
 
 # -------------------------------------------------
 # Configuración de la app
 # -------------------------------------------------
-
 st.set_page_config(
     page_title="IA Mensual Ajustada",
     page_icon="📈",
     layout="wide"
 )
-
 st.title("📈 Estrategia mensual sobre los componentes del S&P 500 y/o Nasdaq-100")
 
 # -------------------------------------------------
 # Sidebar - Parámetros
 # -------------------------------------------------
-
 st.sidebar.header("Parámetros de backtest")
 
-# Selector de índice
+# Selector de índice - Actualizado para incluir "Nasdaq-100"
 index_choice = st.sidebar.selectbox(
     "Selecciona el índice:",
-    ["SP500", "NDX"]
+    ["SP500", "Nasdaq-100"] # Cambiado "NDX" por "Nasdaq-100" para claridad y consistencia
 )
 
 # Fechas
@@ -50,35 +46,30 @@ run_button = st.sidebar.button("🏃 Ejecutar backtest")
 # -------------------------------------------------
 # Main content
 # -------------------------------------------------
-
 if run_button:
     try:
         with st.spinner("Descargando datos..."):
             # Obtener constituyentes
-            constituents_data, error = get_constituents_at_date(index_choice, start_date, end_date)
-            
+            # Ajustar el nombre del índice para que coincida con data_loader
+            index_key = "SP500" if index_choice == "SP500" else "NDX"
+            constituents_data, error = get_constituents_at_date(index_key, start_date, end_date)
             if error:
                 st.error(f"Error obteniendo constituyentes: {error}")
                 st.stop()
-            
             if constituents_data is None:
                 st.error("No se pudieron obtener los constituyentes del índice")
                 st.stop()
-            
             tickers_count = len(constituents_data.get('tickers', []))
             st.success(f"✅ Obtenidos {tickers_count} constituyentes")
-            
             if tickers_count == 0:
                 st.error("No se encontraron tickers válidos")
                 st.stop()
-            
             # Mostrar algunos tickers de ejemplo
             sample_tickers = constituents_data.get('tickers', [])[:10]
             st.info(f"Tickers de ejemplo: {', '.join(sample_tickers)}")
-            
+
             # Descargar precios de constituyentes
             prices_df = download_prices(constituents_data, start_date, end_date)
-            
             if prices_df.empty:
                 st.error("No se pudieron descargar los precios históricos de los constituyentes")
                 # Mostrar información de debugging
@@ -86,16 +77,14 @@ if run_button:
                     tickers_mostrados = constituents_data['tickers'][:10]
                     st.info(f"Tickers intentados: {', '.join(tickers_mostrados)}...")
                 st.stop()
-            
             st.success(f"✅ Descargados precios para {len(prices_df.columns)} tickers")
-            
-            # Descargar benchmark (SPY para S&P 500, QQQ para Nasdaq-100)
+
+            # Descargar benchmark
+            # Corregido el ticker del benchmark para Nasdaq-100
             benchmark_ticker = "SPY" if index_choice == "SP500" else "QQQ"
             st.info(f"Descargando benchmark: {benchmark_ticker}")
-            
             # Descargar benchmark por separado
             benchmark_df = download_prices([benchmark_ticker], start_date, end_date)
-            
             if benchmark_df.empty:
                 st.warning(f"No se pudo descargar el benchmark {benchmark_ticker}")
                 # Intentar con datos alternativos
@@ -109,7 +98,7 @@ if run_button:
                     st.stop()
             else:
                 st.success(f"✅ Benchmark {benchmark_ticker} descargado correctamente")
-        
+
         with st.spinner("Ejecutando backtest..."):
             # Ejecutar backtest (usar benchmark_series si df vacío)
             benchmark_series = benchmark_df[benchmark_ticker] if not benchmark_df.empty else pd.Series()
@@ -120,33 +109,28 @@ if run_button:
                 top_n=top_n,
                 corte=corte
             )
-            
             if bt_results.empty:
                 st.error("El backtest no generó resultados (posiblemente datos insuficientes)")
                 st.stop()
-            
             st.success("✅ Backtest completado")
-            
+
             # -------------------------------------------------
             # Métricas principales
             # -------------------------------------------------
-            
             final_equity = bt_results["Equity"].iloc[-1]
             total_return = (final_equity / bt_results["Equity"].iloc[0]) - 1
             max_drawdown = bt_results["Drawdown"].min()
             volatility = bt_results["Returns"].std() * (12 ** 0.5)  # Anualizada
             sharpe_ratio = (bt_results["Returns"].mean() * 12) / (volatility + 1e-8)  # Sharpe anualizado
-            
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Equity Final", f"${final_equity:,.0f}")
             col2.metric("Retorno Total", f"{total_return:.2%}")
             col3.metric("Máximo Drawdown", f"{max_drawdown:.2%}")
             col4.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
-            
+
             # -------------------------------------------------
             # Gráficos
             # -------------------------------------------------
-            
             # Gráfico de equity
             fig_equity = go.Figure()
             fig_equity.add_trace(go.Scatter(
@@ -156,7 +140,6 @@ if run_button:
                 name='Estrategia',
                 line=dict(width=3)
             ))
-            
             # Benchmark
             if not benchmark_df.empty:
                 bench_equity = (10000 * (1 + benchmark_df[benchmark_ticker].pct_change(fill_method=None).fillna(0))).cumprod()  # Agregado fill_method=None
@@ -168,7 +151,6 @@ if run_button:
                     name=f'Benchmark ({benchmark_ticker})',
                     line=dict(width=2, dash='dash')
                 ))
-            
             fig_equity.update_layout(
                 title="Evolución del Equity",
                 xaxis_title="Fecha",
@@ -176,7 +158,7 @@ if run_button:
                 hovermode='x unified'
             )
             st.plotly_chart(fig_equity, use_container_width=True)
-            
+
             # Gráfico de drawdown
             fig_dd = go.Figure()
             fig_dd.add_trace(go.Scatter(
@@ -194,16 +176,14 @@ if run_button:
                 hovermode='x unified'
             )
             st.plotly_chart(fig_dd, use_container_width=True)
-            
+
             # -------------------------------------------------
             # Picks seleccionados
             # -------------------------------------------------
-            
             if not picks_df.empty:
                 st.subheader("Últimos picks seleccionados")
                 latest_picks = picks_df[picks_df["Date"] == picks_df["Date"].max()]
                 st.dataframe(latest_picks.round(2))
-                
                 # Gráfico de picks por fecha
                 picks_by_date = picks_df.groupby("Date").size()
                 fig_picks = px.bar(
@@ -213,10 +193,9 @@ if run_button:
                     title="Número de Picks por Fecha"
                 )
                 st.plotly_chart(fig_picks, use_container_width=True)
-            
+
     except Exception as e:
         st.error(f"❌ Excepción no capturada: {str(e)}")
         st.exception(e)
-
 else:
     st.info("👈 Configura los parámetros en el panel lateral y haz clic en 'Ejecutar backtest'")
