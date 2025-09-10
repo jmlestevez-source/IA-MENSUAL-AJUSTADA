@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 import time
 import random
 import streamlit as st
-
 # Directorio para caché
 CACHE_DIR = "cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -44,7 +43,7 @@ def get_sp500_tickers_cached():
         try:
             headers = random.choice(headers_list)
             print(f"Intento {attempt + 1} de scraping S&P 500...")
-            response = requests.get(url, headers=headers, timeout=15)
+            response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
             tables = pd.read_html(StringIO(response.text))
             if not tables:
@@ -83,7 +82,7 @@ def get_sp500_tickers_cached():
         except Exception as e:
             print(f"Intento {attempt + 1} falló: {e}")
             if attempt < 2:  # No esperar después del último intento
-                time.sleep(random.uniform(3, 5))
+                time.sleep(random.uniform(2, 4))
             continue
     # Fallback: lista básica de tickers comunes
     print("Usando fallback de tickers S&P 500")
@@ -96,7 +95,7 @@ def get_sp500_tickers_cached():
     }
 
 def get_nasdaq100_tickers_cached():
-    """Obtiene los tickers del Nasdaq-100 con caché"""
+    """Obtiene los tickers del Nasdaq-100 con caché - CORREGIDO"""
     cache_file = os.path.join(CACHE_DIR, "nasdaq100_tickers.pkl")
     # Verificar si existe caché válido (menos de 7 días)
     if os.path.exists(cache_file):
@@ -122,51 +121,73 @@ def get_nasdaq100_tickers_cached():
         }
     ]
     url = "https://en.wikipedia.org/wiki/NASDAQ-100"
-    for attempt in range(3):
+    for attempt in range(5):  # Aumentado a 5 intentos
         try:
             headers = random.choice(headers_list)
             print(f"Intento {attempt + 1} de scraping Nasdaq-100...")
-            response = requests.get(url, headers=headers, timeout=15)
+            response = requests.get(url, headers=headers, timeout=15)  # Aumentado timeout
             response.raise_for_status()
             tables = pd.read_html(StringIO(response.text))
             if not tables:
                 raise ValueError("No se encontraron tablas en la página")
             
-            # Buscar la tabla de constituyentes (tabla con columna "Symbol")
+            # Estrategia mejorada para encontrar la tabla de constituyentes
             df = None
-            for table in tables:
-                if 'Symbol' in table.columns:
+            target_table_index = None
+            
+            # Buscar tabla con columna "Ticker" o "Symbol"
+            for i, table in enumerate(tables):
+                print(f"Revisando tabla {i} con columnas: {list(table.columns)}")
+                # Buscar columnas que contengan "Ticker" o "Symbol"
+                ticker_cols = [col for col in table.columns if 'Ticker' in str(col) or 'Symbol' in str(col)]
+                if ticker_cols:
                     df = table
+                    target_table_index = i
+                    print(f"Encontrada tabla {i} con columna ticker: {ticker_cols[0]}")
                     break
             
-            # Si no encontramos la tabla por columna "Symbol", usar la tercera tabla (índice 2)
+            # Si no encontramos por nombre de columna, usar la tercera tabla (índice 2) que típicamente es la de constituyentes
             if df is None:
                 if len(tables) >= 3:
-                    df = tables[2]  # Tercera tabla es típicamente la de constituyentes
-                    print("Usando tabla 3 (índice 2) como tabla de constituyentes")
+                    df = tables[2]
+                    target_table_index = 2
+                    print("Usando tabla 3 (índice 2) como tabla de constituyentes por defecto")
                 else:
                     raise ValueError("No se encontró tabla de constituyentes")
             
-            # Verificar que la columna "Symbol" exista
-            if 'Symbol' not in df.columns:
-                # Intentar encontrar la columna de tickers
-                ticker_columns = [col for col in df.columns if 'symbol' in col.lower() or 'ticker' in col.lower()]
-                if ticker_columns:
-                    df = df.rename(columns={ticker_columns[0]: 'Symbol'})
-                else:
-                    # Usar la primera columna como fallback
-                    first_col = df.columns[0]
-                    df = df.rename(columns={first_col: 'Symbol'})
-                    print(f"Renombrando columna '{first_col}' a 'Symbol'")
+            # Verificar y renombrar columna de tickers si es necesario
+            ticker_column = None
+            for col in df.columns:
+                if 'Ticker' in str(col) or 'Symbol' in str(col):
+                    ticker_column = col
+                    break
             
-            tickers = df['Symbol'].tolist()
-            # Limpiar tickers
-            tickers = [str(t).strip().upper() for t in tickers if str(t).strip()]
-            tickers = [t for t in tickers if t and t != 'nan' and not t.isdigit()]  # Excluir valores numéricos
+            if ticker_column is None:
+                # Usar la primera columna como fallback
+                ticker_column = df.columns[0]
+                print(f"No se encontró columna de ticker clara, usando la primera columna: '{ticker_column}'")
+            
+            # Extraer tickers
+            tickers = df[ticker_column].tolist()
+            print(f"Tickers brutos extraídos: {tickers[:10]}...")  # Mostrar primeros 10 para debugging
+            
+            # Limpiar tickers con validaciones más estrictas
+            clean_tickers = []
+            for t in tickers:
+                t_str = str(t).strip().upper()
+                # Validar que sea un ticker real (no numérico, no vacío, no NaN)
+                if t_str and t_str != 'NAN' and not t_str.isdigit() and len(t_str) <= 5:
+                    clean_tickers.append(t_str)
+            
+            tickers = list(set(clean_tickers))  # Eliminar duplicados
+            print(f"Tickers limpios: {tickers[:10]}...")  # Mostrar primeros 10 para debugging
+            
             if not tickers:
-                raise ValueError("No se encontraron tickers válidos")
+                raise ValueError("No se encontraron tickers válidos después de limpieza")
+            
             print(f"Obtenidos {len(tickers)} tickers Nasdaq-100")
             print(f"Primeros 10 tickers: {tickers[:10]}")
+            
             # Guardar en caché
             tickers_data = {
                 'tickers': tickers,
@@ -183,12 +204,17 @@ def get_nasdaq100_tickers_cached():
             print(f"Intento {attempt + 1} falló: {e}")
             import traceback
             traceback.print_exc()
-            if attempt < 2:
-                time.sleep(random.uniform(3, 5))
+            if attempt < 4:  # 5 intentos en total
+                time.sleep(random.uniform(3, 6))  # Espera más larga entre intentos
             continue
-    # Fallback
+    
+    # Fallback más completo
     print("Usando fallback de tickers Nasdaq-100")
-    fallback_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'ADBE', 'PEP', 'COST', 'AVGO', 'CMCSA', 'CSCO', 'INTC', 'QCOM']
+    fallback_tickers = [
+        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'ADBE', 'PEP', 'COST', 
+        'AVGO', 'CMCSA', 'CSCO', 'INTC', 'QCOM', 'TXN', 'NFLX', 'PYPL', 'SBUX', 'ADP',
+        'VRTX', 'GILD', 'MDLZ', 'ISRG', 'CSX', 'ATVI', 'TMUS', 'AMD', 'REGN', 'BKNG'
+    ]
     return {
         'tickers': fallback_tickers, 
         'data': [{'Symbol': t} for t in fallback_tickers], 
@@ -235,8 +261,8 @@ def download_prices_with_retry(tickers, start_date, end_date, max_retries=5):
         except Exception as e:
             print(f"Error en intento {attempt + 1}: {e}")
             if "delisted" in str(e).lower() or "timezone" in str(e).lower():
-                print(f"Ticker probablemente delistado: {tickers}")
-                return pd.DataFrame()  # Retornar vacío para tickers delistados
+                print(f"Ticker probablemente delistado, saltando: {tickers}")
+                return pd.DataFrame()
             if attempt == max_retries - 1:
                 return pd.DataFrame()
             continue
@@ -261,10 +287,12 @@ def download_prices(tickers, start_date, end_date):
         else:
             ticker_list = [str(tickers)]
         
-        # Limpiar tickers
+        # Limpiar tickers con validaciones más estrictas
         ticker_list = [str(t).strip().upper() for t in ticker_list if str(t).strip()]
         ticker_list = [t.replace('.', '-') for t in ticker_list]  # Convertir puntos a guiones
-        ticker_list = [t for t in ticker_list if t and t != 'nan' and not t.isdigit()]  # Excluir valores numéricos
+        ticker_list = [t for t in ticker_list if t and t != 'nan' and not t.isdigit() and len(t) <= 5]
+        ticker_list = list(set(ticker_list))  # Eliminar duplicados
+        
         if not ticker_list:
             raise ValueError("No se encontraron tickers válidos")
         print(f"Descargando datos para {len(ticker_list)} tickers...")
