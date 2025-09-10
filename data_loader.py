@@ -116,6 +116,9 @@ def get_nasdaq100_tickers_cached():
         },
         {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        },
+        {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
     ]
     url = "https://en.wikipedia.org/wiki/NASDAQ-100"
@@ -126,49 +129,48 @@ def get_nasdaq100_tickers_cached():
             response = requests.get(url, headers=headers, timeout=15)
             response.raise_for_status()
             tables = pd.read_html(StringIO(response.text))
-            if not tables or len(tables) < 3:
-                raise ValueError("No se encontraron suficientes tablas en la página de Nasdaq-100")
-
-            # Tabla de constituyentes (índice 2 según la estructura de la página)
-            df_constituents = tables[2]
-            print(f"Tabla de constituyentes tiene {len(df_constituents)} filas y columnas: {df_constituents.columns.tolist()}")
-
-            # Tabla de cambios (índice 3, puede estar vacía o no existir)
-            df_changes = None
-            if len(tables) > 3:
-                 df_changes = tables[3]
-                 print(f"Tabla de cambios tiene {len(df_changes)} filas y columnas: {df_changes.columns.tolist()}")
-            else:
-                 print("Tabla de cambios no encontrada o vacía.")
-
-            # Verificar columna de tickers en la tabla de constituyentes
-            ticker_column = None
-            # Buscar columnas comunes para tickers
-            potential_ticker_cols = ['Ticker', 'Symbol', 'Company']
-            for col in potential_ticker_cols:
-                if col in df_constituents.columns:
-                    ticker_column = col
+            if not tables:
+                raise ValueError("No se encontraron tablas en la página")
+            
+            # Buscar la tabla de constituyentes (tabla con columna "Symbol")
+            df = None
+            for table in tables:
+                if 'Symbol' in table.columns:
+                    df = table
                     break
-
-            if ticker_column is None:
-                # Si no se encuentra, usar la primera columna como fallback
-                ticker_column = df_constituents.columns[0]
-                print(f"Columna de ticker no encontrada, usando la primera columna: '{ticker_column}'")
-
-            tickers = df_constituents[ticker_column].tolist()
+            
+            # Si no encontramos la tabla por columna "Symbol", usar la tercera tabla (índice 2)
+            if df is None:
+                if len(tables) >= 3:
+                    df = tables[2]  # Tercera tabla es típicamente la de constituyentes
+                    print("Usando tabla 3 (índice 2) como tabla de constituyentes")
+                else:
+                    raise ValueError("No se encontró tabla de constituyentes")
+            
+            # Verificar que la columna "Symbol" exista
+            if 'Symbol' not in df.columns:
+                # Intentar encontrar la columna de tickers
+                ticker_columns = [col for col in df.columns if 'symbol' in col.lower() or 'ticker' in col.lower()]
+                if ticker_columns:
+                    df = df.rename(columns={ticker_columns[0]: 'Symbol'})
+                else:
+                    # Usar la primera columna como fallback
+                    first_col = df.columns[0]
+                    df = df.rename(columns={first_col: 'Symbol'})
+                    print(f"Renombrando columna '{first_col}' a 'Symbol'")
+            
+            tickers = df['Symbol'].tolist()
             # Limpiar tickers
             tickers = [str(t).strip().upper() for t in tickers if str(t).strip()]
-            tickers = [t for t in tickers if t and t != 'nan']
+            tickers = [t for t in tickers if t and t != 'nan' and not t.isdigit()]  # Excluir valores numéricos
             if not tickers:
-                raise ValueError("No se encontraron tickers válidos en la tabla de constituyentes")
-
+                raise ValueError("No se encontraron tickers válidos")
             print(f"Obtenidos {len(tickers)} tickers Nasdaq-100")
-
+            print(f"Primeros 10 tickers: {tickers[:10]}")
             # Guardar en caché
             tickers_data = {
                 'tickers': tickers,
-                'data': df_constituents.to_dict('records'), # Guardar la tabla de constituyentes
-                'changes_data': df_changes.to_dict('records') if df_changes is not None else [], # Guardar cambios si existen
+                'data': df.to_dict('records'),
                 'timestamp': datetime.now().timestamp(),
                 'date': datetime.now()
             }
@@ -179,16 +181,17 @@ def get_nasdaq100_tickers_cached():
             return tickers_data
         except Exception as e:
             print(f"Intento {attempt + 1} falló: {e}")
+            import traceback
+            traceback.print_exc()
             if attempt < 2:
-                time.sleep(random.uniform(3, 5)) # Espera aumentada entre reintentos
+                time.sleep(random.uniform(3, 5))
             continue
     # Fallback
     print("Usando fallback de tickers Nasdaq-100")
     fallback_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'ADBE', 'PEP', 'COST', 'AVGO', 'CMCSA', 'CSCO', 'INTC', 'QCOM']
     return {
-        'tickers': fallback_tickers,
-        'data': [{'Ticker': t} for t in fallback_tickers],
-        'changes_data': [], # No hay datos de cambios en fallback
+        'tickers': fallback_tickers, 
+        'data': [{'Symbol': t} for t in fallback_tickers], 
         'timestamp': datetime.now().timestamp(),
         'date': datetime.now()
     }
@@ -199,31 +202,30 @@ def get_constituents_at_date(index_name, start_date, end_date):
     """
     if index_name == "SP500":
         tickers_data = get_sp500_tickers_cached()
-    elif index_name == "NDX": # Asegurarse de que el nombre del índice sea consistente
+    elif index_name == "NDX":
         tickers_data = get_nasdaq100_tickers_cached()
     else:
         raise ValueError(f"Índice {index_name} no soportado")
     return tickers_data, None
 
-def download_prices_with_retry(tickers, start_date, end_date, max_retries=4):
+def download_prices_with_retry(tickers, start_date, end_date, max_retries=5):
     """
     Descarga precios con reintentos y manejo de errores mejorado
     """
     for attempt in range(max_retries):
         try:
             if attempt > 0:
-                wait_time = min(5 * (2 ** attempt) + random.uniform(1, 3), 45) # Espera exponencial con máximo
-                print(f"Reintento {attempt} de descarga de precios, esperando {wait_time:.1f}s...")
-                time.sleep(wait_time)
+                print(f"Reintento {attempt} de descarga de precios...")
+                time.sleep(random.uniform(5, 10))
             # Descargar datos con auto_adjust=True y repair=True
             data = yf.download(
-                tickers,
-                start=start_date,
-                end=end_date,
+                tickers, 
+                start=start_date, 
+                end=end_date, 
                 group_by='ticker',
                 progress=False,
                 threads=True,
-                timeout=45, # Timeout aumentado
+                timeout=30,
                 auto_adjust=True,
                 repair=True
             )
@@ -232,15 +234,11 @@ def download_prices_with_retry(tickers, start_date, end_date, max_retries=4):
             return data
         except Exception as e:
             print(f"Error en intento {attempt + 1}: {e}")
-            # Manejo especial para errores de base de datos bloqueada
-            if "database is locked" in str(e):
-                print("Error de base de datos bloqueada, esperando más tiempo...")
-                time.sleep(random.uniform(10, 20))
-            if "Multiple" in str(e) and "NoneType" in str(e): # Error específico de yfinance
-                 print("Error conocido de yfinance, saltando lote.")
-                 return pd.DataFrame() # Devolver DataFrame vacío para saltar
+            if "delisted" in str(e).lower() or "timezone" in str(e).lower():
+                print(f"Ticker probablemente delistado: {tickers}")
+                return pd.DataFrame()  # Retornar vacío para tickers delistados
             if attempt == max_retries - 1:
-                return pd.DataFrame()  # Retornar vacío en lugar de raise, para skip
+                return pd.DataFrame()
             continue
 
 def download_prices(tickers, start_date, end_date):
@@ -262,10 +260,11 @@ def download_prices(tickers, start_date, end_date):
             ticker_list = tickers
         else:
             ticker_list = [str(tickers)]
+        
         # Limpiar tickers
         ticker_list = [str(t).strip().upper() for t in ticker_list if str(t).strip()]
         ticker_list = [t.replace('.', '-') for t in ticker_list]  # Convertir puntos a guiones
-        ticker_list = [t for t in ticker_list if t and t != 'nan']
+        ticker_list = [t for t in ticker_list if t and t != 'nan' and not t.isdigit()]  # Excluir valores numéricos
         if not ticker_list:
             raise ValueError("No se encontraron tickers válidos")
         print(f"Descargando datos para {len(ticker_list)} tickers...")
@@ -276,10 +275,10 @@ def download_prices(tickers, start_date, end_date):
         try:
             test_ticker = ticker_list[0] if ticker_list else 'SPY'
             test_data = yf.download(
-                test_ticker,
-                start=start_date,
-                end=end_date,
-                progress=False,
+                test_ticker, 
+                start=start_date, 
+                end=end_date, 
+                progress=False, 
                 timeout=30,
                 auto_adjust=True,
                 repair=True
@@ -291,29 +290,29 @@ def download_prices(tickers, start_date, end_date):
         except Exception as test_e:
             print(f"❌ Error en prueba con {test_ticker}: {test_e}")
         
-        # Dividir en lotes más grandes para reducir sobrecarga de llamadas
-        batch_size = 20 # Aumentado a 20 para mejor rendimiento
+        # Dividir en lotes más pequeños para evitar errores
+        batch_size = 5
         all_prices = {}
         successful_batches = 0
         failed_batches = 0
-        total_tickers_processed = 0
         
         for i in range(0, len(ticker_list), batch_size):
             batch = ticker_list[i:i + batch_size]
             batch_num = i//batch_size + 1
             total_batches = (len(ticker_list) + batch_size - 1) // batch_size
             print(f"Descargando lote {batch_num}/{total_batches}: {len(batch)} tickers")
+            print(f"Tickers: {batch}")
             
-            if i > 0:
-                # Espera más corta y aleatoria entre lotes
-                wait_time = random.uniform(2, 5)
-                print(f"Esperando {wait_time:.1f} segundos entre lotes...")
-                time.sleep(wait_time)
-
             try:
+                # Esperar entre lotes
+                if i > 0:
+                    wait_time = random.uniform(5, 10)
+                    print(f"Esperando {wait_time:.1f} segundos...")
+                    time.sleep(wait_time)
+                
                 batch_data = download_prices_with_retry(batch, start_date, end_date)
                 if batch_data.empty:
-                    print(f"⚠️ Lote {batch_num} vacío o fallido, skipping...")
+                    print(f"⚠️ Lote {batch_num} vacío, skipping...")
                     failed_batches += 1
                     continue
                 
@@ -323,15 +322,14 @@ def download_prices(tickers, start_date, end_date):
                     ticker = batch[0]
                     # Manejar estructura de DataFrame para un solo ticker
                     if isinstance(batch_data.columns, pd.MultiIndex):
-                        # Estructura MultiIndex (ticker, metric)
                         if ticker in batch_data.columns.levels[0]:
-                             ticker_specific_data = batch_data[ticker]
-                             if 'Adj Close' in ticker_specific_data.columns:
-                                 all_prices[ticker] = ticker_specific_data['Adj Close']
-                                 processed_count += 1
-                             elif 'Close' in ticker_specific_data.columns:
-                                 all_prices[ticker] = ticker_specific_data['Close']
-                                 processed_count += 1
+                            ticker_specific_data = batch_data[ticker]
+                            if 'Adj Close' in ticker_specific_data.columns:
+                                all_prices[ticker] = ticker_specific_data['Adj Close']
+                                processed_count += 1
+                            elif 'Close' in ticker_specific_data.columns:
+                                all_prices[ticker] = ticker_specific_data['Close']
+                                processed_count += 1
                     else:
                         # Estructura plana (metric), típico para un solo ticker
                         if 'Adj Close' in batch_data.columns:
@@ -357,16 +355,16 @@ def download_prices(tickers, start_date, end_date):
                         except Exception as ticker_e:
                             print(f"⚠️  Error procesando {ticker}: {ticker_e}")
                             continue
+                
                 successful_batches += 1
-                total_tickers_processed += processed_count
                 print(f"✅ Lote {batch_num}: {processed_count} tickers procesados")
             except Exception as batch_e:
                 failed_batches += 1
                 print(f"❌ Error en lote {batch_num}: {batch_e}")
                 continue
-
-        print(f"Resumen de descarga: {successful_batches} lotes exitosos, {failed_batches} lotes fallidos")
-        print(f"Total tickers procesados: {total_tickers_processed}")
+        
+        print(f"Resumen: {successful_batches} lotes exitosos, {failed_batches} lotes fallidos")
+        print(f"Total tickers procesados: {len(all_prices)}")
         if not all_prices:
             print("⚠️ No se descargaron datos, usando vacío")
             return pd.DataFrame()
