@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 import time
 import random
 import streamlit as st
-import numpy as np # Añadido para manejo numérico
 
 # Directorio para caché
 CACHE_DIR = "cache"
@@ -38,12 +37,6 @@ def get_sp500_tickers_cached():
         },
         {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        },
-        {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
-        },
-        {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:89.0) Gecko/20100101 Firefox/89.0"
         }
     ]
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
@@ -51,7 +44,7 @@ def get_sp500_tickers_cached():
         try:
             headers = random.choice(headers_list)
             print(f"Intento {attempt + 1} de scraping S&P 500...")
-            response = requests.get(url, headers=headers, timeout=15) # Timeout aumentado
+            response = requests.get(url, headers=headers, timeout=15)
             response.raise_for_status()
             tables = pd.read_html(StringIO(response.text))
             if not tables:
@@ -90,14 +83,14 @@ def get_sp500_tickers_cached():
         except Exception as e:
             print(f"Intento {attempt + 1} falló: {e}")
             if attempt < 2:  # No esperar después del último intento
-                time.sleep(random.uniform(3, 5)) # Espera aumentada entre reintentos
+                time.sleep(random.uniform(3, 5))
             continue
     # Fallback: lista básica de tickers comunes
     print("Usando fallback de tickers S&P 500")
     fallback_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'JPM', 'JNJ', 'V', 'PG', 'MA', 'HD', 'DIS', 'PYPL']
     return {
-        'tickers': fallback_tickers,
-        'data': [{'Symbol': t} for t in fallback_tickers],
+        'tickers': fallback_tickers, 
+        'data': [{'Symbol': t} for t in fallback_tickers], 
         'timestamp': datetime.now().timestamp(),
         'date': datetime.now()
     }
@@ -123,15 +116,6 @@ def get_nasdaq100_tickers_cached():
         },
         {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        },
-        {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        },
-        {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0"
-        },
-        {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:89.0) Gecko/20100101 Firefox/89.0"
         }
     ]
     url = "https://en.wikipedia.org/wiki/NASDAQ-100"
@@ -139,7 +123,7 @@ def get_nasdaq100_tickers_cached():
         try:
             headers = random.choice(headers_list)
             print(f"Intento {attempt + 1} de scraping Nasdaq-100...")
-            response = requests.get(url, headers=headers, timeout=15) # Timeout aumentado
+            response = requests.get(url, headers=headers, timeout=15)
             response.raise_for_status()
             tables = pd.read_html(StringIO(response.text))
             if not tables or len(tables) < 3:
@@ -212,7 +196,6 @@ def get_nasdaq100_tickers_cached():
 def get_constituents_at_date(index_name, start_date, end_date):
     """
     Obtiene los constituyentes de un índice en una fecha dada
-    TODO: Implementar lógica para filtrar por fecha de incorporación usando 'changes_data'
     """
     if index_name == "SP500":
         tickers_data = get_sp500_tickers_cached()
@@ -222,14 +205,14 @@ def get_constituents_at_date(index_name, start_date, end_date):
         raise ValueError(f"Índice {index_name} no soportado")
     return tickers_data, None
 
-def download_prices_with_retry(tickers, start_date, end_date, max_retries=3): # Reducido retries para eficiencia, pero suficiente
+def download_prices_with_retry(tickers, start_date, end_date, max_retries=4):
     """
     Descarga precios con reintentos y manejo de errores mejorado
     """
     for attempt in range(max_retries):
         try:
             if attempt > 0:
-                wait_time = min(5 * (2 ** attempt) + random.uniform(0, 1), 30) # Espera exponencial con máximo
+                wait_time = min(5 * (2 ** attempt) + random.uniform(1, 3), 45) # Espera exponencial con máximo
                 print(f"Reintento {attempt} de descarga de precios, esperando {wait_time:.1f}s...")
                 time.sleep(wait_time)
             # Descargar datos con auto_adjust=True y repair=True
@@ -240,7 +223,7 @@ def download_prices_with_retry(tickers, start_date, end_date, max_retries=3): # 
                 group_by='ticker',
                 progress=False,
                 threads=True,
-                timeout=60, # Timeout aumentado significativamente
+                timeout=45, # Timeout aumentado
                 auto_adjust=True,
                 repair=True
             )
@@ -249,6 +232,10 @@ def download_prices_with_retry(tickers, start_date, end_date, max_retries=3): # 
             return data
         except Exception as e:
             print(f"Error en intento {attempt + 1}: {e}")
+            # Manejo especial para errores de base de datos bloqueada
+            if "database is locked" in str(e):
+                print("Error de base de datos bloqueada, esperando más tiempo...")
+                time.sleep(random.uniform(10, 20))
             if "Multiple" in str(e) and "NoneType" in str(e): # Error específico de yfinance
                  print("Error conocido de yfinance, saltando lote.")
                  return pd.DataFrame() # Devolver DataFrame vacío para saltar
@@ -283,6 +270,7 @@ def download_prices(tickers, start_date, end_date):
             raise ValueError("No se encontraron tickers válidos")
         print(f"Descargando datos para {len(ticker_list)} tickers...")
         print(f"Primeros 10 tickers: {ticker_list[:10]}")
+        
         # Probar primero con un ticker individual para diagnosticar
         print("Probando descarga con ticker de prueba...")
         try:
@@ -302,36 +290,33 @@ def download_prices(tickers, start_date, end_date):
                 print(f"✅ Prueba exitosa con {test_ticker}: {len(test_data)} registros")
         except Exception as test_e:
             print(f"❌ Error en prueba con {test_ticker}: {test_e}")
+        
         # Dividir en lotes más grandes para reducir sobrecarga de llamadas
-        # batch_size = 5 # Original
-        batch_size = 50 # Aumentado significativamente
+        batch_size = 20 # Aumentado a 20 para mejor rendimiento
         all_prices = {}
         successful_batches = 0
         failed_batches = 0
         total_tickers_processed = 0
+        
         for i in range(0, len(ticker_list), batch_size):
             batch = ticker_list[i:i + batch_size]
             batch_num = i//batch_size + 1
             total_batches = (len(ticker_list) + batch_size - 1) // batch_size
             print(f"Descargando lote {batch_num}/{total_batches}: {len(batch)} tickers")
-            # print(f"Tickers: {batch}") # Opcional: comentar para reducir output
-            try:
-                # Esperar entre lotes (reducido y aleatorizado)
-                # if i > 0:
-                #     wait_time = random.uniform(5, 10) # Original
-                #     print(f"Esperando {wait_time:.1f} segundos...")
-                #     time.sleep(wait_time)
-                if i > 0:
-                    # Espera más corta y aleatoria entre lotes
-                    wait_time = random.uniform(1, 3)
-                    print(f"Esperando {wait_time:.1f} segundos entre lotes...")
-                    time.sleep(wait_time)
+            
+            if i > 0:
+                # Espera más corta y aleatoria entre lotes
+                wait_time = random.uniform(2, 5)
+                print(f"Esperando {wait_time:.1f} segundos entre lotes...")
+                time.sleep(wait_time)
 
+            try:
                 batch_data = download_prices_with_retry(batch, start_date, end_date)
                 if batch_data.empty:
                     print(f"⚠️ Lote {batch_num} vacío o fallido, skipping...")
                     failed_batches += 1
                     continue
+                
                 # Procesar datos del lote
                 processed_count = 0
                 if len(batch) == 1:
@@ -359,7 +344,7 @@ def download_prices(tickers, start_date, end_date):
                     # Múltiples tickers
                     for ticker in batch:
                         try:
-                            if ticker in batch_data.columns.levels[0]: # Verificar si el ticker está en los datos
+                            if isinstance(batch_data.columns, pd.MultiIndex) and ticker in batch_data.columns.levels[0]:
                                 ticker_data = batch_data[ticker]
                                 if 'Adj Close' in ticker_data.columns:
                                     all_prices[ticker] = ticker_data['Adj Close']
@@ -378,14 +363,14 @@ def download_prices(tickers, start_date, end_date):
             except Exception as batch_e:
                 failed_batches += 1
                 print(f"❌ Error en lote {batch_num}: {batch_e}")
-                # No continuar con 'continue' implícito, dejar que el loop siga
-                continue # Explícito
+                continue
 
         print(f"Resumen de descarga: {successful_batches} lotes exitosos, {failed_batches} lotes fallidos")
         print(f"Total tickers procesados: {total_tickers_processed}")
         if not all_prices:
             print("⚠️ No se descargaron datos, usando vacío")
-            return pd.DataFrame()  # No raise, para no detener todo
+            return pd.DataFrame()
+        
         # Crear DataFrame final
         prices_df = pd.DataFrame(all_prices)
         # Eliminar columnas con todos NaN
@@ -399,4 +384,4 @@ def download_prices(tickers, start_date, end_date):
         print(f"❌ Error crítico en download_prices: {e}")
         import traceback
         traceback.print_exc()
-        return pd.DataFrame()  # Retornar vacío en lugar de None
+        return pd.DataFrame()
