@@ -8,7 +8,6 @@ import yfinance as yf
 # Importar nuestros módulos
 from data_loader import download_prices, get_constituents_at_date
 from backtest import run_backtest
-# from utils import unify_ticker  # Comentado ya que no se usa
 
 # -------------------------------------------------
 # Configuración de la app
@@ -25,10 +24,10 @@ st.title("📈 Estrategia mensual sobre los componentes del S&P 500 y/o Nasdaq-1
 # -------------------------------------------------
 st.sidebar.header("Parámetros de backtest")
 
-# Selector de índice - Actualizado para incluir "Nasdaq-100"
+# Selector de índice - MODIFICADO para permitir selección múltiple
 index_choice = st.sidebar.selectbox(
     "Selecciona el índice:",
-    ["SP500", "Nasdaq-100"] # Cambiado "NDX" por "Nasdaq-100" para claridad y consistencia
+    ["SP500", "NDX", "Ambos (SP500 + NDX)"] # Opción añadida
 )
 
 # Fechas
@@ -49,47 +48,66 @@ run_button = st.sidebar.button("🏃 Ejecutar backtest")
 if run_button:
     try:
         with st.spinner("Descargando datos..."):
-            # Obtener constituyentes
-            # Ajustar el nombre del índice para que coincida con data_loader
-            index_key = "SP500" if index_choice == "SP500" else "NDX"
-            constituents_data, error = get_constituents_at_date(index_key, start_date, end_date)
-            if error:
-                st.error(f"Error obteniendo constituyentes: {error}")
-                st.stop()
-            if constituents_data is None:
-                st.error("No se pudieron obtener los constituyentes del índice")
-                st.stop()
-            tickers_count = len(constituents_data.get('tickers', []))
-            st.success(f"✅ Obtenidos {tickers_count} constituyentes")
+            # Lógica para obtener tickers de uno o ambos índices
+            all_tickers_data = {'tickers': [], 'data': []}
+            
+            indices_to_fetch = []
+            if index_choice == "SP500":
+                indices_to_fetch = ["SP500"]
+            elif index_choice == "NDX":
+                indices_to_fetch = ["NDX"]
+            else: # "Ambos (SP500 + NDX)"
+                indices_to_fetch = ["SP500", "NDX"]
+            
+            for idx in indices_to_fetch:
+                constituents_data, error = get_constituents_at_date(idx, start_date, end_date)
+                if error:
+                    st.warning(f"Advertencia obteniendo constituyentes de {idx}: {error}")
+                    continue
+                if constituents_data:
+                    # Combinar tickers y datos
+                    all_tickers_data['tickers'].extend(constituents_data.get('tickers', []))
+                    all_tickers_data['data'].extend(constituents_data.get('data', []))
+            
+            # Eliminar duplicados de tickers manteniendo el orden
+            seen = set()
+            unique_tickers = []
+            for ticker in all_tickers_data['tickers']:
+                if ticker not in seen:
+                    unique_tickers.append(ticker)
+                    seen.add(ticker)
+            all_tickers_data['tickers'] = unique_tickers
+            
+            tickers_count = len(all_tickers_data.get('tickers', []))
+            st.success(f"✅ Obtenidos {tickers_count} constituyentes combinados")
             if tickers_count == 0:
                 st.error("No se encontraron tickers válidos")
                 st.stop()
             # Mostrar algunos tickers de ejemplo
-            sample_tickers = constituents_data.get('tickers', [])[:10]
+            sample_tickers = all_tickers_data.get('tickers', [])[:10]
             st.info(f"Tickers de ejemplo: {', '.join(sample_tickers)}")
 
             # Descargar precios de constituyentes
-            prices_df = download_prices(constituents_data, start_date, end_date)
+            prices_df = download_prices(all_tickers_data, start_date, end_date)
             if prices_df.empty:
                 st.error("No se pudieron descargar los precios históricos de los constituyentes")
-                # Mostrar información de debugging
-                if isinstance(constituents_data, dict) and 'tickers' in constituents_data:
-                    tickers_mostrados = constituents_data['tickers'][:10]
-                    st.info(f"Tickers intentados: {', '.join(tickers_mostrados)}...")
                 st.stop()
             st.success(f"✅ Descargados precios para {len(prices_df.columns)} tickers")
 
-            # Descargar benchmark
-            # Corregido el ticker del benchmark para Nasdaq-100
-            benchmark_ticker = "SPY" if index_choice == "SP500" else "QQQ"
+            # Descargar benchmark (SPY para S&P 500, QQQ para Nasdaq-100, SPY para ambos)
+            # Se podría mejorar para usar un benchmark ponderado si se seleccionan ambos
+            if index_choice == "SP500":
+                benchmark_ticker = "SPY"
+            elif index_choice == "NDX":
+                benchmark_ticker = "QQQ"
+            else: # Ambos
+                benchmark_ticker = "SPY" # Por simplicidad, usar SPY. Se podría mejorar.
+            
             st.info(f"Descargando benchmark: {benchmark_ticker}")
-            # Descargar benchmark por separado
             benchmark_df = download_prices([benchmark_ticker], start_date, end_date)
             if benchmark_df.empty:
                 st.warning(f"No se pudo descargar el benchmark {benchmark_ticker}")
-                # Intentar con datos alternativos
                 try:
-                    # Usar el promedio de los constituyentes como benchmark alternativo
                     st.info("Usando promedio de constituyentes como benchmark alternativo")
                     benchmark_series = prices_df.mean(axis=1)
                     benchmark_df = pd.DataFrame({benchmark_ticker: benchmark_series})
@@ -100,7 +118,6 @@ if run_button:
                 st.success(f"✅ Benchmark {benchmark_ticker} descargado correctamente")
 
         with st.spinner("Ejecutando backtest..."):
-            # Ejecutar backtest (usar benchmark_series si df vacío)
             benchmark_series = benchmark_df[benchmark_ticker] if not benchmark_df.empty else pd.Series()
             bt_results, picks_df = run_backtest(
                 prices=prices_df,
@@ -143,19 +160,13 @@ if run_button:
             # Benchmark
             if not benchmark_df.empty:
                 bench_equity = (10000 * (1 + benchmark_df[benchmark_ticker].pct_change(fill_method=None).fillna(0))).cumprod()
-                # Corrección: Alinear correctamente las fechas
-                # Asegurarse de que bench_equity tenga el mismo índice que bt_results
-                bench_equity_aligned = pd.Series(index=bt_results.index, dtype=float)
-                # Copiar los valores existentes
-                for i, date in enumerate(bench_equity.index):
-                    if date in bench_equity_aligned.index:
-                        bench_equity_aligned[date] = bench_equity.iloc[i]
-                
-                # Rellenar valores faltantes con forward fill
-                bench_equity_aligned = bench_equity_aligned.ffill().bfill()
+                # Asegurar alineación de índices
+                min_len = min(len(bench_equity), len(bt_results))
+                bench_equity_aligned = bench_equity.iloc[:min_len]
+                bt_results_aligned = bt_results.iloc[:min_len]
                 
                 fig_equity.add_trace(go.Scatter(
-                    x=bench_equity_aligned.index,
+                    x=bt_results_aligned.index,
                     y=bench_equity_aligned.values,
                     mode='lines',
                     name=f'Benchmark ({benchmark_ticker})',
@@ -194,6 +205,11 @@ if run_button:
                 st.subheader("Últimos picks seleccionados")
                 latest_picks = picks_df[picks_df["Date"] == picks_df["Date"].max()]
                 st.dataframe(latest_picks.round(2))
+                
+                # Mostrar picks de todos los meses
+                st.subheader("Todos los picks por mes")
+                st.dataframe(picks_df.round(2))
+                
                 # Gráfico de picks por fecha
                 picks_by_date = picks_df.groupby("Date").size()
                 fig_picks = px.bar(
