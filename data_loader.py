@@ -284,9 +284,9 @@ def download_prices_with_retry(tickers, start_date, end_date, max_retries=5):
                         break
                     continue
             
-            # Espera fija de 10 segundos entre tickers (excepto el último)
-            if i < len(tickers) - 1:
-                print("  Esperando 10 segundos...")
+            # Espera fija de 10 segundos cada 50 tickers (excepto al final)
+            if (i + 1) % 50 == 0 and i < len(tickers) - 1:
+                print(f"  Esperando 10 segundos después de {i+1} tickers...")
                 time.sleep(10)
     
     else:
@@ -371,7 +371,8 @@ def download_prices(tickers, start_date, end_date):
                 progress=False, 
                 timeout=30,
                 auto_adjust=True,
-                repair=True
+                repair=True,
+                threads=False  # Desactivar threads
             )
             if test_data.empty:
                 print(f"❌ No se pudo descargar {test_ticker}")
@@ -380,81 +381,50 @@ def download_prices(tickers, start_date, end_date):
         except Exception as test_e:
             print(f"❌ Error en prueba con {test_ticker}: {test_e}")
         
-        # Dividir en lotes más pequeños para evitar errores
-        batch_size = 5
+        # Descargar tickers uno a uno con espera cada 50 tickers
         all_prices = {}
-        successful_batches = 0
-        failed_batches = 0
+        successful_tickers = 0
+        failed_tickers = 0
         
-        for i in range(0, len(ticker_list), batch_size):
-            batch = ticker_list[i:i + batch_size]
-            batch_num = i//batch_size + 1
-            total_batches = (len(ticker_list) + batch_size - 1) // batch_size
-            print(f"Descargando lote {batch_num}/{total_batches}: {len(batch)} tickers")
-            print(f"Tickers: {batch}")
+        for i, ticker in enumerate(ticker_list):
+            print(f"Descargando ticker {i+1}/{len(ticker_list)}: {ticker}")
             
             try:
-                # Esperar entre lotes
-                if i > 0:
-                    wait_time = random.uniform(5, 10)
-                    print(f"Esperando {wait_time:.1f} segundos...")
-                    time.sleep(wait_time)
+                # Descargar un solo ticker con reintentos
+                ticker_data = download_prices_with_retry(ticker, start_date, end_date)
                 
-                batch_data = download_prices_with_retry(batch, start_date, end_date)
-                if batch_data.empty:
-                    print(f"⚠️ Lote {batch_num} vacío, skipping...")
-                    failed_batches += 1
+                if ticker_data.empty:
+                    print(f"⚠️  Sin datos para {ticker}, skipping...")
+                    failed_tickers += 1
                     continue
                 
-                # Procesar datos del lote
-                processed_count = 0
-                if len(batch) == 1:
-                    ticker = batch[0]
-                    # Manejar estructura de DataFrame para un solo ticker
-                    if isinstance(batch_data.columns, pd.MultiIndex):
-                        if ticker in batch_data.columns.levels[0]:
-                            ticker_specific_data = batch_data[ticker]
-                            if 'Adj Close' in ticker_specific_data.columns:
-                                all_prices[ticker] = ticker_specific_data['Adj Close']
-                                processed_count += 1
-                            elif 'Close' in ticker_specific_data.columns:
-                                all_prices[ticker] = ticker_specific_data['Close']
-                                processed_count += 1
-                    else:
-                        # Estructura plana (metric), típico para un solo ticker
-                        if 'Adj Close' in batch_data.columns:
-                            all_prices[ticker] = batch_data['Adj Close']
-                            processed_count += 1
-                        elif 'Close' in batch_data.columns:
-                            all_prices[ticker] = batch_data['Close']
-                            processed_count += 1
+                # Extraer precios de cierre ajustado o normal
+                if 'Adj Close' in ticker_data.columns:
+                    all_prices[ticker] = ticker_data['Adj Close']
+                    successful_tickers += 1
+                    print(f"✅ {ticker} procesado correctamente")
+                elif 'Close' in ticker_data.columns:
+                    all_prices[ticker] = ticker_data['Close']
+                    successful_tickers += 1
+                    print(f"✅ {ticker} procesado correctamente (Close)")
                 else:
-                    # Múltiples tickers
-                    for ticker in batch:
-                        try:
-                            if isinstance(batch_data.columns, pd.MultiIndex) and ticker in batch_data.columns.levels[0]:
-                                ticker_data = batch_data[ticker]
-                                if 'Adj Close' in ticker_data.columns:
-                                    all_prices[ticker] = ticker_data['Adj Close']
-                                    processed_count += 1
-                                elif 'Close' in ticker_data.columns:
-                                    all_prices[ticker] = ticker_data['Close']
-                                    processed_count += 1
-                            else:
-                                print(f"⚠️  Ticker {ticker} no encontrado en los datos del lote.")
-                        except Exception as ticker_e:
-                            print(f"⚠️  Error procesando {ticker}: {ticker_e}")
-                            continue
-                
-                successful_batches += 1
-                print(f"✅ Lote {batch_num}: {processed_count} tickers procesados")
-            except Exception as batch_e:
-                failed_batches += 1
-                print(f"❌ Error en lote {batch_num}: {batch_e}")
+                    print(f"⚠️  No se encontraron columnas de precio para {ticker}")
+                    failed_tickers += 1
+                    continue
+                    
+            except Exception as ticker_e:
+                print(f"❌ Error procesando {ticker}: {ticker_e}")
+                failed_tickers += 1
                 continue
+            
+            # Espera fija de 10 segundos cada 50 tickers (excepto al final)
+            if (i + 1) % 50 == 0 and i < len(ticker_list) - 1:
+                print(f"Esperando 10 segundos después de {i+1} tickers...")
+                time.sleep(10)
         
-        print(f"Resumen: {successful_batches} lotes exitosos, {failed_batches} lotes fallidos")
+        print(f"Resumen: {successful_tickers} tickers exitosos, {failed_tickers} tickers fallidos")
         print(f"Total tickers procesados: {len(all_prices)}")
+        
         if not all_prices:
             print("⚠️ No se descargaron datos, usando vacío")
             return pd.DataFrame()
@@ -468,6 +438,7 @@ def download_prices(tickers, start_date, end_date):
             return pd.DataFrame()
         print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
         return prices_df
+        
     except Exception as e:
         print(f"❌ Error crítico en download_prices: {e}")
         import traceback
