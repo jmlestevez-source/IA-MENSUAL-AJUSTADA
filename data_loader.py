@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import time
 import random
 import streamlit as st
+import numpy as np
+
 # Directorio para caché
 CACHE_DIR = "cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
