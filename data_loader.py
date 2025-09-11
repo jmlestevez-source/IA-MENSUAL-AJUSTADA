@@ -284,8 +284,8 @@ def download_prices_with_retry(tickers, start_date, end_date, max_retries=5):
                         break
                     continue
             
-            # Espera fija de 10 segundos cada 50 tickers (excepto al final)
-            if (i + 1) % 50 == 0 and i < len(tickers) - 1:
+            # Espera fija de 10 segundos cada 25 tickers (excepto al final)
+            if (i + 1) % 25 == 0 and i < len(tickers) - 1:
                 print(f"  Esperando 10 segundos después de {i+1} tickers...")
                 time.sleep(10)
     
