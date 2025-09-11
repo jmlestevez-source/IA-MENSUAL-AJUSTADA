@@ -387,14 +387,7 @@ def download_prices(tickers, start_date, end_date):
         successful_tickers = 0
         failed_tickers = 0
         
-        # Continuar desde donde se quedó (opcional - para reinicios)
-        processed_tickers = set(all_prices.keys())
-        
         for i, ticker in enumerate(ticker_list):
-            # Saltar tickers ya procesados (opcional)
-            if ticker in processed_tickers:
-                continue
-                
             print(f"Descargando ticker {i+1}/{len(ticker_list)}: {ticker}")
             
             try:
@@ -405,14 +398,14 @@ def download_prices(tickers, start_date, end_date):
                     try:
                         if attempt > 0:
                             print(f"  Reintento {attempt} para {ticker}...")
-                            time.sleep(random.uniform(3, 6))
+                            time.sleep(random.uniform(2, 5))
                         
                         ticker_data = yf.download(
                             ticker,
                             start=start_date, 
                             end=end_date, 
                             progress=False,
-                            timeout=20,  # Reducido timeout
+                            timeout=20,
                             auto_adjust=True,
                             repair=True,
                             threads=False
@@ -425,70 +418,50 @@ def download_prices(tickers, start_date, end_date):
                             
                     except Exception as e:
                         print(f"  ⚠️  Error en intento {attempt + 1} para {ticker}: {str(e)[:100]}...")
-                        if attempt == max_retries - 1:
-                            raise e
-                        time.sleep(random.uniform(2, 5))
+                        if attempt < max_retries - 1:  # No esperar en el último intento
+                            time.sleep(random.uniform(1, 3))
+                        continue
                 
                 if ticker_data is None or ticker_data.empty:
                     print(f"⚠️  Sin datos para {ticker}, skipping...")
                     failed_tickers += 1
                     continue
                 
-                # Procesar datos para un solo ticker
-                if isinstance(ticker_data.columns, pd.MultiIndex):
-                    # Caso MultiIndex
-                    if ticker in ticker_data.columns.levels[0]:
-                        ticker_specific_data = ticker_data[ticker]
-                        if 'Adj Close' in ticker_specific_data.columns:
-                            all_prices[ticker] = ticker_specific_data['Adj Close']
-                            successful_tickers += 1
-                            print(f"✅ {ticker} procesado correctamente (MultiIndex)")
-                        elif 'Close' in ticker_specific_data.columns:
-                            all_prices[ticker] = ticker_specific_data['Close']
-                            successful_tickers += 1
-                            print(f"✅ {ticker} procesado correctamente (Close - MultiIndex)")
-                        else:
-                            # Usar primera columna numérica
-                            numeric_cols = ticker_specific_data.select_dtypes(include=[np.number]).columns
-                            if len(numeric_cols) > 0:
-                                all_prices[ticker] = ticker_specific_data[numeric_cols[0]]
-                                successful_tickers += 1
-                                print(f"✅ {ticker} procesado con columna {numeric_cols[0]}")
-                            else:
-                                print(f"⚠️  No se encontraron columnas numéricas para {ticker}")
-                                failed_tickers += 1
-                    else:
-                        print(f"⚠️  Ticker {ticker} no encontrado en MultiIndex")
-                        failed_tickers += 1
+                # Procesar datos para un solo ticker (estructura más flexible)
+                close_price = None
+                
+                # Método 1: Buscar 'Adj Close' o 'Close' directamente
+                if 'Adj Close' in ticker_data.columns:
+                    close_price = ticker_data['Adj Close']
+                    print(f"✅ {ticker} procesado con Adj Close")
+                elif 'Close' in ticker_data.columns:
+                    close_price = ticker_data['Close']
+                    print(f"✅ {ticker} procesado con Close")
                 else:
-                    # Estructura plana
-                    if 'Adj Close' in ticker_data.columns:
-                        all_prices[ticker] = ticker_data['Adj Close']
-                        successful_tickers += 1
-                        print(f"✅ {ticker} procesado correctamente")
-                    elif 'Close' in ticker_data.columns:
-                        all_prices[ticker] = ticker_data['Close']
-                        successful_tickers += 1
-                        print(f"✅ {ticker} procesado correctamente (Close)")
+                    # Método 2: Buscar columnas que contengan 'Close' o 'close'
+                    close_columns = [col for col in ticker_data.columns if 'close' in col.lower()]
+                    if close_columns:
+                        close_price = ticker_data[close_columns[0]]
+                        print(f"✅ {ticker} procesado con {close_columns[0]}")
                     else:
-                        # Usar primera columna numérica
+                        # Método 3: Usar primera columna numérica
                         numeric_cols = ticker_data.select_dtypes(include=[np.number]).columns
                         if len(numeric_cols) > 0:
-                            all_prices[ticker] = ticker_data[numeric_cols[0]]
-                            successful_tickers += 1
-                            print(f"✅ {ticker} procesado con columna {numeric_cols[0]}")
+                            close_price = ticker_data[numeric_cols[0]]
+                            print(f"✅ {ticker} procesado con {numeric_cols[0]}")
                         else:
-                            print(f"⚠️  Columnas disponibles para {ticker}: {list(ticker_data.columns)}")
-                            print(f"⚠️  No se encontraron columnas numéricas para {ticker}")
+                            print(f"⚠️  No se encontraron columnas válidas para {ticker}")
+                            print(f"    Columnas disponibles: {list(ticker_data.columns)}")
                             failed_tickers += 1
+                            continue
+                
+                if close_price is not None:
+                    all_prices[ticker] = close_price
+                    successful_tickers += 1
                     
-            except KeyboardInterrupt:
-                print(f"\n⚠️  Proceso interrumpido por usuario en ticker {ticker}")
-                break
             except Exception as ticker_e:
                 print(f"❌ Error procesando {ticker}: {str(ticker_e)[:100]}...")
                 failed_tickers += 1
-                # Continuar con el siguiente ticker en lugar de detener todo
                 continue
             
             # Espera fija de 10 segundos cada 50 tickers (excepto al final)
@@ -499,22 +472,39 @@ def download_prices(tickers, start_date, end_date):
         print(f"Resumen: {successful_tickers} tickers exitosos, {failed_tickers} tickers fallidos")
         print(f"Total tickers procesados: {len(all_prices)}")
         
+        # Diagnóstico adicional
+        if len(all_prices) > 0:
+            print(f"Muestra de tickers exitosos: {list(all_prices.keys())[:5]}")
+        
         if not all_prices:
-            print("⚠️ No se descargaron datos, usando vacío")
+            print("⚠️ No se descargaron datos de ningún ticker")
             return pd.DataFrame()
         
         # Crear DataFrame final
         try:
             prices_df = pd.DataFrame(all_prices)
+            print(f"DataFrame creado con shape: {prices_df.shape}")
+            
             # Eliminar columnas con todos NaN
             prices_df = prices_df.dropna(axis=1, how='all')
+            print(f"Después de limpieza NaN: {prices_df.shape}")
+            
             if prices_df.empty:
                 print("⚠️ DataFrame vacío después de limpieza")
                 return pd.DataFrame()
+                
+            # Eliminar filas con todos NaN
+            prices_df = prices_df.dropna(axis=0, how='all')
+            print(f"Después de limpieza filas NaN: {prices_df.shape}")
+            
             print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
+            print(f"Rango de fechas: {prices_df.index.min()} a {prices_df.index.max()}")
             return prices_df
+            
         except Exception as df_e:
             print(f"❌ Error creando DataFrame final: {df_e}")
+            import traceback
+            traceback.print_exc()
             return pd.DataFrame()
         
     except Exception as e:
