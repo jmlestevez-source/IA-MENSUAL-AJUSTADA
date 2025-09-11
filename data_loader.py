@@ -324,6 +324,7 @@ def download_prices_with_retry(tickers, start_date, end_date, max_retries=5):
     
     # Combinar todos los datos en un DataFrame
     if all_data:
+        # Para datos individuales, mantener la estructura original
         combined_data = pd.concat(all_data, axis=1)
         return combined_data
     else:
@@ -398,22 +399,47 @@ def download_prices(tickers, start_date, end_date):
                     failed_tickers += 1
                     continue
                 
-                # Extraer precios de cierre ajustado o normal
-                if 'Adj Close' in ticker_data.columns:
-                    all_prices[ticker] = ticker_data['Adj Close']
-                    successful_tickers += 1
-                    print(f"✅ {ticker} procesado correctamente")
-                elif 'Close' in ticker_data.columns:
-                    all_prices[ticker] = ticker_data['Close']
-                    successful_tickers += 1
-                    print(f"✅ {ticker} procesado correctamente (Close)")
+                # Procesar datos para un solo ticker (estructura plana)
+                # Cuando es un solo ticker, yfinance devuelve columnas directas
+                if isinstance(ticker_data.columns, pd.MultiIndex):
+                    # Caso poco común, pero por si acaso
+                    if ticker in ticker_data.columns.levels[0]:
+                        ticker_specific_data = ticker_data[ticker]
+                        if 'Adj Close' in ticker_specific_data.columns:
+                            all_prices[ticker] = ticker_specific_data['Adj Close']
+                            successful_tickers += 1
+                            print(f"✅ {ticker} procesado correctamente (MultiIndex)")
+                        elif 'Close' in ticker_specific_data.columns:
+                            all_prices[ticker] = ticker_specific_data['Close']
+                            successful_tickers += 1
+                            print(f"✅ {ticker} procesado correctamente (Close - MultiIndex)")
                 else:
-                    print(f"⚠️  No se encontraron columnas de precio para {ticker}")
-                    failed_tickers += 1
-                    continue
+                    # Estructura plana típica para un solo ticker
+                    if 'Adj Close' in ticker_data.columns:
+                        all_prices[ticker] = ticker_data['Adj Close']
+                        successful_tickers += 1
+                        print(f"✅ {ticker} procesado correctamente")
+                    elif 'Close' in ticker_data.columns:
+                        all_prices[ticker] = ticker_data['Close']
+                        successful_tickers += 1
+                        print(f"✅ {ticker} procesado correctamente (Close)")
+                    else:
+                        print(f"⚠️  Columnas disponibles para {ticker}: {list(ticker_data.columns)}")
+                        # Si no hay Adj Close ni Close, usar la primera columna numérica
+                        numeric_cols = ticker_data.select_dtypes(include=[np.number]).columns
+                        if len(numeric_cols) > 0:
+                            all_prices[ticker] = ticker_data[numeric_cols[0]]
+                            successful_tickers += 1
+                            print(f"✅ {ticker} procesado con columna {numeric_cols[0]}")
+                        else:
+                            print(f"⚠️  No se encontraron columnas numéricas para {ticker}")
+                            failed_tickers += 1
+                            continue
                     
             except Exception as ticker_e:
                 print(f"❌ Error procesando {ticker}: {ticker_e}")
+                import traceback
+                traceback.print_exc()
                 failed_tickers += 1
                 continue
             
