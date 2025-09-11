@@ -332,280 +332,93 @@ def download_prices_with_retry(tickers, start_date, end_date, max_retries=5):
     else:
         return pd.DataFrame()
 
+# data_loader.py
+import pandas as pd
+import yfinance as yf
+import numpy as np
+import time, random, datetime as dt
+
 def download_prices(tickers, start_date, end_date):
     """
-    Descarga precios históricos para una lista de tickers con logging detallado
+    Descarga historiales para S&P-500 / Nasdaq-100
+    100 % en modo "1-ticker-a-la-vez" para evitar el cuelgue masivo.
     """
-    try:
-        # Extraer tickers del DataFrame o lista
-        if isinstance(tickers, dict) and 'tickers' in tickers:
-            ticker_list = tickers['tickers']
-        elif isinstance(tickers, pd.DataFrame):
-            if 'Symbol' in tickers.columns:
-                ticker_list = tickers['Symbol'].tolist()
-            elif 'Ticker' in tickers.columns:
-                ticker_list = tickers['Ticker'].tolist()
-            else:
-                ticker_list = tickers.iloc[:, 0].tolist()
-        elif isinstance(tickers, list):
-            ticker_list = tickers
-        else:
-            ticker_list = [str(tickers)]
-        
-        # Limpiar tickers con validaciones más estrictas
-        ticker_list = [str(t).strip().upper() for t in ticker_list if str(t).strip()]
-        ticker_list = [t.replace('.', '-') for t in ticker_list]  # Convertir puntos a guiones
-        ticker_list = [t for t in ticker_list if t and t != 'nan' and not t.isdigit() and len(t) <= 5]
-        ticker_list = list(set(ticker_list))  # Eliminar duplicados
-        
-        if not ticker_list:
-            raise ValueError("No se encontraron tickers válidos")
-        print(f"Descargando datos para {len(ticker_list)} tickers...")
-        print(f"Primeros 10 tickers: {ticker_list[:10]}")
-        
-        # Probar primero con un ticker individual para diagnosticar
-        print("Probando descarga con ticker de prueba...")
-        try:
-            test_ticker = ticker_list[0] if ticker_list else 'SPY'
-            test_data = yf.download(
-                test_ticker, 
-                start=start_date, 
-                end=end_date, 
-                progress=False, 
-                timeout=30,
-                auto_adjust=True,
-                repair=True,
-                threads=False  # Desactivar threads
-            )
-            if test_data.empty:
-                print(f"❌ No se pudo descargar {test_ticker}")
-            else:
-                print(f"✅ Prueba exitosa con {test_ticker}: {len(test_data)} registros")
-        except Exception as test_e:
-            print(f"❌ Error en prueba con {test_ticker}: {test_e}")
-        
-        # Descargar tickers uno a uno con espera cada 50 tickers
-        all_prices = {}
-        successful_tickers = 0
-        failed_tickers = 0
-        
-        for i, ticker in enumerate(ticker_list):
-            print(f"Descargando ticker {i+1}/{len(ticker_list)}: {ticker}")
-            
-            try:
-                # Descargar un solo ticker con reintentos
-                ticker_data = None
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        if attempt > 0:
-                            print(f"  Reintento {attempt} para {ticker}...")
-                            time.sleep(random.uniform(2, 5))
-                        
-                        ticker_data = yf.download(
-                            ticker,
-                            start=start_date, 
-                            end=end_date, 
-                            progress=False,
-                            timeout=20,
-                            auto_adjust=True,
-                            repair=True,
-                            threads=False
-                        )
-                        
-                        if not ticker_data.empty:
-                            break
-                        else:
-                            print(f"  ⚠️  Datos vacíos para {ticker} en intento {attempt + 1}")
-                            
-                    except Exception as e:
-                        print(f"  ⚠️  Error en intento {attempt + 1} para {ticker}: {str(e)[:100]}...")
-                        if attempt < max_retries - 1:  # No esperar en el último intento
-                            time.sleep(random.uniform(1, 3))
-                        continue
-                
-                if ticker_data is None or ticker_data.empty:
-                    print(f"⚠️  Sin datos para {ticker}, skipping...")
-                    failed_tickers += 1
-                    continue
-                
-                # Procesar datos para un solo ticker (estructura más flexible)
-                close_price = None
-                
-                # Método 1: Buscar 'Adj Close' o 'Close' directamente
-                if 'Adj Close' in ticker_data.columns:
-                    close_price = ticker_data['Adj Close']
-                    print(f"✅ {ticker} procesado con Adj Close")
-                elif 'Close' in ticker_data.columns:
-                    close_price = ticker_data['Close']
-                    print(f"✅ {ticker} procesado con Close")
-                else:
-                    # Método 2: Buscar columnas que contengan 'Close' o 'close'
-                    close_columns = [col for col in ticker_data.columns if 'close' in col.lower()]
-                    if close_columns:
-                        close_price = ticker_data[close_columns[0]]
-                        print(f"✅ {ticker} procesado con {close_columns[0]}")
-                    else:
-                        # Método 3: Usar primera columna numérica
-                        numeric_cols = ticker_data.select_dtypes(include=[np.number]).columns
-                        if len(numeric_cols) > 0:
-                            close_price = ticker_data[numeric_cols[0]]
-                            print(f"✅ {ticker} procesado con {numeric_cols[0]}")
-                        else:
-                            print(f"⚠️  No se encontraron columnas válidas para {ticker}")
-                            print(f"    Columnas disponibles: {list(ticker_data.columns)}")
-                            failed_tickers += 1
-                            continue
-                
-                # Validación y corrección de close_price
-                if close_price is not None:
-                    # Manejar arrays 2D (el problema identificado)
-                    if hasattr(close_price, 'shape') and len(close_price.shape) > 1:
-                        print(f"⚠️  {ticker} tiene datos 2D shape {close_price.shape}, convirtiendo a 1D")
-                        try:
-                            # Convertir array 2D a 1D de manera segura
-                            if hasattr(close_price, 'iloc'):
-                                # Es un DataFrame o Series con iloc
-                                close_price = close_price.iloc[:, 0]
-                            elif hasattr(close_price, 'flatten'):
-                                # Es un numpy array
-                                close_price = close_price.flatten()
-                                # Crear Series con el índice original
-                                if len(ticker_data.index) > 0:
-                                    close_price = pd.Series(close_price[:len(ticker_data.index)], index=ticker_data.index[:len(close_price)])
-                            else:
-                                # Intentar convertir a numpy array y luego a 1D
-                                close_price = np.asarray(close_price)
-                                if len(close_price.shape) > 1:
-                                    close_price = close_price.squeeze()  # Eliminar dimensiones de tamaño 1
-                                # Crear Series con el índice original
-                                if len(ticker_data.index) > 0 and len(close_price) > 0:
-                                    close_price = pd.Series(close_price[:len(ticker_data.index)], index=ticker_data.index[:len(close_price)])
-                        except Exception as conv_error:
-                            print(f"⚠️  Error convirtiendo {ticker} a 1D: {conv_error}")
-                            failed_tickers += 1
-                            continue
-                    
-                    # Convertir a Series si no lo es
-                    if not isinstance(close_price, pd.Series):
-                        try:
-                            if hasattr(close_price, '__len__') and len(close_price) > 1:
-                                # Es un array o similar
-                                if len(ticker_data.index) > 0:
-                                    close_price = pd.Series(close_price, index=ticker_data.index[:len(close_price)])
-                                else:
-                                    close_price = pd.Series(close_price)
-                            elif np.isscalar(close_price) or isinstance(close_price, (int, float)):
-                                # Es un valor escalar
-                                if len(ticker_data.index) > 0:
-                                    close_price = pd.Series([float(close_price)], index=[ticker_data.index[0]])
-                                else:
-                                    close_price = pd.Series([float(close_price)], index=[pd.Timestamp.now()])
-                        except Exception as conv_error:
-                            print(f"⚠️  Error convirtiendo {ticker} a Series: {conv_error}")
-                            failed_tickers += 1
-                            continue
-                    
-                    # Validar que la Series tenga índice y datos válidos
-                    if isinstance(close_price, pd.Series):
-                        # Eliminar NaN y valores infinitos
-                        close_price = close_price.replace([np.inf, -np.inf], np.nan).dropna()
-                        
-                        if len(close_price) > 0:
-                            # Asegurar que el índice sea datetime
-                            if not isinstance(close_price.index, pd.DatetimeIndex):
-                                try:
-                                    close_price.index = pd.to_datetime(close_price.index)
-                                except Exception as idx_error:
-                                    print(f"⚠️  Índice inválido para {ticker}: {idx_error}")
-                                    failed_tickers += 1
-                                    continue
-                            
-                            all_prices[ticker] = close_price
-                            successful_tickers += 1
-                        else:
-                            print(f"⚠️  {ticker} tiene datos vacíos después de limpieza")
-                            failed_tickers += 1
-                    else:
-                        print(f"⚠️  {ticker} no se pudo convertir a Series válida")
-                        failed_tickers += 1
-                    
-            except Exception as ticker_e:
-                print(f"❌ Error procesando {ticker}: {str(ticker_e)[:100]}...")
-                failed_tickers += 1
-                continue
-            
-            # Espera fija de 10 segundos cada 50 tickers (excepto al final)
-            if (i + 1) % 50 == 0 and i < len(ticker_list) - 1:
-                print(f"Esperando 10 segundos después de {i+1} tickers...")
-                time.sleep(10)
-        
-        print(f"Resumen: {successful_tickers} tickers exitosos, {failed_tickers} tickers fallidos")
-        print(f"Total tickers procesados: {len(all_prices)}")
-        
-        # Diagnóstico adicional
-        if len(all_prices) > 0:
-            sample_tickers = list(all_prices.keys())[:5]
-            print(f"Muestra de tickers exitosos: {sample_tickers}")
-        
-        if not all_prices:
-            print("⚠️ No se descargaron datos de ningún ticker")
-            return pd.DataFrame()
-        
-        # Crear DataFrame final con manejo de errores mejorado
-        try:
-            if len(all_prices) == 0:
-                return pd.DataFrame()
-            
-            # Verificar que todos los valores sean Series con índices válidos
-            valid_prices = {}
-            for ticker, series in all_prices.items():
-                try:
-                    if isinstance(series, pd.Series) and len(series) > 0:
-                        # Verificar que el índice sea válido
-                        if series.index is not None and len(series.index) > 0:
-                            valid_prices[ticker] = series
-                        else:
-                            print(f"⚠️  {ticker} tiene Series con índice inválido")
-                    else:
-                        print(f"⚠️  {ticker} no es una Series válida")
-                except Exception as validation_error:
-                    print(f"⚠️  Error validando {ticker}: {validation_error}")
-            
-            if len(valid_prices) == 0:
-                print("⚠️ No hay series válidas para crear DataFrame")
-                return pd.DataFrame()
-            
-            # Crear DataFrame con alineación automática de fechas
-            print("Creando DataFrame final...")
-            prices_df = pd.DataFrame(valid_prices)
-            print(f"DataFrame creado con shape: {prices_df.shape}")
-            
-            # Eliminar columnas con todos NaN
-            prices_df = prices_df.dropna(axis=1, how='all')
-            print(f"Después de limpieza NaN (columnas): {prices_df.shape}")
-            
-            if prices_df.empty:
-                print("⚠️ DataFrame vacío después de limpieza")
-                return pd.DataFrame()
-                
-            # Eliminar filas con todos NaN
-            prices_df = prices_df.dropna(axis=0, how='all')
-            print(f"Después de limpieza NaN (filas): {prices_df.shape}")
-            
-            print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
-            if len(prices_df.index) > 0:
-                print(f"Rango de fechas: {prices_df.index.min()} a {prices_df.index.max()}")
-            return prices_df
-            
-        except Exception as df_e:
-            print(f"❌ Error creando DataFrame final: {df_e}")
-            import traceback
-            traceback.print_exc()
-            return pd.DataFrame()
-        
-    except Exception as e:
-        print(f"❌ Error crítico en download_prices: {e}")
-        import traceback
-        traceback.print_exc()
+    # ---------- 1. normalizar entrada ----------
+    if isinstance(tickers, dict) and 'tickers' in tickers:
+        ticker_list = tickers['tickers']
+    elif isinstance(tickers, pd.DataFrame):
+        col = 'Symbol' if 'Symbol' in tickers.columns else tickers.columns[0]
+        ticker_list = tickers[col].tolist()
+    elif isinstance(tickers, str):
+        ticker_list = [tickers]
+    else:
+        ticker_list = list(tickers)
+
+    ticker_list = [str(t).strip().upper().replace('.', '-') for t in ticker_list]
+    ticker_list = [t for t in ticker_list if t and not t.isdigit() and len(t) <= 6]
+    ticker_list = list(dict.fromkeys(ticker_list))          # orden + únicos
+    if not ticker_list:
         return pd.DataFrame()
+
+    print(f"Descargando {len(ticker_list)} tickers (modo 1×1)…")
+
+    # ---------- 2. bucle 1×1 ----------
+    prices = {}
+    for i, tk in enumerate(ticker_list, 1):
+        print(f"  {i:3d}/{len(ticker_list)}  {tk}")
+        for attempt in range(1, 4):                         # 3 intentos
+            try:
+                df0 = yf.download(
+                    tk,
+                    start=start_date,
+                    end=end_date,
+                    progress=False,
+                    threads=False,          # ➕ clave
+                    timeout=30,
+                    auto_adjust=True,
+                    repair=True,
+                    interval="1d"
+                )
+                if df0.empty:
+                    raise ValueError("vacío")
+
+                # ---------- 3. forzar 1-D ----------
+                # prioridad: Adj Close → Close → 1ª numérica
+                for col in ("Adj Close", "Close"):
+                    if col in df0.columns:
+                        sr = df0[col].copy()
+                        break
+                else:
+                    sr = df0.select_dtypes(np.number).iloc[:, 0].copy()
+
+                sr = pd.Series(sr.squeeze(), name=tk)        # ➕ squeeze + Series
+                sr.index = pd.to_datetime(sr.index)
+                sr = sr.dropna()
+                sr = sr[~sr.index.duplicated()]              # índice único
+
+                if sr.empty:
+                    raise ValueError("serie vacía")
+
+                prices[tk] = sr
+                break                                      # éxito → siguiente ticker
+
+            except Exception as e:
+                print(f"    └─ intento {attempt}: {e}")   # log breve
+                time.sleep(random.uniform(2, 6))
+        else:
+            print(f"    └─ ❌  {tk}  – descartado")        # agotados intentos
+            continue
+
+        # ---------- 4. pausa cada 50 ----------
+        if i % 50 == 0 and i < len(ticker_list):
+            print("⏱  pausa 10 s …")
+            time.sleep(10)
+
+    # ---------- 5. armar DataFrame ----------
+    if not prices:
+        return pd.DataFrame()
+
+    master = pd.DataFrame(prices)
+    master = master.dropna(how='all').dropna(axis=1, how='all')
+    print(f"✅  DataFrame final  {master.shape}")
+    return master
