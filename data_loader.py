@@ -462,41 +462,56 @@ def download_prices(tickers, start_date, end_date):
                     # Manejar arrays 2D (el problema identificado)
                     if hasattr(close_price, 'shape') and len(close_price.shape) > 1:
                         print(f"⚠️  {ticker} tiene datos 2D shape {close_price.shape}, convirtiendo a 1D")
-                        # Convertir array 2D a 1D
-                        if close_price.shape[1] == 1:
-                            close_price = close_price.iloc[:, 0] if hasattr(close_price, 'iloc') else close_price[:, 0]
-                        else:
-                            # Tomar la primera columna
-                            close_price = close_price.iloc[:, 0] if hasattr(close_price, 'iloc') else close_price[:, 0]
+                        try:
+                            # Convertir array 2D a 1D de manera segura
+                            if hasattr(close_price, 'iloc'):
+                                # Es un DataFrame o Series con iloc
+                                close_price = close_price.iloc[:, 0]
+                            elif hasattr(close_price, 'flatten'):
+                                # Es un numpy array
+                                close_price = close_price.flatten()
+                                # Crear Series con el índice original
+                                if len(ticker_data.index) > 0:
+                                    close_price = pd.Series(close_price[:len(ticker_data.index)], index=ticker_data.index[:len(close_price)])
+                            else:
+                                # Intentar convertir a numpy array y luego a 1D
+                                close_price = np.asarray(close_price)
+                                if len(close_price.shape) > 1:
+                                    close_price = close_price.squeeze()  # Eliminar dimensiones de tamaño 1
+                                # Crear Series con el índice original
+                                if len(ticker_data.index) > 0 and len(close_price) > 0:
+                                    close_price = pd.Series(close_price[:len(ticker_data.index)], index=ticker_data.index[:len(close_price)])
+                        except Exception as conv_error:
+                            print(f"⚠️  Error convirtiendo {ticker} a 1D: {conv_error}")
+                            failed_tickers += 1
+                            continue
                     
                     # Convertir a Series si no lo es
                     if not isinstance(close_price, pd.Series):
-                        if hasattr(close_price, '__len__') and len(close_price) > 1:
-                            # Es un array o similar
-                            close_price = pd.Series(close_price, index=ticker_data.index)
-                        elif np.isscalar(close_price) or isinstance(close_price, (int, float)):
-                            # Es un valor escalar
-                            if len(ticker_data.index) > 0:
-                                close_price = pd.Series([float(close_price)], index=[ticker_data.index[0]])
-                            else:
-                                close_price = pd.Series([float(close_price)], index=[pd.Timestamp.now()])
-                        else:
-                            # Intentar convertir a Series
-                            try:
-                                close_price = pd.Series(close_price)
-                                if close_price.index.empty and len(ticker_data.index) > 0:
-                                    close_price.index = ticker_data.index[:len(close_price)]
-                            except Exception as conv_error:
-                                print(f"⚠️  No se pudo convertir {ticker} a Series válida: {conv_error}")
-                                failed_tickers += 1
-                                continue
+                        try:
+                            if hasattr(close_price, '__len__') and len(close_price) > 1:
+                                # Es un array o similar
+                                if len(ticker_data.index) > 0:
+                                    close_price = pd.Series(close_price, index=ticker_data.index[:len(close_price)])
+                                else:
+                                    close_price = pd.Series(close_price)
+                            elif np.isscalar(close_price) or isinstance(close_price, (int, float)):
+                                # Es un valor escalar
+                                if len(ticker_data.index) > 0:
+                                    close_price = pd.Series([float(close_price)], index=[ticker_data.index[0]])
+                                else:
+                                    close_price = pd.Series([float(close_price)], index=[pd.Timestamp.now()])
+                        except Exception as conv_error:
+                            print(f"⚠️  Error convirtiendo {ticker} a Series: {conv_error}")
+                            failed_tickers += 1
+                            continue
                     
                     # Validar que la Series tenga índice y datos válidos
                     if isinstance(close_price, pd.Series):
                         # Eliminar NaN y valores infinitos
                         close_price = close_price.replace([np.inf, -np.inf], np.nan).dropna()
                         
-                        if len(close_price) > 0 and not close_price.index.empty:
+                        if len(close_price) > 0:
                             # Asegurar que el índice sea datetime
                             if not isinstance(close_price.index, pd.DatetimeIndex):
                                 try:
@@ -545,25 +560,30 @@ def download_prices(tickers, start_date, end_date):
             # Verificar que todos los valores sean Series con índices válidos
             valid_prices = {}
             for ticker, series in all_prices.items():
-                if isinstance(series, pd.Series) and len(series) > 0:
-                    if not series.index.empty:
-                        valid_prices[ticker] = series
+                try:
+                    if isinstance(series, pd.Series) and len(series) > 0:
+                        # Verificar que el índice sea válido
+                        if series.index is not None and len(series.index) > 0:
+                            valid_prices[ticker] = series
+                        else:
+                            print(f"⚠️  {ticker} tiene Series con índice inválido")
                     else:
-                        print(f"⚠️  {ticker} tiene Series sin índice, omitiendo")
-                else:
-                    print(f"⚠️  {ticker} no es una Series válida, omitiendo")
+                        print(f"⚠️  {ticker} no es una Series válida")
+                except Exception as validation_error:
+                    print(f"⚠️  Error validando {ticker}: {validation_error}")
             
             if len(valid_prices) == 0:
                 print("⚠️ No hay series válidas para crear DataFrame")
                 return pd.DataFrame()
             
             # Crear DataFrame con alineación automática de fechas
+            print("Creando DataFrame final...")
             prices_df = pd.DataFrame(valid_prices)
             print(f"DataFrame creado con shape: {prices_df.shape}")
             
             # Eliminar columnas con todos NaN
             prices_df = prices_df.dropna(axis=1, how='all')
-            print(f"Después de limpieza NaN: {prices_df.shape}")
+            print(f"Después de limpieza NaN (columnas): {prices_df.shape}")
             
             if prices_df.empty:
                 print("⚠️ DataFrame vacío después de limpieza")
@@ -571,7 +591,7 @@ def download_prices(tickers, start_date, end_date):
                 
             # Eliminar filas con todos NaN
             prices_df = prices_df.dropna(axis=0, how='all')
-            print(f"Después de limpieza filas NaN: {prices_df.shape}")
+            print(f"Después de limpieza NaN (filas): {prices_df.shape}")
             
             print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
             if len(prices_df.index) > 0:
