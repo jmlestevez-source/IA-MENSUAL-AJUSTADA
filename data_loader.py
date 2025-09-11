@@ -237,35 +237,97 @@ def get_constituents_at_date(index_name, start_date, end_date):
 def download_prices_with_retry(tickers, start_date, end_date, max_retries=5):
     """
     Descarga precios con reintentos y manejo de errores mejorado
+    Descarga un ticker a la vez para mayor estabilidad
     """
-    for attempt in range(max_retries):
-        try:
-            if attempt > 0:
-                print(f"Reintento {attempt} de descarga de precios...")
-                time.sleep(random.uniform(5, 10))
-            # Descargar datos con auto_adjust=True y repair=True
-            data = yf.download(
-                tickers, 
-                start=start_date, 
-                end=end_date, 
-                group_by='ticker',
-                progress=False,
-                threads=True,
-                timeout=30,
-                auto_adjust=True,
-                repair=True
-            )
-            if data.empty:
-                raise ValueError("No se recibieron datos")
-            return data
-        except Exception as e:
-            print(f"Error en intento {attempt + 1}: {e}")
-            if "delisted" in str(e).lower() or "timezone" in str(e).lower():
-                print(f"Ticker probablemente delistado, saltando: {tickers}")
-                return pd.DataFrame()
-            if attempt == max_retries - 1:
-                return pd.DataFrame()
-            continue
+    all_data = {}
+    
+    # Si tickers es una lista, procesar uno a uno
+    if isinstance(tickers, list):
+        for i, ticker in enumerate(tickers):
+            print(f"Descargando {ticker} ({i+1}/{len(tickers)})...")
+            
+            ticker_data = None
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        print(f"  Reintento {attempt} para {ticker}...")
+                        time.sleep(random.uniform(5, 10))
+                    
+                    # Descargar un solo ticker a la vez
+                    data = yf.download(
+                        ticker,  # Solo un ticker
+                        start=start_date, 
+                        end=end_date, 
+                        group_by='ticker',
+                        progress=False,
+                        threads=False,  # Desactivar threads para estabilidad
+                        timeout=30,
+                        auto_adjust=True,
+                        repair=True
+                    )
+                    
+                    if not data.empty:
+                        all_data[ticker] = data
+                        ticker_data = data
+                        print(f"  ✅ {ticker} descargado correctamente")
+                        break
+                    else:
+                        raise ValueError(f"No se recibieron datos para {ticker}")
+                        
+                except Exception as e:
+                    print(f"  Error en intento {attempt + 1} para {ticker}: {e}")
+                    if "delisted" in str(e).lower() or "timezone" in str(e).lower():
+                        print(f"  Ticker probablemente delistado, saltando: {ticker}")
+                        break
+                    if attempt == max_retries - 1:
+                        print(f"  ❌ Fallo definitivo para {ticker}")
+                        break
+                    continue
+            
+            # Espera fija de 10 segundos entre tickers (excepto el último)
+            if i < len(tickers) - 1:
+                print("  Esperando 10 segundos...")
+                time.sleep(10)
+    
+    else:
+        # Si es un solo ticker (string)
+        ticker = tickers
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    print(f"Reintento {attempt} de descarga de precios...")
+                    time.sleep(random.uniform(5, 10))
+                
+                data = yf.download(
+                    ticker,
+                    start=start_date, 
+                    end=end_date, 
+                    group_by='ticker',
+                    progress=False,
+                    threads=False,
+                    timeout=30,
+                    auto_adjust=True,
+                    repair=True
+                )
+                
+                if data.empty:
+                    raise ValueError("No se recibieron datos")
+                return data
+            except Exception as e:
+                print(f"Error en intento {attempt + 1}: {e}")
+                if "delisted" in str(e).lower() or "timezone" in str(e).lower():
+                    print(f"Ticker probablemente delistado, saltando: {ticker}")
+                    return pd.DataFrame()
+                if attempt == max_retries - 1:
+                    return pd.DataFrame()
+                continue
+    
+    # Combinar todos los datos en un DataFrame
+    if all_data:
+        combined_data = pd.concat(all_data, axis=1)
+        return combined_data
+    else:
+        return pd.DataFrame()
 
 def download_prices(tickers, start_date, end_date):
     """
