@@ -455,9 +455,31 @@ def download_prices(tickers, start_date, end_date):
                             failed_tickers += 1
                             continue
                 
+                # Validar que close_price no sea un escalar
                 if close_price is not None:
-                    all_prices[ticker] = close_price
-                    successful_tickers += 1
+                    # Si es un escalar, convertirlo a Series
+                    if np.isscalar(close_price):
+                        print(f"⚠️  {ticker} devolvió valor escalar, convirtiendo a Series")
+                        close_price = pd.Series([close_price], index=[ticker_data.index[0] if len(ticker_data.index) > 0 else pd.Timestamp.now()])
+                    elif isinstance(close_price, (int, float)):
+                        # Caso especial: valor numérico simple
+                        print(f"⚠️  {ticker} devolvió valor numérico simple, convirtiendo a Series")
+                        close_price = pd.Series([float(close_price)], index=[ticker_data.index[0] if len(ticker_data.index) > 0 else pd.Timestamp.now()])
+                    
+                    # Asegurar que es una Series con índice temporal
+                    if isinstance(close_price, pd.Series):
+                        if close_price.index.empty:
+                            # Crear índice si está vacío
+                            close_price.index = [ticker_data.index[0] if len(ticker_data.index) > 0 else pd.Timestamp.now()]
+                        all_prices[ticker] = close_price
+                        successful_tickers += 1
+                    elif hasattr(close_price, 'index') and len(close_price.index) > 0:
+                        # Ya es una Series válida
+                        all_prices[ticker] = close_price
+                        successful_tickers += 1
+                    else:
+                        print(f"⚠️  {ticker} tiene datos inválidos (sin índice temporal)")
+                        failed_tickers += 1
                     
             except Exception as ticker_e:
                 print(f"❌ Error procesando {ticker}: {str(ticker_e)[:100]}...")
@@ -480,9 +502,28 @@ def download_prices(tickers, start_date, end_date):
             print("⚠️ No se descargaron datos de ningún ticker")
             return pd.DataFrame()
         
-        # Crear DataFrame final
+        # Crear DataFrame final con manejo de errores mejorado
         try:
-            prices_df = pd.DataFrame(all_prices)
+            if len(all_prices) == 0:
+                return pd.DataFrame()
+            
+            # Verificar que todos los valores sean Series con índices válidos
+            valid_prices = {}
+            for ticker, series in all_prices.items():
+                if isinstance(series, pd.Series) and len(series) > 0:
+                    if not series.index.empty:
+                        valid_prices[ticker] = series
+                    else:
+                        print(f"⚠️  {ticker} tiene Series sin índice, omitiendo")
+                else:
+                    print(f"⚠️  {ticker} no es una Series válida, omitiendo")
+            
+            if len(valid_prices) == 0:
+                print("⚠️ No hay series válidas para crear DataFrame")
+                return pd.DataFrame()
+            
+            # Crear DataFrame con alineación automática de fechas
+            prices_df = pd.DataFrame(valid_prices)
             print(f"DataFrame creado con shape: {prices_df.shape}")
             
             # Eliminar columnas con todos NaN
@@ -498,7 +539,8 @@ def download_prices(tickers, start_date, end_date):
             print(f"Después de limpieza filas NaN: {prices_df.shape}")
             
             print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
-            print(f"Rango de fechas: {prices_df.index.min()} a {prices_df.index.max()}")
+            if len(prices_df.index) > 0:
+                print(f"Rango de fechas: {prices_df.index.min()} a {prices_df.index.max()}")
             return prices_df
             
         except Exception as df_e:
