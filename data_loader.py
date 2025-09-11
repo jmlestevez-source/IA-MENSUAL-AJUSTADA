@@ -457,8 +457,18 @@ def download_prices(tickers, start_date, end_date):
                             failed_tickers += 1
                             continue
                 
-                # Validación exhaustiva de close_price
+                # Validación y corrección de close_price
                 if close_price is not None:
+                    # Manejar arrays 2D (el problema identificado)
+                    if hasattr(close_price, 'shape') and len(close_price.shape) > 1:
+                        print(f"⚠️  {ticker} tiene datos 2D shape {close_price.shape}, convirtiendo a 1D")
+                        # Convertir array 2D a 1D
+                        if close_price.shape[1] == 1:
+                            close_price = close_price.iloc[:, 0] if hasattr(close_price, 'iloc') else close_price[:, 0]
+                        else:
+                            # Tomar la primera columna
+                            close_price = close_price.iloc[:, 0] if hasattr(close_price, 'iloc') else close_price[:, 0]
+                    
                     # Convertir a Series si no lo es
                     if not isinstance(close_price, pd.Series):
                         if hasattr(close_price, '__len__') and len(close_price) > 1:
@@ -474,8 +484,10 @@ def download_prices(tickers, start_date, end_date):
                             # Intentar convertir a Series
                             try:
                                 close_price = pd.Series(close_price)
-                            except:
-                                print(f"⚠️  No se pudo convertir {ticker} a Series válida")
+                                if close_price.index.empty and len(ticker_data.index) > 0:
+                                    close_price.index = ticker_data.index[:len(close_price)]
+                            except Exception as conv_error:
+                                print(f"⚠️  No se pudo convertir {ticker} a Series válida: {conv_error}")
                                 failed_tickers += 1
                                 continue
                     
@@ -489,8 +501,8 @@ def download_prices(tickers, start_date, end_date):
                             if not isinstance(close_price.index, pd.DatetimeIndex):
                                 try:
                                     close_price.index = pd.to_datetime(close_price.index)
-                                except:
-                                    print(f"⚠️  Índice inválido para {ticker}")
+                                except Exception as idx_error:
+                                    print(f"⚠️  Índice inválido para {ticker}: {idx_error}")
                                     failed_tickers += 1
                                     continue
                             
@@ -520,11 +532,6 @@ def download_prices(tickers, start_date, end_date):
         if len(all_prices) > 0:
             sample_tickers = list(all_prices.keys())[:5]
             print(f"Muestra de tickers exitosos: {sample_tickers}")
-            
-            # Validar algunos tickers de muestra
-            for ticker in sample_tickers:
-                series = all_prices[ticker]
-                print(f"  {ticker}: type={type(series)}, len={len(series) if hasattr(series, '__len__') else 'N/A'}, index_type={type(series.index) if hasattr(series, 'index') else 'N/A'}")
         
         if not all_prices:
             print("⚠️ No se descargaron datos de ningún ticker")
@@ -537,49 +544,26 @@ def download_prices(tickers, start_date, end_date):
             
             # Verificar que todos los valores sean Series con índices válidos
             valid_prices = {}
-            invalid_count = 0
-            
             for ticker, series in all_prices.items():
-                try:
-                    # Validaciones adicionales
-                    if isinstance(series, pd.Series):
-                        if len(series) > 0:
-                            if not series.index.empty:
-                                if isinstance(series.index, pd.DatetimeIndex):
-                                    # Eliminar duplicados en el índice
-                                    if series.index.duplicated().any():
-                                        series = series[~series.index.duplicated(keep='first')]
-                                    valid_prices[ticker] = series
-                                else:
-                                    print(f"⚠️  {ticker} tiene índice no datetime")
-                                    invalid_count += 1
-                            else:
-                                print(f"⚠️  {ticker} tiene índice vacío")
-                                invalid_count += 1
-                        else:
-                            print(f"⚠️  {ticker} tiene Series vacía")
-                            invalid_count += 1
+                if isinstance(series, pd.Series) and len(series) > 0:
+                    if not series.index.empty:
+                        valid_prices[ticker] = series
                     else:
-                        print(f"⚠️  {ticker} no es una Series: {type(series)}")
-                        invalid_count += 1
-                except Exception as validation_error:
-                    print(f"⚠️  Error validando {ticker}: {validation_error}")
-                    invalid_count += 1
+                        print(f"⚠️  {ticker} tiene Series sin índice, omitiendo")
+                else:
+                    print(f"⚠️  {ticker} no es una Series válida, omitiendo")
             
             if len(valid_prices) == 0:
                 print("⚠️ No hay series válidas para crear DataFrame")
                 return pd.DataFrame()
             
-            print(f"Series válidas después de validación: {len(valid_prices)} (invalidadas: {invalid_count})")
-            
             # Crear DataFrame con alineación automática de fechas
-            print("Creando DataFrame final...")
             prices_df = pd.DataFrame(valid_prices)
             print(f"DataFrame creado con shape: {prices_df.shape}")
             
             # Eliminar columnas con todos NaN
             prices_df = prices_df.dropna(axis=1, how='all')
-            print(f"Después de limpieza NaN (columnas): {prices_df.shape}")
+            print(f"Después de limpieza NaN: {prices_df.shape}")
             
             if prices_df.empty:
                 print("⚠️ DataFrame vacío después de limpieza")
@@ -587,7 +571,7 @@ def download_prices(tickers, start_date, end_date):
                 
             # Eliminar filas con todos NaN
             prices_df = prices_df.dropna(axis=0, how='all')
-            print(f"Después de limpieza NaN (filas): {prices_df.shape}")
+            print(f"Después de limpieza filas NaN: {prices_df.shape}")
             
             print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
             if len(prices_df.index) > 0:
