@@ -236,101 +236,63 @@ def get_constituents_at_date(index_name, start_date, end_date):
         raise ValueError(f"Índice {index_name} no soportado")
     return tickers_data, None
 
-def download_prices_with_retry(tickers, start_date, end_date, max_retries=5):
-    """
-    Descarga precios con reintentos y manejo de errores mejorado
-    Descarga un ticker a la vez para mayor estabilidad
-    """
-    all_data = {}
-    
-    # Si tickers es una lista, procesar uno a uno
-    if isinstance(tickers, list):
-        for i, ticker in enumerate(tickers):
-            print(f"Descargando {ticker} ({i+1}/{len(tickers)})...")
-            
-            ticker_data = None
-            for attempt in range(max_retries):
-                try:
-                    if attempt > 0:
-                        print(f"  Reintento {attempt} para {ticker}...")
-                        time.sleep(random.uniform(5, 10))
-                    
-                    # Descargar un solo ticker a la vez
-                    data = yf.download(
-                        ticker,  # Solo un ticker
-                        start=start_date, 
-                        end=end_date, 
-                        group_by='ticker',
-                        progress=False,
-                        threads=False,  # Desactivar threads para estabilidad
-                        timeout=30,
-                        auto_adjust=True,
-                        repair=True
-                    )
-                    
-                    if not data.empty:
-                        all_data[ticker] = data
-                        ticker_data = data
-                        print(f"  ✅ {ticker} descargado correctamente")
-                        break
-                    else:
-                        raise ValueError(f"No se recibieron datos para {ticker}")
-                        
-                except Exception as e:
-                    print(f"  Error en intento {attempt + 1} para {ticker}: {e}")
-                    if "delisted" in str(e).lower() or "timezone" in str(e).lower():
-                        print(f"  Ticker probablemente delistado, saltando: {ticker}")
-                        break
-                    if attempt == max_retries - 1:
-                        print(f"  ❌ Fallo definitivo para {ticker}")
-                        break
-                    continue
-            
-            # Espera fija de 10 segundos cada 25 tickers (excepto al final)
-            if (i + 1) % 25 == 0 and i < len(tickers) - 1:
-                print(f"  Esperando 10 segundos después de {i+1} tickers...")
-                time.sleep(10)
-    
-    else:
-        # Si es un solo ticker (string)
-        ticker = tickers
-        for attempt in range(max_retries):
-            try:
-                if attempt > 0:
-                    print(f"Reintento {attempt} de descarga de precios...")
-                    time.sleep(random.uniform(5, 10))
-                
-                data = yf.download(
-                    ticker,
-                    start=start_date, 
-                    end=end_date, 
-                    group_by='ticker',
-                    progress=False,
-                    threads=False,
-                    timeout=30,
-                    auto_adjust=True,
-                    repair=True
-                )
-                
-                if data.empty:
-                    raise ValueError("No se recibieron datos")
-                return data
-            except Exception as e:
-                print(f"Error en intento {attempt + 1}: {e}")
-                if "delisted" in str(e).lower() or "timezone" in str(e).lower():
-                    print(f"Ticker probablemente delistado, saltando: {ticker}")
-                    return pd.DataFrame()
-                if attempt == max_retries - 1:
-                    return pd.DataFrame()
-                continue
-    
-    # Combinar todos los datos en un DataFrame
-    if all_data:
-        # Para datos individuales, mantener la estructura original
-        combined_data = pd.concat(all_data, axis=1)
-        return combined_data
-    else:
-        return pd.DataFrame()
+import yfinance as yf, pandas as pd, numpy as np, time, random, math
+from requests import Session
+from requests_cache import CacheMixin, SQLiteCache
+from requests_ratelimiter import LimiterMixin, MemoryQueueBucket
+from pyrate_limiter import Duration, RequestRate, Limiter
+
+class CachedLimiterSession(CacheMixin, LimiterMixin, Session):
+    pass
+
+# 1 solicitud/segundo como máximo (ajusta a tu gusto)
+limiter = Limiter(RequestRate(1, Duration.SECOND))
+session = CachedLimiterSession(
+    limiter=limiter,
+    bucket_class=MemoryQueueBucket,
+    backend=SQLiteCache("yfinance.cache"),
+    expire_after=timedelta(hours=1),
+)
+
+def download_single(ticker: str, start, end, max_retry=5) -> pd.Series:
+    """Descarga UN ticker y devuelve la Serie de precios de cierre."""
+    for attempt in range(1, max_retry + 1):
+        try:
+            # backoff exponencial: 2, 4, 8, 16, 32 s
+            time.sleep(2 ** (attempt - 1) * random.uniform(0.8, 1.2))
+            df = yf.download(
+                ticker,
+                start=start,
+                end=end,
+                progress=False,
+                auto_adjust=True,
+                repair=True,
+                threads=False,
+                session=session,        # ← cache + rate-limit
+                timeout=30
+            )
+            if df.empty:
+                raise ValueError("respuesta vacía")
+
+            # elegimos columna de cierre
+            close = df["Adj Close"] if "Adj Close" in df else df["Close"]
+            # si Yahoo devolvió (N,1) → aplanar
+            if isinstance(close, pd.DataFrame) and close.shape[1] == 1:
+                close = close.squeeze(axis=1)
+            if not isinstance(close, pd.Series):
+                close = pd.Series(close, index=df.index)
+
+            close = close.replace([np.inf, -np.inf], np.nan).dropna()
+            if close.empty:
+                raise ValueError("serie vacía tras limpieza")
+            close.name = ticker
+            return close
+
+        except Exception as e:
+            print(f"⚠️  {ticker} intento {attempt}/{max_retry}: {e}")
+            if attempt == max_retry:
+                return pd.Series(dtype=float, name=ticker)
+    return pd.Series(dtype=float, name=ticker)
 
 def download_prices(tickers, start_date, end_date):
     """
