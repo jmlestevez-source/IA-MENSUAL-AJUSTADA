@@ -387,22 +387,56 @@ def download_prices(tickers, start_date, end_date):
         successful_tickers = 0
         failed_tickers = 0
         
+        # Continuar desde donde se quedó (opcional - para reinicios)
+        processed_tickers = set(all_prices.keys())
+        
         for i, ticker in enumerate(ticker_list):
+            # Saltar tickers ya procesados (opcional)
+            if ticker in processed_tickers:
+                continue
+                
             print(f"Descargando ticker {i+1}/{len(ticker_list)}: {ticker}")
             
             try:
                 # Descargar un solo ticker con reintentos
-                ticker_data = download_prices_with_retry(ticker, start_date, end_date)
+                ticker_data = None
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        if attempt > 0:
+                            print(f"  Reintento {attempt} para {ticker}...")
+                            time.sleep(random.uniform(3, 6))
+                        
+                        ticker_data = yf.download(
+                            ticker,
+                            start=start_date, 
+                            end=end_date, 
+                            progress=False,
+                            timeout=20,  # Reducido timeout
+                            auto_adjust=True,
+                            repair=True,
+                            threads=False
+                        )
+                        
+                        if not ticker_data.empty:
+                            break
+                        else:
+                            print(f"  ⚠️  Datos vacíos para {ticker} en intento {attempt + 1}")
+                            
+                    except Exception as e:
+                        print(f"  ⚠️  Error en intento {attempt + 1} para {ticker}: {str(e)[:100]}...")
+                        if attempt == max_retries - 1:
+                            raise e
+                        time.sleep(random.uniform(2, 5))
                 
-                if ticker_data.empty:
+                if ticker_data is None or ticker_data.empty:
                     print(f"⚠️  Sin datos para {ticker}, skipping...")
                     failed_tickers += 1
                     continue
                 
-                # Procesar datos para un solo ticker (estructura plana)
-                # Cuando es un solo ticker, yfinance devuelve columnas directas
+                # Procesar datos para un solo ticker
                 if isinstance(ticker_data.columns, pd.MultiIndex):
-                    # Caso poco común, pero por si acaso
+                    # Caso MultiIndex
                     if ticker in ticker_data.columns.levels[0]:
                         ticker_specific_data = ticker_data[ticker]
                         if 'Adj Close' in ticker_specific_data.columns:
@@ -413,8 +447,21 @@ def download_prices(tickers, start_date, end_date):
                             all_prices[ticker] = ticker_specific_data['Close']
                             successful_tickers += 1
                             print(f"✅ {ticker} procesado correctamente (Close - MultiIndex)")
+                        else:
+                            # Usar primera columna numérica
+                            numeric_cols = ticker_specific_data.select_dtypes(include=[np.number]).columns
+                            if len(numeric_cols) > 0:
+                                all_prices[ticker] = ticker_specific_data[numeric_cols[0]]
+                                successful_tickers += 1
+                                print(f"✅ {ticker} procesado con columna {numeric_cols[0]}")
+                            else:
+                                print(f"⚠️  No se encontraron columnas numéricas para {ticker}")
+                                failed_tickers += 1
+                    else:
+                        print(f"⚠️  Ticker {ticker} no encontrado en MultiIndex")
+                        failed_tickers += 1
                 else:
-                    # Estructura plana típica para un solo ticker
+                    # Estructura plana
                     if 'Adj Close' in ticker_data.columns:
                         all_prices[ticker] = ticker_data['Adj Close']
                         successful_tickers += 1
@@ -424,23 +471,24 @@ def download_prices(tickers, start_date, end_date):
                         successful_tickers += 1
                         print(f"✅ {ticker} procesado correctamente (Close)")
                     else:
-                        print(f"⚠️  Columnas disponibles para {ticker}: {list(ticker_data.columns)}")
-                        # Si no hay Adj Close ni Close, usar la primera columna numérica
+                        # Usar primera columna numérica
                         numeric_cols = ticker_data.select_dtypes(include=[np.number]).columns
                         if len(numeric_cols) > 0:
                             all_prices[ticker] = ticker_data[numeric_cols[0]]
                             successful_tickers += 1
                             print(f"✅ {ticker} procesado con columna {numeric_cols[0]}")
                         else:
+                            print(f"⚠️  Columnas disponibles para {ticker}: {list(ticker_data.columns)}")
                             print(f"⚠️  No se encontraron columnas numéricas para {ticker}")
                             failed_tickers += 1
-                            continue
                     
+            except KeyboardInterrupt:
+                print(f"\n⚠️  Proceso interrumpido por usuario en ticker {ticker}")
+                break
             except Exception as ticker_e:
-                print(f"❌ Error procesando {ticker}: {ticker_e}")
-                import traceback
-                traceback.print_exc()
+                print(f"❌ Error procesando {ticker}: {str(ticker_e)[:100]}...")
                 failed_tickers += 1
+                # Continuar con el siguiente ticker en lugar de detener todo
                 continue
             
             # Espera fija de 10 segundos cada 50 tickers (excepto al final)
@@ -456,14 +504,18 @@ def download_prices(tickers, start_date, end_date):
             return pd.DataFrame()
         
         # Crear DataFrame final
-        prices_df = pd.DataFrame(all_prices)
-        # Eliminar columnas con todos NaN
-        prices_df = prices_df.dropna(axis=1, how='all')
-        if prices_df.empty:
-            print("⚠️ DataFrame vacío después de limpieza")
+        try:
+            prices_df = pd.DataFrame(all_prices)
+            # Eliminar columnas con todos NaN
+            prices_df = prices_df.dropna(axis=1, how='all')
+            if prices_df.empty:
+                print("⚠️ DataFrame vacío después de limpieza")
+                return pd.DataFrame()
+            print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
+            return prices_df
+        except Exception as df_e:
+            print(f"❌ Error creando DataFrame final: {df_e}")
             return pd.DataFrame()
-        print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
-        return prices_df
         
     except Exception as e:
         print(f"❌ Error crítico en download_prices: {e}")
