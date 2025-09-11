@@ -457,30 +457,50 @@ def download_prices(tickers, start_date, end_date):
                             failed_tickers += 1
                             continue
                 
-                # Validar que close_price no sea un escalar
+                # Validación exhaustiva de close_price
                 if close_price is not None:
-                    # Si es un escalar, convertirlo a Series
-                    if np.isscalar(close_price):
-                        print(f"⚠️  {ticker} devolvió valor escalar, convirtiendo a Series")
-                        close_price = pd.Series([close_price], index=[ticker_data.index[0] if len(ticker_data.index) > 0 else pd.Timestamp.now()])
-                    elif isinstance(close_price, (int, float)):
-                        # Caso especial: valor numérico simple
-                        print(f"⚠️  {ticker} devolvió valor numérico simple, convirtiendo a Series")
-                        close_price = pd.Series([float(close_price)], index=[ticker_data.index[0] if len(ticker_data.index) > 0 else pd.Timestamp.now()])
+                    # Convertir a Series si no lo es
+                    if not isinstance(close_price, pd.Series):
+                        if hasattr(close_price, '__len__') and len(close_price) > 1:
+                            # Es un array o similar
+                            close_price = pd.Series(close_price, index=ticker_data.index)
+                        elif np.isscalar(close_price) or isinstance(close_price, (int, float)):
+                            # Es un valor escalar
+                            if len(ticker_data.index) > 0:
+                                close_price = pd.Series([float(close_price)], index=[ticker_data.index[0]])
+                            else:
+                                close_price = pd.Series([float(close_price)], index=[pd.Timestamp.now()])
+                        else:
+                            # Intentar convertir a Series
+                            try:
+                                close_price = pd.Series(close_price)
+                            except:
+                                print(f"⚠️  No se pudo convertir {ticker} a Series válida")
+                                failed_tickers += 1
+                                continue
                     
-                    # Asegurar que es una Series con índice temporal
+                    # Validar que la Series tenga índice y datos válidos
                     if isinstance(close_price, pd.Series):
-                        if close_price.index.empty:
-                            # Crear índice si está vacío
-                            close_price.index = [ticker_data.index[0] if len(ticker_data.index) > 0 else pd.Timestamp.now()]
-                        all_prices[ticker] = close_price
-                        successful_tickers += 1
-                    elif hasattr(close_price, 'index') and len(close_price.index) > 0:
-                        # Ya es una Series válida
-                        all_prices[ticker] = close_price
-                        successful_tickers += 1
+                        # Eliminar NaN y valores infinitos
+                        close_price = close_price.replace([np.inf, -np.inf], np.nan).dropna()
+                        
+                        if len(close_price) > 0 and not close_price.index.empty:
+                            # Asegurar que el índice sea datetime
+                            if not isinstance(close_price.index, pd.DatetimeIndex):
+                                try:
+                                    close_price.index = pd.to_datetime(close_price.index)
+                                except:
+                                    print(f"⚠️  Índice inválido para {ticker}")
+                                    failed_tickers += 1
+                                    continue
+                            
+                            all_prices[ticker] = close_price
+                            successful_tickers += 1
+                        else:
+                            print(f"⚠️  {ticker} tiene datos vacíos después de limpieza")
+                            failed_tickers += 1
                     else:
-                        print(f"⚠️  {ticker} tiene datos inválidos (sin índice temporal)")
+                        print(f"⚠️  {ticker} no se pudo convertir a Series válida")
                         failed_tickers += 1
                     
             except Exception as ticker_e:
@@ -498,7 +518,13 @@ def download_prices(tickers, start_date, end_date):
         
         # Diagnóstico adicional
         if len(all_prices) > 0:
-            print(f"Muestra de tickers exitosos: {list(all_prices.keys())[:5]}")
+            sample_tickers = list(all_prices.keys())[:5]
+            print(f"Muestra de tickers exitosos: {sample_tickers}")
+            
+            # Validar algunos tickers de muestra
+            for ticker in sample_tickers:
+                series = all_prices[ticker]
+                print(f"  {ticker}: type={type(series)}, len={len(series) if hasattr(series, '__len__') else 'N/A'}, index_type={type(series.index) if hasattr(series, 'index') else 'N/A'}")
         
         if not all_prices:
             print("⚠️ No se descargaron datos de ningún ticker")
@@ -511,26 +537,49 @@ def download_prices(tickers, start_date, end_date):
             
             # Verificar que todos los valores sean Series con índices válidos
             valid_prices = {}
+            invalid_count = 0
+            
             for ticker, series in all_prices.items():
-                if isinstance(series, pd.Series) and len(series) > 0:
-                    if not series.index.empty:
-                        valid_prices[ticker] = series
+                try:
+                    # Validaciones adicionales
+                    if isinstance(series, pd.Series):
+                        if len(series) > 0:
+                            if not series.index.empty:
+                                if isinstance(series.index, pd.DatetimeIndex):
+                                    # Eliminar duplicados en el índice
+                                    if series.index.duplicated().any():
+                                        series = series[~series.index.duplicated(keep='first')]
+                                    valid_prices[ticker] = series
+                                else:
+                                    print(f"⚠️  {ticker} tiene índice no datetime")
+                                    invalid_count += 1
+                            else:
+                                print(f"⚠️  {ticker} tiene índice vacío")
+                                invalid_count += 1
+                        else:
+                            print(f"⚠️  {ticker} tiene Series vacía")
+                            invalid_count += 1
                     else:
-                        print(f"⚠️  {ticker} tiene Series sin índice, omitiendo")
-                else:
-                    print(f"⚠️  {ticker} no es una Series válida, omitiendo")
+                        print(f"⚠️  {ticker} no es una Series: {type(series)}")
+                        invalid_count += 1
+                except Exception as validation_error:
+                    print(f"⚠️  Error validando {ticker}: {validation_error}")
+                    invalid_count += 1
             
             if len(valid_prices) == 0:
                 print("⚠️ No hay series válidas para crear DataFrame")
                 return pd.DataFrame()
             
+            print(f"Series válidas después de validación: {len(valid_prices)} (invalidadas: {invalid_count})")
+            
             # Crear DataFrame con alineación automática de fechas
+            print("Creando DataFrame final...")
             prices_df = pd.DataFrame(valid_prices)
             print(f"DataFrame creado con shape: {prices_df.shape}")
             
             # Eliminar columnas con todos NaN
             prices_df = prices_df.dropna(axis=1, how='all')
-            print(f"Después de limpieza NaN: {prices_df.shape}")
+            print(f"Después de limpieza NaN (columnas): {prices_df.shape}")
             
             if prices_df.empty:
                 print("⚠️ DataFrame vacío después de limpieza")
@@ -538,7 +587,7 @@ def download_prices(tickers, start_date, end_date):
                 
             # Eliminar filas con todos NaN
             prices_df = prices_df.dropna(axis=0, how='all')
-            print(f"Después de limpieza filas NaN: {prices_df.shape}")
+            print(f"Después de limpieza NaN (filas): {prices_df.shape}")
             
             print(f"✅ Descargados datos para {len(prices_df.columns)} tickers")
             if len(prices_df.index) > 0:
