@@ -2,8 +2,10 @@ name: Actualizar Datos Diarios
 
 on:
   schedule:
-    # Lunes a viernes a las 22:00 CET (UTC+1) -> 21:00 UTC
+    # Horario de invierno (CET): 22:00 España = 21:00 UTC
     - cron: "0 21 * * 1-5"
+    # Horario de verano (CEST): 22:00 España = 20:00 UTC
+    - cron: "0 20 * * 1-5"
   workflow_dispatch: # Para ejecutar manualmente
 
 jobs:
