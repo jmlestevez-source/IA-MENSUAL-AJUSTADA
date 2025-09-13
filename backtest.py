@@ -33,7 +33,7 @@ def inertia_score(monthly_prices_df, corte=680):
                 if len(close) < 15:  # Necesitamos al menos 15 períodos para los cálculos
                     continue
                 
-                # Para simplificar, usar close como high y low (datos diarios ya están mensualizados)
+                # Para datos de CSV, usar close como high y low (datos ya están mensualizados)
                 high = close
                 low = close
                 
@@ -95,11 +95,11 @@ def inertia_score(monthly_prices_df, corte=680):
                 metric_data[ticker] = results[ticker][metric]
             combined_results[metric] = pd.DataFrame(metric_data)
         
-        return pd.DataFrame(combined_results)
+        return combined_results
         
     except Exception as e:
         print(f"Error en cálculo de inercia: {e}")
-        return pd.DataFrame()
+        return {}
 
 def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
     try:
@@ -127,23 +127,6 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                 prices_m = prices
                 prices_df_m = prices.copy()
 
-        # Preparar estructura de datos para inercia
-        if len(prices_df_m.columns) == 1:
-            col_name = prices_df_m.columns[0]
-            prices_df_m = pd.DataFrame({
-                'High': prices_df_m[col_name],
-                'Low': prices_df_m[col_name],
-                'Close': prices_df_m[col_name]
-            })
-        elif 'Close' not in prices_df_m.columns and len(prices_df_m.columns) > 0:
-            # Usar la primera columna como Close
-            first_col = prices_df_m.columns[0]
-            prices_df_m['Close'] = prices_df_m[first_col]
-            if 'High' not in prices_df_m.columns:
-                prices_df_m['High'] = prices_df_m[first_col]
-            if 'Low' not in prices_df_m.columns:
-                prices_df_m['Low'] = prices_df_m[first_col]
-
         # Mensualizar benchmark
         try:
             if isinstance(benchmark, pd.Series):
@@ -161,9 +144,6 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
         dates = [prices_df_m.index[0]] if len(prices_df_m.index) > 0 else []
         picks_list = []
 
-        # Los datos ya vienen con tickers como columnas, no necesitamos agregar High, Low, Close
-        # La función inertia_score ahora maneja correctamente este formato
-
         print(f"Datos preparados. Fechas: {len(prices_df_m)}")
 
         for i in range(1, len(prices_df_m)):
@@ -177,29 +157,33 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                     continue
 
                 df_score = inertia_score(historical_data, corte=corte)
-                if df_score is None or df_score.empty or len(df_score) < 14:
+                if df_score is None or not df_score or len(historical_data) < 14:
                     continue
 
                 # Obtener el último score ajustado
                 try:
-                    if "ScoreAdjusted" in df_score.columns:
-                        if isinstance(df_score["ScoreAdjusted"], pd.DataFrame):
-                            last_scores = df_score["ScoreAdjusted"].iloc[-1]
+                    if "ScoreAdjusted" in df_score:
+                        score_adjusted_df = df_score["ScoreAdjusted"]
+                        if not score_adjusted_df.empty and len(score_adjusted_df) > 0:
+                            last_scores = score_adjusted_df.iloc[-1]
+                            # Convertir a Series si es necesario
+                            if not isinstance(last_scores, pd.Series):
+                                if hasattr(last_scores, 'items'):
+                                    last_scores = pd.Series(last_scores)
+                                else:
+                                    last_scores = pd.Series(dtype=float)
                         else:
-                            last_scores = df_score["ScoreAdjusted"]
-                        
-                        # Convertir a Series si es necesario
-                        if not isinstance(last_scores, pd.Series):
-                            if hasattr(last_scores, 'items'):
-                                last_scores = pd.Series(last_scores)
-                            else:
-                                continue
+                            continue
                     else:
                         continue
                 except Exception as e:
                     print(f"Error obteniendo scores: {e}")
                     continue
 
+                # Asegurarse de que last_scores es una Series y eliminar NaN
+                if not isinstance(last_scores, pd.Series):
+                    continue
+                    
                 last_scores = last_scores.dropna().sort_values(ascending=False)
 
                 if len(last_scores) == 0:
@@ -225,10 +209,13 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                 valid_tickers = []
                 for ticker in selected:
                     try:
-                        if ticker in available_prices.index and ticker in prev_prices.index:
-                            if not pd.isna(available_prices[ticker]) and not pd.isna(prev_prices[ticker]):
-                                if prev_prices[ticker] != 0:
-                                    valid_tickers.append(ticker)
+                        # Verificar que el ticker exista en ambos períodos y tenga valores válidos
+                        if (ticker in available_prices.index and 
+                            ticker in prev_prices.index and
+                            not pd.isna(available_prices[ticker]) and 
+                            not pd.isna(prev_prices[ticker]) and
+                            prev_prices[ticker] != 0):
+                            valid_tickers.append(ticker)
                     except:
                         continue
 
@@ -239,8 +226,10 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                 rets = pd.Series(dtype=float)
                 for ticker in valid_tickers:
                     try:
-                        if prev_prices[ticker] != 0 and not pd.isna(prev_prices[ticker]) and not pd.isna(available_prices[ticker]):
-                            ret_value = (available_prices[ticker] / prev_prices[ticker]) - 1
+                        prev_price = prev_prices[ticker]
+                        curr_price = available_prices[ticker]
+                        if prev_price != 0 and not pd.isna(prev_price) and not pd.isna(curr_price):
+                            ret_value = (curr_price / prev_price) - 1
                             rets[ticker] = ret_value if not np.isinf(ret_value) and not np.isnan(ret_value) else 0
                         else:
                             rets[ticker] = 0
@@ -260,17 +249,16 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                         inercia_val = 0
                         score_adj_val = 0
                         
-                        if "InerciaAlcista" in df_score.columns:
+                        if "InerciaAlcista" in df_score:
                             try:
                                 inercia_data = df_score["InerciaAlcista"]
-                                if isinstance(inercia_data, pd.DataFrame) and len(inercia_data) > 0:
-                                    inercia_val = inercia_data.iloc[-1][ticker] if ticker in inercia_data.columns else 0
-                                elif isinstance(inercia_data, pd.Series):
-                                    inercia_val = inercia_data.iloc[-1] if len(inercia_data) > 0 else 0
+                                if isinstance(inercia_data, pd.DataFrame) and len(inercia_data) > 0 and ticker in inercia_data.columns:
+                                    inercia_val = inercia_data.iloc[-1][ticker] if len(inercia_data) > 0 else 0
                             except:
                                 inercia_val = 0
                         
-                        score_adj_val = last_scores.get(ticker, 0)
+                        if ticker in last_scores.index:
+                            score_adj_val = last_scores[ticker]
 
                         picks_list.append({
                             "Date": date.strftime("%Y-%m-%d"),
