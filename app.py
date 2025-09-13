@@ -4,11 +4,11 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime, timedelta
 import time
-import yfinance as yf
 import numpy as np
+import os
 
 # Importar nuestros módulos
-from data_loader import download_prices, get_constituents_at_date
+from data_loader import get_constituents_at_date
 from backtest import run_backtest
 
 # -------------------------------------------------
@@ -45,11 +45,54 @@ corte = st.sidebar.number_input("Corte de score", 0, 1000, 680)
 run_button = st.sidebar.button("🏃 Ejecutar backtest")
 
 # -------------------------------------------------
+# Función para cargar datos desde CSV
+# -------------------------------------------------
+def load_prices_from_csv(tickers, start_date, end_date):
+    """Carga precios desde archivos CSV en la carpeta data/"""
+    prices_data = {}
+    
+    for ticker in tickers:
+        csv_path = f"data/{ticker}.csv"
+        if os.path.exists(csv_path):
+            try:
+                # Leer CSV
+                df = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
+                
+                # Filtrar por rango de fechas
+                df = df[(df.index.date >= start_date) & (df.index.date <= end_date)]
+                
+                if not df.empty:
+                    # Usar precios ajustados (Close ajustado)
+                    if 'Adj Close' in df.columns:
+                        prices_data[ticker] = df['Adj Close']
+                    elif 'Close' in df.columns:
+                        prices_data[ticker] = df['Close']
+                    else:
+                        # Si no hay columnas de precio, usar la primera columna numérica
+                        numeric_cols = df.select_dtypes(include=[np.number]).columns
+                        if len(numeric_cols) > 0:
+                            prices_data[ticker] = df[numeric_cols[0]]
+            except Exception as e:
+                st.warning(f"Error cargando datos de {ticker}: {e}")
+                continue
+        else:
+            st.warning(f"Archivo no encontrado: {csv_path}")
+    
+    if prices_data:
+        # Combinar todos los datos en un DataFrame
+        prices_df = pd.DataFrame(prices_data)
+        # Alinear fechas (método forward fill para manejar datos faltantes)
+        prices_df = prices_df.fillna(method='ffill').fillna(method='bfill')
+        return prices_df
+    else:
+        return pd.DataFrame()
+
+# -------------------------------------------------
 # Main content
 # -------------------------------------------------
 if run_button:
     try:
-        with st.spinner("Descargando datos..."):
+        with st.spinner("Cargando datos desde CSV..."):
             # Lógica para obtener tickers de uno o ambos índices
             all_tickers_data = {'tickers': [], 'data': []}
             
@@ -91,25 +134,24 @@ if run_button:
             if sample_tickers:
                 st.info(f"Tickers de ejemplo: {', '.join(sample_tickers)}")
 
-            # Descargar precios de constituyentes
-            prices_df = download_prices(all_tickers_data, start_date, end_date)
+            # Cargar precios desde CSV
+            prices_df = load_prices_from_csv(all_tickers_data['tickers'], start_date, end_date)
             
             # Validación adicional de precios
             if prices_df is None or prices_df.empty or len(prices_df.columns) == 0:
-                st.error("❌ No se pudieron descargar los precios históricos de los constituyentes")
+                st.error("❌ No se pudieron cargar los precios históricos desde los CSV")
                 st.info("💡 Consejos para resolver este problema:")
-                st.info("1. Verifica tu conexión a internet")
-                st.info("2. Prueba con un rango de fechas más corto")
-                st.info("3. Intenta con menos tickers (un solo índice)")
-                st.info("4. Asegúrate de que los tickers sean válidos")
+                st.info("1. Verifica que los archivos CSV existan en la carpeta 'data/'")
+                st.info("2. Asegúrate de que los archivos tengan la columna 'Date' como índice")
+                st.info("3. Verifica que los archivos contengan columnas de precios (Close, Adj Close)")
+                st.info("4. Prueba con un rango de fechas más corto")
                 st.stop()
             
-            st.success(f"✅ Descargados precios para {len(prices_df.columns)} tickers")
+            st.success(f"✅ Cargados precios para {len(prices_df.columns)} tickers")
             st.info(f"Rango de fechas: {prices_df.index.min().strftime('%Y-%m-%d')} a {prices_df.index.max().strftime('%Y-%m-%d')}")
             st.info(f"Muestra de tickers: {', '.join(list(prices_df.columns)[:5])}")
 
-            # Descargar benchmark (SPY para S&P 500, QQQ para Nasdaq-100, SPY para ambos)
-            # Se podría mejorar para usar un benchmark ponderado si se seleccionan ambos
+            # Cargar benchmark desde CSV (SPY para S&P 500, QQQ para Nasdaq-100, SPY para ambos)
             if index_choice == "SP500":
                 benchmark_ticker = "SPY"
             elif index_choice == "NDX":
@@ -117,11 +159,11 @@ if run_button:
             else: # Ambos
                 benchmark_ticker = "SPY" # Por simplicidad, usar SPY. Se podría mejorar.
             
-            st.info(f"Descargando benchmark: {benchmark_ticker}")
-            benchmark_df = download_prices([benchmark_ticker], start_date, end_date)
+            st.info(f"Cargando benchmark: {benchmark_ticker}")
+            benchmark_df = load_prices_from_csv([benchmark_ticker], start_date, end_date)
             
             if benchmark_df is None or benchmark_df.empty:
-                st.warning(f"No se pudo descargar el benchmark {benchmark_ticker}")
+                st.warning(f"No se pudo cargar el benchmark {benchmark_ticker} desde CSV")
                 try:
                     st.info("Usando promedio de constituyentes como benchmark alternativo")
                     if not prices_df.empty:
@@ -135,7 +177,7 @@ if run_button:
                     st.error(f"Tampoco se pudo crear benchmark alternativo: {avg_error}")
                     st.stop()
             else:
-                st.success(f"✅ Benchmark {benchmark_ticker} descargado correctamente")
+                st.success(f"✅ Benchmark {benchmark_ticker} cargado correctamente desde CSV")
 
         with st.spinner("Ejecutando backtest..."):
             # Asegurar que tenemos datos válidos para el benchmark
@@ -313,10 +355,10 @@ if run_button:
         st.error(f"❌ Excepción no capturada: {str(e)}")
         st.exception(e)
         st.info("💡 Consejos para resolver este problema:")
-        st.info("1. Verifica tu conexión a internet")
-        st.info("2. Prueba con un rango de fechas más corto")
-        st.info("3. Intenta con menos tickers (un solo índice)")
-        st.info("4. Asegúrate de que los tickers sean válidos")
+        st.info("1. Verifica que los archivos CSV existan en la carpeta 'data/'")
+        st.info("2. Asegúrate de que los archivos tengan el formato correcto")
+        st.info("3. Prueba con un rango de fechas más corto")
+        st.info("4. Verifica que los tickers sean válidos")
 else:
     st.info("👈 Configura los parámetros en el panel lateral y haz clic en 'Ejecutar backtest'")
     st.info("💡 Consejos para mejores resultados:")
