@@ -47,9 +47,10 @@ run_button = st.sidebar.button("🏃 Ejecutar backtest")
 # -------------------------------------------------
 # Función para cargar datos desde CSV
 # -------------------------------------------------
-def load_prices_from_csv(tickers, start_date, end_date):
+def load_prices_from_csv(tickers, start_date, end_date, load_ohlc=False):
     """Carga precios desde archivos CSV en la carpeta data/"""
     prices_data = {}
+    ohlc_data = {}  # Para almacenar OHLC si está disponible
     
     for ticker in tickers:
         csv_path = f"data/{ticker}.csv"
@@ -68,10 +69,14 @@ def load_prices_from_csv(tickers, start_date, end_date):
                     elif 'Close' in df.columns:
                         prices_data[ticker] = df['Close']
                     else:
-                        # Si no hay columnas de precio, usar la primera columna numérica
                         numeric_cols = df.select_dtypes(include=[np.number]).columns
                         if len(numeric_cols) > 0:
                             prices_data[ticker] = df[numeric_cols[0]]
+                    
+                    # Si queremos OHLC completo y está disponible
+                    if load_ohlc and all(col in df.columns for col in ['High', 'Low', 'Close']):
+                        ohlc_data[ticker] = df[['High', 'Low', 'Close']]
+                        
             except Exception as e:
                 st.warning(f"Error cargando datos de {ticker}: {e}")
                 continue
@@ -79,14 +84,14 @@ def load_prices_from_csv(tickers, start_date, end_date):
             st.warning(f"Archivo no encontrado: {csv_path}")
     
     if prices_data:
-        # Combinar todos los datos en un DataFrame
         prices_df = pd.DataFrame(prices_data)
-        # Alinear fechas (método forward fill para manejar datos faltantes)
         prices_df = prices_df.fillna(method='ffill').fillna(method='bfill')
+        
+        if load_ohlc and ohlc_data:
+            return prices_df, ohlc_data
         return prices_df
     else:
         return pd.DataFrame()
-
 # -------------------------------------------------
 # Main content
 # -------------------------------------------------
@@ -464,24 +469,35 @@ if run_button:
                             # Mensualizar datos si es necesario
                             ticker_monthly = ticker_data.resample('ME').last()
                             
-                            # Calcular componentes paso a paso
-                            close = ticker_monthly[debug_ticker]
-                            
-                            # ROC calculation
-                            roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
-                            roc_10_w1 = roc_10_percent * 0.4
-                            roc_10_w2 = roc_10_percent * 0.2
-                            f1 = roc_10_w1 + roc_10_w2
-                            
-                            # ATR calculation (corregido para datos mensuales)
-                            prev_close = close.shift(1)
-                            tr = np.abs(close - prev_close)
-                            atr14 = tr.rolling(14).mean()
-                            sma14 = close.rolling(14).mean()
-                            
-                            # F2 calculation
-                            volatility_ratio = atr14 / sma14
-                            f2 = volatility_ratio * 0.4
+                            # En la sección de debug, reemplaza el cálculo del ATR con:
+
+# Calcular componentes paso a paso
+close = ticker_monthly[debug_ticker]
+
+# Estimar High y Low para el debug
+monthly_returns = close.pct_change()
+monthly_vol = monthly_returns.rolling(3).std()
+high = close * (1 + monthly_vol.fillna(0.02))
+low = close * (1 - monthly_vol.fillna(0.02))
+high = pd.Series(np.maximum(high, close), index=close.index)
+low = pd.Series(np.minimum(low, close), index=close.index)
+
+# ROC calculation
+roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
+roc_10_w1 = roc_10_percent * 0.4
+roc_10_w2 = roc_10_percent * 0.2
+f1 = roc_10_w1 + roc_10_w2
+
+# ATR con método de Wilder
+from backtest import calcular_atr_wilder
+atr14 = calcular_atr_wilder(high, low, close, periods=14)
+sma14 = close.rolling(14).mean()
+
+# F2
+volatility_ratio = atr14 / sma14
+f2 = volatility_ratio * 0.4
+
+# Resto del cálculo igual...
                             
                             # Inercia
                             inercia_alcista = f1 / f2
