@@ -4,18 +4,18 @@ import numpy as np
 def monthly_true_range(high, low, close):
     """
     Calcula el True Range mensual correctamente
-    Para datos mensuales, el ATR debe ser calculado de manera diferente
+    Para datos ya mensualizados (solo close), usar el rango del mes
     """
-    # Para datos mensuales, usar la diferencia entre high y low del mes
-    # Si solo tenemos close (datos ya mensualizados), usar volatilidad simple
     if high.equals(close) and low.equals(close):
-        # Datos ya mensualizados - usar cambio absoluto entre meses
-        return np.abs(close - close.shift(1))
+        # Datos ya mensualizados - calcular rango mensual
+        # Usar el cambio absoluto como proxy del rango
+        monthly_range = np.abs(close.pct_change()) * close
+        return monthly_range
     else:
-        # Datos con high/low reales
+        # Si tenemos high/low reales
         prev_close = close.shift(1)
         tr = pd.DataFrame({
-            'hl': np.abs(high - low),
+            'hl': high - low,
             'hc': np.abs(high - prev_close),
             'lc': np.abs(low - prev_close)
         }).max(axis=1)
@@ -36,7 +36,7 @@ def inertia_score(monthly_prices_df, corte=680):
                 # Obtener serie de precios para este ticker
                 close = monthly_prices_df[ticker].dropna()
                 
-                if len(close) < 15:  # Necesitamos al menos 15 períodos
+                if len(close) < 15:
                     continue
                 
                 # Para datos mensuales, usar close como high y low
@@ -51,23 +51,28 @@ def inertia_score(monthly_prices_df, corte=680):
                 roc_10_w2 = roc_10_percent * 0.2
                 f1 = roc_10_w1 + roc_10_w2  # Total: ROC * 0.6
                 
-                # Para datos mensuales, el ATR debe ser calculado como volatilidad mensual
-                # Usar cambio absoluto entre meses
-                monthly_changes = np.abs(close - close.shift(1))
-                atr14 = monthly_changes.rolling(14).mean()
+                # Para datos mensuales, calcular ATR de manera apropiada
+                # Usar el rango porcentual mensual como proxy
+                monthly_pct_range = np.abs(close.pct_change())
+                
+                # ATR(14) para datos mensuales - promedio de los rangos porcentuales
+                # multiplicado por el precio para obtener valor en dólares
+                atr14_pct = monthly_pct_range.rolling(14).mean()
+                atr14 = atr14_pct * close
                 
                 # Calcular SMA(14)
                 sma14 = close.rolling(14).mean()
                 
                 # Calcular F2 = (ATR14/MA(C,14))*0.4
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    volatility_ratio = atr14 / sma14
+                    # Usar el ATR porcentual directamente
+                    volatility_ratio = atr14_pct  # Ya es un ratio
                     f2 = volatility_ratio * 0.4
                     
                     # Manejar valores problemáticos
                     f2 = f2.replace([np.inf, -np.inf], np.nan)
                     f2 = f2.fillna(0.01)
-                    f2 = f2.apply(lambda x: max(x, 0.01))
+                    f2 = f2.apply(lambda x: max(x, 0.001))
                 
                 # Calcular Inercia Alcista = F1 / F2
                 with np.errstate(divide='ignore', invalid='ignore'):
@@ -82,11 +87,10 @@ def inertia_score(monthly_prices_df, corte=680):
                 )
                 
                 # Score Ajustado = Score / ATR14
-                # IMPORTANTE: Para datos mensuales, el ATR es mucho menor que para datos diarios
-                # Necesitamos escalar apropiadamente
+                # Usar el ATR en dólares para el ajuste
                 atr14_safe = atr14.copy()
                 atr14_safe = atr14_safe.fillna(1.0)
-                atr14_safe = atr14_safe.apply(lambda x: max(x, 0.1))
+                atr14_safe = atr14_safe.apply(lambda x: max(x, 0.01))
                 
                 with np.errstate(divide='ignore', invalid='ignore'):
                     score_adj = score / atr14_safe
@@ -101,7 +105,8 @@ def inertia_score(monthly_prices_df, corte=680):
                     "ScoreAdjusted": score_adj,
                     "F1": f1,
                     "F2": f2,
-                    "ROC10": roc_10_percent
+                    "ROC10": roc_10_percent,
+                    "VolatilityRatio": volatility_ratio
                 }
                 
             except Exception as e:
@@ -113,7 +118,7 @@ def inertia_score(monthly_prices_df, corte=680):
         
         # Combinar resultados
         combined_results = {}
-        for metric in ["InerciaAlcista", "ATR14", "Score", "ScoreAdjusted", "F1", "F2", "ROC10"]:
+        for metric in ["InerciaAlcista", "ATR14", "Score", "ScoreAdjusted", "F1", "F2", "ROC10", "VolatilityRatio"]:
             metric_data = {}
             for ticker in results.keys():
                 if metric in results[ticker]:
