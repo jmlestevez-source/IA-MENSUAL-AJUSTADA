@@ -9,7 +9,7 @@ import os
 
 # Importar nuestros módulos
 from data_loader import get_constituents_at_date
-from backtest import run_backtest
+from backtest import run_backtest, inertia_score, monthly_true_range
 
 # -------------------------------------------------
 # Configuración de la app
@@ -26,10 +26,10 @@ st.title("📈 Estrategia mensual sobre los componentes del S&P 500 y/o Nasdaq-1
 # -------------------------------------------------
 st.sidebar.header("Parámetros de backtest")
 
-# Selector de índice - MODIFICADO para permitir selección múltiple
+# Selector de índice
 index_choice = st.sidebar.selectbox(
     "Selecciona el índice:",
-    ["SP500", "NDX", "Ambos (SP500 + NDX)"] # Opción añadida
+    ["SP500", "NDX", "Ambos (SP500 + NDX)"]
 )
 
 # Fechas
@@ -101,7 +101,7 @@ if run_button:
                 indices_to_fetch = ["SP500"]
             elif index_choice == "NDX":
                 indices_to_fetch = ["NDX"]
-            else: # "Ambos (SP500 + NDX)"
+            else:  # "Ambos (SP500 + NDX)"
                 indices_to_fetch = ["SP500", "NDX"]
             
             for idx in indices_to_fetch:
@@ -113,15 +113,16 @@ if run_button:
                     # Combinar tickers y datos
                     all_tickers_data['tickers'].extend(constituents_data.get('tickers', []))
                     all_tickers_data['data'].extend(constituents_data.get('data', []))
-                    # Agregar después de obtener los constituyentes (alrededor de la línea 100)
-if all_tickers_data and 'data' in all_tickers_data:
-    st.info(f"📅 Verificando fechas de incorporación...")
-    # Mostrar algunos ejemplos de fechas
-    sample_data = all_tickers_data['data'][:5] if all_tickers_data['data'] else []
-    if sample_data:
-        for item in sample_data:
-            if isinstance(item, dict) and 'added' in item:
-                st.text(f"  {item.get('ticker', 'N/A')}: agregado el {item.get('added', 'N/A')}")
+            
+            # Verificar fechas de incorporación
+            if all_tickers_data and 'data' in all_tickers_data:
+                st.info(f"📅 Verificando fechas de incorporación...")
+                # Mostrar algunos ejemplos de fechas
+                sample_data = all_tickers_data['data'][:5] if all_tickers_data['data'] else []
+                if sample_data:
+                    for item in sample_data:
+                        if isinstance(item, dict) and 'added' in item:
+                            st.text(f"  {item.get('ticker', 'N/A')}: agregado el {item.get('added', 'N/A')}")
             
             # Eliminar duplicados de tickers manteniendo el orden
             if all_tickers_data['tickers']:
@@ -138,6 +139,7 @@ if all_tickers_data and 'data' in all_tickers_data:
             if tickers_count == 0:
                 st.error("No se encontraron tickers válidos")
                 st.stop()
+            
             # Mostrar algunos tickers de ejemplo
             sample_tickers = all_tickers_data.get('tickers', [])[:10]
             if sample_tickers:
@@ -160,13 +162,13 @@ if all_tickers_data and 'data' in all_tickers_data:
             st.info(f"Rango de fechas: {prices_df.index.min().strftime('%Y-%m-%d')} a {prices_df.index.max().strftime('%Y-%m-%d')}")
             st.info(f"Muestra de tickers: {', '.join(list(prices_df.columns)[:5])}")
 
-            # Cargar benchmark desde CSV (SPY para S&P 500, QQQ para Nasdaq-100, SPY para ambos)
+            # Cargar benchmark desde CSV
             if index_choice == "SP500":
                 benchmark_ticker = "SPY"
             elif index_choice == "NDX":
                 benchmark_ticker = "QQQ"
-            else: # Ambos
-                benchmark_ticker = "SPY" # Por simplicidad, usar SPY. Se podría mejorar.
+            else:  # Ambos
+                benchmark_ticker = "SPY"
             
             st.info(f"Cargando benchmark: {benchmark_ticker}")
             benchmark_df = load_prices_from_csv([benchmark_ticker], start_date, end_date)
@@ -220,193 +222,100 @@ if all_tickers_data and 'data' in all_tickers_data:
             st.success("✅ Backtest completado")
 
             # -------------------------------------------------
-            # Reemplazar la sección de métricas principales (alrededor de la línea 200) con:
-
-# -------------------------------------------------
-# Métricas principales
-# -------------------------------------------------
-if "Equity" in bt_results.columns and len(bt_results["Equity"]) > 0:
-    final_equity = float(bt_results["Equity"].iloc[-1])
-    initial_equity = float(bt_results["Equity"].iloc[0])
-    total_return = (final_equity / initial_equity) - 1 if initial_equity != 0 else 0
-    
-    # Calcular CAGR
-    years = (bt_results.index[-1] - bt_results.index[0]).days / 365.25
-    if years > 0:
-        cagr = (final_equity / initial_equity) ** (1/years) - 1
-    else:
-        cagr = 0
-else:
-    final_equity = 10000
-    total_return = 0
-    cagr = 0
-    
-if "Drawdown" in bt_results.columns:
-    max_drawdown = float(bt_results["Drawdown"].min())
-else:
-    max_drawdown = 0
-    
-if "Returns" in bt_results.columns and len(bt_results["Returns"]) > 1:
-    volatility = float(bt_results["Returns"].std() * (12 ** 0.5)) if bt_results["Returns"].std() != 0 else 0
-    sharpe_ratio = (float(bt_results["Returns"].mean() * 12) / (volatility + 1e-8)) if volatility != 0 else 0
-else:
-    volatility = 0
-    sharpe_ratio = 0
-    
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Equity Final", f"${final_equity:,.0f}")
-col2.metric("Retorno Total", f"{total_return:.2%}")
-col3.metric("CAGR", f"{cagr:.2%}")
-col4.metric("Máximo Drawdown", f"{max_drawdown:.2%}")
-col5.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
-
-# -------------------------------------------------
-# Gráficos mejorados
-# -------------------------------------------------
-# Preparar datos del benchmark
-bench_equity = None
-bench_drawdown = None
-if benchmark_df is not None and not benchmark_df.empty:
-    try:
-        bench_data = benchmark_df[benchmark_ticker] if benchmark_ticker in benchmark_df.columns else benchmark_df.iloc[:, 0]
-        bench_returns = bench_data.pct_change().fillna(0)
-        bench_equity = 10000 * (1 + bench_returns).cumprod()
-        bench_drawdown = (bench_equity / bench_equity.cummax() - 1)
-    except Exception as e:
-        st.warning(f"Error calculando benchmark: {e}")
-
-# Gráfico de equity
-try:
-    fig_equity = go.Figure()
-    fig_equity.add_trace(go.Scatter(
-        x=bt_results.index,
-        y=bt_results["Equity"],
-        mode='lines',
-        name='Estrategia',
-        line=dict(width=3, color='blue'),
-        hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
-    ))
-    
-    # Benchmark
-    if bench_equity is not None:
-        # Alinear índices
-        common_index = bt_results.index.intersection(bench_equity.index)
-        if len(common_index) > 0:
-            bench_aligned = bench_equity.loc[common_index]
-            
-            fig_equity.add_trace(go.Scatter(
-                x=bench_aligned.index,
-                y=bench_aligned.values,
-                mode='lines',
-                name=f'Benchmark ({benchmark_ticker})',
-                line=dict(width=2, dash='dash', color='gray'),
-                hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
-            ))
-    
-    fig_equity.update_layout(
-        title="Evolución del Equity",
-        xaxis_title="Fecha",
-        yaxis_title="Equity ($)",
-        hovermode='x unified',
-        height=500,
-        showlegend=True
-    )
-    st.plotly_chart(fig_equity, use_container_width=True)
-    
-except Exception as fig_error:
-    st.warning(f"Error al crear gráfico de equity: {fig_error}")
-
-# Gráfico de drawdown combinado
-try:
-    if "Drawdown" in bt_results.columns:
-        fig_dd = go.Figure()
-        
-        # Drawdown de la estrategia
-        fig_dd.add_trace(go.Scatter(
-            x=bt_results.index,
-            y=bt_results["Drawdown"] * 100,
-            mode='lines',
-            name='Drawdown Estrategia',
-            fill='tozeroy',
-            line=dict(color='red', width=2),
-            hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
-        ))
-        
-        # Drawdown del benchmark
-        if bench_drawdown is not None:
-            common_index = bt_results.index.intersection(bench_drawdown.index)
-            if len(common_index) > 0:
-                bench_dd_aligned = bench_drawdown.loc[common_index]
+            # Métricas principales
+            # -------------------------------------------------
+            if "Equity" in bt_results.columns and len(bt_results["Equity"]) > 0:
+                final_equity = float(bt_results["Equity"].iloc[-1])
+                initial_equity = float(bt_results["Equity"].iloc[0])
+                total_return = (final_equity / initial_equity) - 1 if initial_equity != 0 else 0
                 
-                fig_dd.add_trace(go.Scatter(
-                    x=bench_dd_aligned.index,
-                    y=bench_dd_aligned.values * 100,
-                    mode='lines',
-                    name=f'Drawdown {benchmark_ticker}',
-                    line=dict(color='orange', width=2, dash='dash'),
-                    hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
-                ))
-        
-        fig_dd.update_layout(
-            title="Drawdown Comparativo",
-            xaxis_title="Fecha",
-            yaxis_title="Drawdown (%)",
-            hovermode='x unified',
-            height=400,
-            showlegend=True
-        )
-        st.plotly_chart(fig_dd, use_container_width=True)
-except Exception as dd_error:
-    st.warning(f"Error al crear gráfico de drawdown: {dd_error}")
-
-            # -------------------------------------------------
-            # Picks seleccionados
-            # -------------------------------------------------
-            if picks_df is not None and not picks_df.empty:
-                try:
-                    st.subheader("Últimos picks seleccionados")
-                    latest_date = picks_df["Date"].max()
-                    latest_picks = picks_df[picks_df["Date"] == latest_date]
-                    if not latest_picks.empty:
-                        st.dataframe(latest_picks.round(2))
-                    else:
-                        st.info("No hay picks recientes para mostrar")
-                    
-                    # Mostrar picks de todos los meses
-                    st.subheader("Todos los picks por mes")
-                    st.dataframe(picks_df.round(2))
-                    
-                    # Gráfico de picks por fecha
-                    try:
-                        picks_by_date = picks_df.groupby("Date").size()
-                        if len(picks_by_date) > 0:
-                            fig_picks = px.bar(
-                                x=picks_by_date.index,
-                                y=picks_by_date.values,
-                                labels={'x': 'Fecha', 'y': 'Número de Picks'},
-                                title="Número de Picks por Fecha"
-                            )
-                            fig_picks.update_layout(height=400)
-                            st.plotly_chart(fig_picks, use_container_width=True)
-                    except Exception as picks_fig_error:
-                        st.warning(f"Error al crear gráfico de picks: {picks_fig_error}")
-                        
-                except Exception as picks_error:
-                    st.warning(f"Error al procesar picks: {picks_error}")
+                # Calcular CAGR
+                years = (bt_results.index[-1] - bt_results.index[0]).days / 365.25
+                if years > 0:
+                    cagr = (final_equity / initial_equity) ** (1/years) - 1
+                else:
+                    cagr = 0
             else:
-                st.info("No se generaron picks en este backtest")
+                final_equity = 10000
+                total_return = 0
+                cagr = 0
+                
+            if "Drawdown" in bt_results.columns:
+                max_drawdown = float(bt_results["Drawdown"].min())
+            else:
+                max_drawdown = 0
+                
+            if "Returns" in bt_results.columns and len(bt_results["Returns"]) > 1:
+                volatility = float(bt_results["Returns"].std() * (12 ** 0.5)) if bt_results["Returns"].std() != 0 else 0
+                sharpe_ratio = (float(bt_results["Returns"].mean() * 12) / (volatility + 1e-8)) if volatility != 0 else 0
+            else:
+                volatility = 0
+                sharpe_ratio = 0
+                
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Equity Final", f"${final_equity:,.0f}")
+            col2.metric("Retorno Total", f"{total_return:.2%}")
+            col3.metric("CAGR", f"{cagr:.2%}")
+            col4.metric("Máximo Drawdown", f"{max_drawdown:.2%}")
+            col5.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
 
-    except Exception as e:
-        st.error(f"❌ Excepción no capturada: {str(e)}")
-        st.exception(e)
-        st.info("💡 Consejos para resolver este problema:")
-        st.info("1. Verifica que los archivos CSV existan en la carpeta 'data/'")
-        st.info("2. Asegúrate de que los archivos tengan el formato correcto")
-        st.info("3. Prueba con un rango de fechas más corto")
-        st.info("4. Verifica que los tickers sean válidos")
-else:
-    st.info("👈 Configura los parámetros en el panel lateral y haz clic en 'Ejecutar backtest'")
-    st.info("💡 Consejos para mejores resultados:")
-    st.info("• Usa un rango de fechas de al menos 2 años")
-    st.info("• Comienza con 10 activos y ajusta según los resultados")
-    st.info("• Considera usar ambos índices para mayor diversificación")
+            # -------------------------------------------------
+            # Gráficos mejorados
+            # -------------------------------------------------
+            # Preparar datos del benchmark
+            bench_equity = None
+            bench_drawdown = None
+            if benchmark_df is not None and not benchmark_df.empty:
+                try:
+                    bench_data = benchmark_df[benchmark_ticker] if benchmark_ticker in benchmark_df.columns else benchmark_df.iloc[:, 0]
+                    bench_returns = bench_data.pct_change().fillna(0)
+                    bench_equity = 10000 * (1 + bench_returns).cumprod()
+                    bench_drawdown = (bench_equity / bench_equity.cummax() - 1)
+                except Exception as e:
+                    st.warning(f"Error calculando benchmark: {e}")
+
+            # Gráfico de equity
+            try:
+                fig_equity = go.Figure()
+                fig_equity.add_trace(go.Scatter(
+                    x=bt_results.index,
+                    y=bt_results["Equity"],
+                    mode='lines',
+                    name='Estrategia',
+                    line=dict(width=3, color='blue'),
+                    hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
+                ))
+                
+                # Benchmark
+                if bench_equity is not None:
+                    # Alinear índices
+                    common_index = bt_results.index.intersection(bench_equity.index)
+                    if len(common_index) > 0:
+                        bench_aligned = bench_equity.loc[common_index]
+                        
+                        fig_equity.add_trace(go.Scatter(
+                            x=bench_aligned.index,
+                            y=bench_aligned.values,
+                            mode='lines',
+                            name=f'Benchmark ({benchmark_ticker})',
+                            line=dict(width=2, dash='dash', color='gray'),
+                            hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
+                        ))
+                
+                fig_equity.update_layout(
+                    title="Evolución del Equity",
+                    xaxis_title="Fecha",
+                    yaxis_title="Equity ($)",
+                    hovermode='x unified',
+                    height=500,
+                    showlegend=True
+                )
+                st.plotly_chart(fig_equity, use_container_width=True)
+                
+            except Exception as fig_error:
+                st.warning(f"Error al crear gráfico de equity: {fig_error}")
+
+            # Gráfico de drawdown combinado
+            try:
+                if "Drawdown" in bt_results.columns:
+                    fig_dd =
