@@ -25,6 +25,96 @@ jobs:
         run: |
           pip install yfinance pandas
 
+      - name: Create update script directory
+        run: |
+          mkdir -p scripts
+
+      - name: Create update script
+        run: |
+          cat > scripts/update_data.py << 'EOF'
+          # scripts/update_data.py
+          import yfinance as yf
+          import pandas as pd
+          import os
+          from datetime import datetime, timedelta
+          
+          DATA_DIR = "data"
+          os.makedirs(DATA_DIR, exist_ok=True)
+          
+          # Lista de tickers comunes del S&P 500 y Nasdaq-100
+          TICKERS = [
+              "AAPL", "MSFT", "AMZN", "GOOGL", "GOOG", "META", "TSLA", "NVDA", "JPM", "JNJ",
+              "V", "PG", "MA", "HD", "DIS", "PYPL", "ADBE", "NFLX", "CRM", "CMCSA",
+              "PEP", "COST", "AVGO", "CSCO", "INTC", "QCOM", "TXN", "SBUX", "ADP",
+              "VRTX", "GILD", "MDLZ", "ISRG", "CSX", "TMUS", "AMD", "REGN", "BKNG",
+              "CTAS", "VRTX", "VRTX", "VRTX", "VRTX", "VRTX", "VRTX", "VRTX", "VRTX", "VRTX", "VRTX"
+          ]
+          
+          # Eliminar duplicados
+          TICKERS = list(dict.fromkeys(TICKERS))
+          
+          # Agregar tickers de benchmark
+          BENCHMARK_TICKERS = ["SPY", "QQQ"]
+          ALL_TICKERS = list(set(TICKERS + BENCHMARK_TICKERS))
+          
+          def update_ticker(ticker):
+              file_path = os.path.join(DATA_DIR, f"{ticker}.csv")
+              
+              # Si el archivo no existe, descargar datos históricos
+              if not os.path.exists(file_path):
+                  print(f"{ticker}: Descargando datos históricos...")
+                  data = yf.download(ticker, period="max", auto_adjust=True)
+                  if not data.empty:
+                      data.to_csv(file_path)
+                      print(f"{ticker}: Datos históricos guardados.")
+                  else:
+                      print(f"{ticker}: No se pudieron descargar datos históricos.")
+                  return
+              
+              # Si existe, cargar y actualizar con datos recientes
+              df = pd.read_csv(file_path, index_col="Date", parse_dates=True)
+              
+              # Última fecha registrada
+              last_date = df.index[-1]
+              today = datetime.today().date()
+              
+              # Si ya está actualizado, salir
+              if last_date.date() >= today:
+                  print(f"{ticker}: Ya está actualizado.")
+                  return
+              
+              # Descargar solo los últimos 5 días para asegurar que tenemos el último dato
+              start_date = last_date - timedelta(days=5)
+              end_date = today
+              
+              data = yf.download(ticker, start=start_date, end=end_date, auto_adjust=True)
+              if data.empty:
+                  print(f"{ticker}: No hay nuevos datos.")
+                  return
+              
+              # Asegurar formato
+              data.index = pd.to_datetime(data.index)
+              data = data.rename_axis("Date")
+              
+              # Combinar datos existentes con nuevos
+              df = pd.concat([df, data])
+              # Eliminar duplicados manteniendo el más reciente
+              df = df[~df.index.duplicated(keep='last')]
+              # Ordenar por fecha
+              df = df.sort_index()
+              
+              # Guardar
+              df.to_csv(file_path)
+              print(f"{ticker}: Actualizado.")
+          
+          if __name__ == "__main__":
+              for ticker in ALL_TICKERS:
+                  try:
+                      update_ticker(ticker)
+                  except Exception as e:
+                      print(f"Error actualizando {ticker}: {e}")
+          EOF
+
       - name: Run update script
         run: |
           python scripts/update_data.py
@@ -34,5 +124,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
-          git diff --staged --quiet || git commit -m "Actualización automática de datos"
+          git diff --staged --quiet || git commit -m "Actualización automática de datos ($(date +'%Y-%m-%d'))"
           git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
