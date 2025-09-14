@@ -9,7 +9,7 @@ import os
 
 # Importar nuestros módulos
 from data_loader import get_constituents_at_date
-from backtest import run_backtest, inertia_score, monthly_true_range
+from backtest import run_backtest, inertia_score, calcular_atr_wilder
 
 # -------------------------------------------------
 # Configuración de la app
