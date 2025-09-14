@@ -1,6 +1,3 @@
-Aquí está el archivo `app.py` completo y corregido:
-
-```python
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
