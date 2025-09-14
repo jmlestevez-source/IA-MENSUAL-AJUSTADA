@@ -1,4 +1,3 @@
-# data_loader.py
 import pandas as pd
 import requests
 from io import StringIO
@@ -101,16 +100,12 @@ def get_nasdaq100_tickers_from_wikipedia():
                 df = table
                 break
         
-        # Si no encontramos por nombre de columna, usar la tabla de componentes actuales
+        # Si no encontramos por nombre de columna, usar la tercera tabla (índice 2) que típicamente es la de constituyentes
         if df is None:
-            # Buscar la tabla con los componentes actuales (debería tener muchos tickers)
-            for table in tables:
-                if len(table) > 50:  # La tabla de componentes debería tener muchos registros
-                    df = table
-                    break
-        
-        if df is None:
-            raise ValueError("No se encontró tabla de constituyentes")
+            if len(tables) >= 3:
+                df = tables[2]
+            else:
+                raise ValueError("No se encontró tabla de constituyentes")
         
         # Verificar y renombrar columna de tickers si es necesario
         ticker_column = None
@@ -234,10 +229,10 @@ def download_prices(tickers, start_date, end_date):
             print(f"  Archivo no encontrado: {csv_path}")
     
     # Combinar en DataFrame
-    if prices_
+    if prices_data:
         prices_df = pd.DataFrame(prices_data)
-        # Rellenar valores faltantes hacia adelante y hacia atrás (método nuevo)
-        prices_df = prices_df.ffill().bfill()
+        # Rellenar valores faltantes hacia adelante y hacia atrás
+        prices_df = prices_df.fillna(method='ffill').fillna(method='bfill')
         return prices_df
     else:
         return pd.DataFrame()
