@@ -619,24 +619,19 @@ CÁLCULOS PASO A PASO PARA {debug_ticker}:
    F1 = {roc_10_percent.iloc[idx]:.2f} × 0.6 = {f1.iloc[idx]:.2f}
 
 3. True Range = max(H-L, |H-Cprev|, |L-Cprev|)
-   True Range = max({high.iloc[idx]:.2f}-{low.iloc[idx]:.2f}, |{high.iloc[idx]:.2f}-{close.iloc[idx-1]:.2f}|, |{low.iloc[idx]:.2f}-{close.iloc[idx-1]:.2f}|)
    True Range = {true_range.iloc[idx]:.2f}
 
-4. ATR(14) usando método Wilder
-   ATR(14) = {atr14.iloc[idx]:.2f}
+4. ATR(14) usando método Wilder = {atr14.iloc[idx]:.2f}
 
 5. SMA(14) = {sma14.iloc[idx]:.2f}
 
-6. F2 = (ATR14/SMA14) × 0.4
-   F2 = ({atr14.iloc[idx]:.2f}/{sma14.iloc[idx]:.2f}) × 0.4 = {f2.iloc[idx]:.4f}
+6. F2 = (ATR14/SMA14) × 0.4 = {f2.iloc[idx]:.4f}
 
-7. Inercia Alcista = F1 / F2
-   Inercia = {f1.iloc[idx]:.2f} / {f2.iloc[idx]:.4f} = {inercia_alcista.iloc[idx]:.2f}
+7. Inercia Alcista = F1 / F2 = {inercia_alcista.iloc[idx]:.2f}
 
-8. Score = {score.iloc[idx]:.2f} (Inercia si >= {corte}, sino 0)
+8. Score = {score.iloc[idx]:.2f}
 
-9. Score Ajustado = Score / ATR14
-   Score Adj = {score.iloc[idx]:.2f} / {atr14.iloc[idx]:.2f} = {score_adj.iloc[idx]:.2f}
+9. Score Ajustado = Score / ATR14 = {score_adj.iloc[idx]:.2f}
                             """)
                             
                             # Mostrar si pasa el corte
@@ -645,123 +640,64 @@ CÁLCULOS PASO A PASO PARA {debug_ticker}:
                             else:
                                 st.warning(f"❌ Inercia ({inercia_alcista.iloc[idx]:.2f}) < {corte} - NO PASA EL CORTE")
                             
-                            # Tabla histórica de los últimos 12 meses
-                            st.subheader("📈 Evolución histórica (últimos 12 meses)")
-                            
-                            try:
-                                # Crear DataFrame con los últimos 12 valores válidos
-                                n_months = min(12, len(close))
-                                history_df = pd.DataFrame({
-                                    'Fecha': close.index[-n_months:].strftime('%Y-%m'),
-                                    'Precio': close.iloc[-n_months:].values,
-                                    'ROC(10)%': roc_10_percent.iloc[-n_months:].values,
-                                    'F1': f1.iloc[-n_months:].values,
-                                    'ATR(14)': atr14.iloc[-n_months:].values,
-                                    'F2': f2.iloc[-n_months:].values,
-                                    'Inercia': inercia_alcista.iloc[-n_months:].values,
-                                    'Score': score.iloc[-n_months:].values,
-                                    'Score Adj': score_adj.iloc[-n_months:].values
-                                })
-                                
-                                # Formatear DataFrame
-                                for col in ['Precio', 'ROC(10)%', 'F1', 'ATR(14)', 'F2', 'Inercia', 'Score', 'Score Adj']:
-                                    history_df[col] = history_df[col].round(2)
-                                
-                                st.dataframe(history_df, use_container_width=True)
-                                
-                            except Exception as hist_error:
-                                st.warning(f"Error creando tabla histórica: {hist_error}")
-                            
-                            # Gráfico de evolución de Inercia
-                            try:
-                                fig_debug = go.Figure()
-                                
-                                # Inercia Alcista últimos 24 meses
-                                last_24 = min(24, len(inercia_alcista))
-                                fig_debug.add_trace(go.Scatter(
-                                    x=inercia_alcista.index[-last_24:],
-                                    y=inercia_alcista.iloc[-last_24:],
-                                    mode='lines+markers',
-                                    name='Inercia Alcista',
-                                    line=dict(width=3, color='blue')
-                                ))
-                                
-                                # Línea de corte
-                                fig_debug.add_hline(
-                                    y=corte, 
-                                    line_dash="dash", 
-                                    line_color="red",
-                                    annotation_text=f"Corte = {corte}"
-                                )
-                                
-                                fig_debug.update_layout(
-                                    title=f"Evolución de Inercia Alcista - {debug_ticker} (Método Wilder)",
-                                    xaxis_title="Fecha",
-                                    yaxis_title="Inercia Alcista",
-                                    height=400,
-                                    showlegend=True
-                                )
-                                
-                                st.plotly_chart(fig_debug, use_container_width=True)
-                                
-                            except Exception as graph_error:
-                                st.warning(f"Error creando gráfico: {graph_error}")
-                            
                         else:
                             st.error(f"No hay suficientes datos para {debug_ticker} (se necesitan al menos 15 meses)")
                 else:
                     st.info("Ejecuta primero el backtest para poder analizar los cálculos")
 
-# -------------------------------------------------
-# Comparación con últimos picks
-# -------------------------------------------------
-if 'picks_df' in locals() and picks_df is not None and not picks_df.empty:
-    with st.expander("📊 Análisis de Consistencia de Picks"):
-        st.subheader("Comparación de valores calculados")
+            # -------------------------------------------------
+            # Comparación con últimos picks
+            # -------------------------------------------------
+            if 'picks_df' in locals() and picks_df is not None and not picks_df.empty:
+                with st.expander("📊 Análisis de Consistencia de Picks"):
+                    st.subheader("Comparación de valores calculados")
+                    
+                    # Obtener últimos picks
+                    latest_date = picks_df["Date"].max()
+                    latest_picks = picks_df[picks_df["Date"] == latest_date].head(10)
+                    
+                    if not latest_picks.empty:
+                        # Crear tabla de análisis
+                        analysis_data = []
+                        for _, pick in latest_picks.iterrows():
+                            analysis_data.append({
+                                'Rank': pick['Rank'],
+                                'Ticker': pick['Ticker'],
+                                'Inercia Alcista': f"{pick['Inercia']:.2f}",
+                                'Score Ajustado': f"{pick['ScoreAdj']:.2f}",
+                                'Pasa Corte': '✅' if pick['Inercia'] >= corte else '❌'
+                            })
+                        
+                        analysis_df = pd.DataFrame(analysis_data)
+                        st.dataframe(analysis_df, use_container_width=True)
+                        
+                        # Métricas de resumen
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            avg_inercia = latest_picks['Inercia'].mean()
+                            st.metric("Promedio Inercia", f"{avg_inercia:.2f}")
+                        with col2:
+                            avg_score = latest_picks['ScoreAdj'].mean()
+                            st.metric("Promedio Score Adj", f"{avg_score:.2f}")
+                        with col3:
+                            pass_count = (latest_picks['Inercia'] >= corte).sum()
+                            st.metric("Tickers que pasan corte", f"{pass_count}/{len(latest_picks)}")
+                        
+                        # Advertencia si hay inconsistencias
+                        if avg_score > 350:
+                            st.warning("⚠️ Los valores de Score Ajustado están altos. En AmiBroker suelen estar por debajo de 350.")
+                        else:
+                            st.success("✅ Los valores de Score Ajustado están en el rango esperado de AmiBroker.")
 
-        # Obtener últimos picks
-        latest_date = picks_df["Date"].max()
-        latest_picks = picks_df[picks_df["Date"] == latest_date].head(10)
+    except Exception as e:
+        st.error(f"❌ Excepción no capturada: {str(e)}")
+        st.exception(e)
+        st.info("💡 Consejos para resolver este problema:")
+        st.info("1. Verifica que los archivos CSV existan en la carpeta 'data/'")
+        st.info("2. Asegúrate de que los archivos tengan el formato correcto")
+        st.info("3. Prueba con un rango de fechas más corto")
+        st.info("4. Verifica que los tickers sean válidos")
 
-        if not latest_picks.empty:
-            # Crear tabla de análisis
-            analysis_data = []
-            for _, pick in latest_picks.iterrows():
-                analysis_data.append({
-                    'Rank': pick['Rank'],
-                    'Ticker': pick['Ticker'],
-                    'Inercia Alcista': f"{pick['Inercia']:.2f}",
-                    'Score Ajustado': f"{pick['ScoreAdj']:.2f}",
-                    'Pasa Corte': '✅' if pick['Inercia'] >= corte else '❌'
-                })
-
-            analysis_df = pd.DataFrame(analysis_data)
-            st.dataframe(analysis_df, use_container_width=True)
-
-            # Métricas de resumen
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                avg_inercia = latest_picks['Inercia'].mean()
-                st.metric("Promedio Inercia", f"{avg_inercia:.2f}")
-            with col2:
-                avg_score = latest_picks['ScoreAdj'].mean()
-                st.metric("Promedio Score Adj", f"{avg_score:.2f}")
-            with col3:
-                pass_count = (latest_picks['Inercia'] >= corte).sum()
-                st.metric("Tickers que pasan corte", f"{pass_count}/{len(latest_picks)}")
-
-            # Advertencia si hay inconsistencias
-            if avg_score > 500:
-                st.warning("⚠️ Los valores de Score Ajustado parecen altos. En AmiBroker suelen estar por debajo de 350.")
-
-except Exception as e:
-    st.error(f"❌ Excepción no capturada: {str(e)}")
-    st.exception(e)
-    st.info("💡 Consejos para resolver este problema:")
-    st.info("1. Verifica que los archivos CSV existan en la carpeta 'data/'")
-    st.info("2. Asegúrate de que los archivos tengan el formato correcto")
-    st.info("3. Prueba con un rango de fechas más corto")
-    st.info("4. Verifica que los tickers sean válidos")
 else:
     st.info("👈 Configura los parámetros en el panel lateral y haz clic en 'Ejecutar backtest'")
     st.info("💡 Consejos para mejores resultados:")
