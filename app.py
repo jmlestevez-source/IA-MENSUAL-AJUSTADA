@@ -397,145 +397,146 @@ if run_button:
 
             # -------------------------------------------------
             # -------------------------------------------------
-# Sección de Debug de Cálculos
-# -------------------------------------------------
-with st.expander("🔍 Debug de Cálculos de Inercia", expanded=False):
-    if 'prices_df' in locals() and prices_df is not None and not prices_df.empty:
-        st.subheader("Análisis detallado de cálculos")
-        
-        # Crear una copia de los tickers disponibles
-        available_tickers = sorted(list(prices_df.columns))
-        
-        # Usar un formulario para evitar recargas
-        with st.form("debug_form"):
-            debug_ticker = st.selectbox(
-                "Selecciona un ticker para analizar:",
-                available_tickers,
-                key="debug_ticker_select_form"
-            )
-            
-            analyze_button = st.form_submit_button("Analizar Ticker")
-        
-        if analyze_button and debug_ticker:
-            # Obtener datos del ticker
-            ticker_data = prices_df[[debug_ticker]].dropna()
-            
-            if len(ticker_data) >= 15:
-                # Mensualizar datos si es necesario
-                ticker_monthly = ticker_data.resample('ME').last()
-                
-                # Calcular componentes paso a paso
-                close = ticker_monthly[debug_ticker]
-                
-                # ROC calculation
-                roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
-                roc_10_w1 = roc_10_percent * 0.4
-                roc_10_w2 = roc_10_percent * 0.2
-                f1 = roc_10_w1 + roc_10_w2
-                
-                # ATR mensual mejorado
-                monthly_pct_range = np.abs(close.pct_change())
-                atr14_pct = monthly_pct_range.rolling(14).mean()
-                atr14 = atr14_pct * close
-                sma14 = close.rolling(14).mean()
-                
-                # F2
-                volatility_ratio = atr14_pct  # Ya es un ratio
-                f2 = volatility_ratio * 0.4
-                
-                # Inercia
-                inercia_alcista = f1 / f2
-                
-                # Score
-                score = pd.Series(
-                    np.where(inercia_alcista < corte, 0, np.maximum(inercia_alcista, 0)),
-                    index=inercia_alcista.index
-                )
-                
-                # Score ajustado
-                score_adj = score / atr14
-                
-                # Mostrar últimos valores
-                st.subheader(f"📊 Últimos valores para {debug_ticker}")
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("Precio Actual", f"${close.iloc[-1]:.2f}")
-                    if len(close) > 10:
-                        st.metric("Precio hace 10 meses", f"${close.iloc[-11]:.2f}")
-                    st.metric("ROC(10)", f"{roc_10_percent.iloc[-1]:.2f}%")
-                    st.metric("F1 (ROC*0.6)", f"{f1.iloc[-1]:.2f}")
-                
-                with col2:
-                    st.metric("ATR(14) $", f"${atr14.iloc[-1]:.2f}")
-                    st.metric("ATR(14) %", f"{atr14_pct.iloc[-1]*100:.2f}%")
-                    st.metric("SMA(14)", f"${sma14.iloc[-1]:.2f}")
-                    st.metric("F2", f"{f2.iloc[-1]:.4f}")
-                
-                with col3:
-                    st.metric("Inercia Alcista", f"{inercia_alcista.iloc[-1]:.2f}")
-                    st.metric("Score", f"{score.iloc[-1]:.2f}")
-                    st.metric("Score Ajustado", f"{score_adj.iloc[-1]:.2f}")
-                
-                # Mostrar si pasa el corte
-                if inercia_alcista.iloc[-1] >= corte:
-                    st.success(f"✅ Inercia ({inercia_alcista.iloc[-1]:.2f}) >= {corte} - PASA EL CORTE")
+            # -------------------------------------------------
+            # Sección de Debug de Cálculos
+            # -------------------------------------------------
+            with st.expander("🔍 Debug de Cálculos de Inercia", expanded=False):
+                if 'prices_df' in locals() and prices_df is not None and not prices_df.empty:
+                    st.subheader("Análisis detallado de cálculos")
+                    
+                    # Crear una copia de los tickers disponibles
+                    available_tickers = sorted(list(prices_df.columns))
+                    
+                    # Usar un formulario para evitar recargas
+                    with st.form("debug_form"):
+                        debug_ticker = st.selectbox(
+                            "Selecciona un ticker para analizar:",
+                            available_tickers,
+                            key="debug_ticker_select_form"
+                        )
+                        
+                        analyze_button = st.form_submit_button("Analizar Ticker")
+                    
+                    if analyze_button and debug_ticker:
+                        # Obtener datos del ticker
+                        ticker_data = prices_df[[debug_ticker]].dropna()
+                        
+                        if len(ticker_data) >= 15:
+                            # Mensualizar datos si es necesario
+                            ticker_monthly = ticker_data.resample('ME').last()
+                            
+                            # Calcular componentes paso a paso
+                            close = ticker_monthly[debug_ticker]
+                            
+                            # ROC calculation
+                            roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
+                            roc_10_w1 = roc_10_percent * 0.4
+                            roc_10_w2 = roc_10_percent * 0.2
+                            f1 = roc_10_w1 + roc_10_w2
+                            
+                            # ATR mensual mejorado
+                            monthly_pct_range = np.abs(close.pct_change())
+                            atr14_pct = monthly_pct_range.rolling(14).mean()
+                            atr14 = atr14_pct * close
+                            sma14 = close.rolling(14).mean()
+                            
+                            # F2
+                            volatility_ratio = atr14_pct  # Ya es un ratio
+                            f2 = volatility_ratio * 0.4
+                            
+                            # Inercia
+                            inercia_alcista = f1 / f2
+                            
+                            # Score
+                            score = pd.Series(
+                                np.where(inercia_alcista < corte, 0, np.maximum(inercia_alcista, 0)),
+                                index=inercia_alcista.index
+                            )
+                            
+                            # Score ajustado
+                            score_adj = score / atr14
+                            
+                            # Mostrar últimos valores
+                            st.subheader(f"📊 Últimos valores para {debug_ticker}")
+                            
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                st.metric("Precio Actual", f"${close.iloc[-1]:.2f}")
+                                if len(close) > 10:
+                                    st.metric("Precio hace 10 meses", f"${close.iloc[-11]:.2f}")
+                                st.metric("ROC(10)", f"{roc_10_percent.iloc[-1]:.2f}%")
+                                st.metric("F1 (ROC*0.6)", f"{f1.iloc[-1]:.2f}")
+                            
+                            with col2:
+                                st.metric("ATR(14) $", f"${atr14.iloc[-1]:.2f}")
+                                st.metric("ATR(14) %", f"{atr14_pct.iloc[-1]*100:.2f}%")
+                                st.metric("SMA(14)", f"${sma14.iloc[-1]:.2f}")
+                                st.metric("F2", f"{f2.iloc[-1]:.4f}")
+                            
+                            with col3:
+                                st.metric("Inercia Alcista", f"{inercia_alcista.iloc[-1]:.2f}")
+                                st.metric("Score", f"{score.iloc[-1]:.2f}")
+                                st.metric("Score Ajustado", f"{score_adj.iloc[-1]:.2f}")
+                            
+                            # Mostrar si pasa el corte
+                            if inercia_alcista.iloc[-1] >= corte:
+                                st.success(f"✅ Inercia ({inercia_alcista.iloc[-1]:.2f}) >= {corte} - PASA EL CORTE")
+                            else:
+                                st.warning(f"❌ Inercia ({inercia_alcista.iloc[-1]:.2f}) < {corte} - NO PASA EL CORTE")
+                            
+                            # Verificación del cálculo
+                            st.info(f"**Verificación**: Score Ajustado = Score / ATR = {score.iloc[-1]:.2f} / {atr14.iloc[-1]:.2f} = {score_adj.iloc[-1]:.2f}")
+                            
+                        else:
+                            st.error(f"No hay suficientes datos para {debug_ticker} (se necesitan al menos 15 meses)")
                 else:
-                    st.warning(f"❌ Inercia ({inercia_alcista.iloc[-1]:.2f}) < {corte} - NO PASA EL CORTE")
-                
-                # Verificación del cálculo
-                st.info(f"**Verificación**: Score Ajustado = Score / ATR = {score.iloc[-1]:.2f} / {atr14.iloc[-1]:.2f} = {score_adj.iloc[-1]:.2f}")
-                
-            else:
-                st.error(f"No hay suficientes datos para {debug_ticker} (se necesitan al menos 15 meses)")
-    else:
-        st.info("Ejecuta primero el backtest para poder analizar los cálculos")
+                    st.info("Ejecuta primero el backtest para poder analizar los cálculos")
 
-# -------------------------------------------------
-# Comparación con últimos picks - CORREGIDO
-# -------------------------------------------------
-if 'picks_df' in locals() and picks_df is not None and not picks_df.empty:
-    with st.expander("📊 Análisis de Consistencia de Picks"):
-        st.subheader("Comparación de valores calculados")
-        
-        # Obtener últimos picks
-        latest_date = picks_df["Date"].max()
-        latest_picks = picks_df[picks_df["Date"] == latest_date].head(10)
-        
-        if not latest_picks.empty:
-            # Crear tabla de análisis
-            analysis_data = []
-            for _, pick in latest_picks.iterrows():
-                # El ratio correcto es Score/ATR (que debería dar ScoreAdjusted)
-                # Para verificar: ScoreAdjusted debería ser aproximadamente Score/ATR
-                
-                analysis_data.append({
-                    'Rank': pick['Rank'],
-                    'Ticker': pick['Ticker'],
-                    'Inercia Alcista': f"{pick['Inercia']:.2f}",
-                    'Score Ajustado': f"{pick['ScoreAdj']:.2f}",
-                    'Pasa Corte': '✅' if pick['Inercia'] >= corte else '❌'
-                })
-            
-            analysis_df = pd.DataFrame(analysis_data)
-            st.dataframe(analysis_df, use_container_width=True)
-            
-            # Métricas de resumen
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                avg_inercia = latest_picks['Inercia'].mean()
-                st.metric("Promedio Inercia", f"{avg_inercia:.2f}")
-            with col2:
-                avg_score = latest_picks['ScoreAdj'].mean()
-                st.metric("Promedio Score Adj", f"{avg_score:.2f}")
-            with col3:
-                pass_count = (latest_picks['Inercia'] >= corte).sum()
-                st.metric("Tickers que pasan corte", f"{pass_count}/{len(latest_picks)}")
-            
-            # Advertencia si hay inconsistencias
-            if avg_score > 500:
-                st.warning("⚠️ Los valores de Score Ajustado parecen altos. En AmiBroker suelen estar por debajo de 350.")
+            # -------------------------------------------------
+            # Comparación con últimos picks - CORREGIDO
+            # -------------------------------------------------
+            if 'picks_df' in locals() and picks_df is not None and not picks_df.empty:
+                with st.expander("📊 Análisis de Consistencia de Picks"):
+                    st.subheader("Comparación de valores calculados")
+                    
+                    # Obtener últimos picks
+                    latest_date = picks_df["Date"].max()
+                    latest_picks = picks_df[picks_df["Date"] == latest_date].head(10)
+                    
+                    if not latest_picks.empty:
+                        # Crear tabla de análisis
+                        analysis_data = []
+                        for _, pick in latest_picks.iterrows():
+                            # El ratio correcto es Score/ATR (que debería dar ScoreAdjusted)
+                            # Para verificar: ScoreAdjusted debería ser aproximadamente Score/ATR
+                            
+                            analysis_data.append({
+                                'Rank': pick['Rank'],
+                                'Ticker': pick['Ticker'],
+                                'Inercia Alcista': f"{pick['Inercia']:.2f}",
+                                'Score Ajustado': f"{pick['ScoreAdj']:.2f}",
+                                'Pasa Corte': '✅' if pick['Inercia'] >= corte else '❌'
+                            })
+                        
+                        analysis_df = pd.DataFrame(analysis_data)
+                        st.dataframe(analysis_df, use_container_width=True)
+                        
+                        # Métricas de resumen
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            avg_inercia = latest_picks['Inercia'].mean()
+                            st.metric("Promedio Inercia", f"{avg_inercia:.2f}")
+                        with col2:
+                            avg_score = latest_picks['ScoreAdj'].mean()
+                            st.metric("Promedio Score Adj", f"{avg_score:.2f}")
+                        with col3:
+                            pass_count = (latest_picks['Inercia'] >= corte).sum()
+                            st.metric("Tickers que pasan corte", f"{pass_count}/{len(latest_picks)}")
+                        
+                        # Advertencia si hay inconsistencias
+                        if avg_score > 500:
+                            st.warning("⚠️ Los valores de Score Ajustado parecen altos. En AmiBroker suelen estar por debajo de 350.")
 
     except Exception as e:
         st.error(f"❌ Excepción no capturada: {str(e)}")
