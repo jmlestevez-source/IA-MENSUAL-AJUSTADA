@@ -29,6 +29,18 @@ def calcular_atr_wilder(high, low, close, periods=14):
     
     return atr
 
+def monthly_true_range(high, low, close):
+    """
+    Calcula el True Range mensual - mantenido por compatibilidad
+    """
+    prev_close = close.shift(1)
+    tr = pd.DataFrame({
+        'hl': np.abs(high - low),
+        'hc': np.abs(high - prev_close),
+        'lc': np.abs(low - prev_close)
+    }).max(axis=1)
+    return tr
+
 def inertia_score(monthly_prices_df, corte=680):
     """
     Calcula el score de inercia correctamente replicando el código AFL
@@ -48,23 +60,15 @@ def inertia_score(monthly_prices_df, corte=680):
                 if len(close) < 15:
                     continue
                 
-                # IMPORTANTE: Para datos de CSV que ya están mensualizados,
-                # necesitamos estimar High y Low basándonos en la volatilidad histórica
-                # O usar Close para los tres si no tenemos datos intradiarios
-                
-                # Opción 1: Si solo tenemos Close (datos ya mensualizados de CSV)
-                # Estimamos High y Low basándonos en la volatilidad típica
-                # Esta es una aproximación, pero necesaria sin datos intradiarios
-                
+                # Para datos CSV que ya están mensualizados, estimamos High y Low
                 # Calcular volatilidad mensual promedio
                 monthly_returns = close.pct_change()
                 monthly_vol = monthly_returns.rolling(3).std()
                 
-                # Estimar High y Low (aproximación)
-                # High = Close * (1 + volatilidad/2)
-                # Low = Close * (1 - volatilidad/2)
-                high = close * (1 + monthly_vol.fillna(0.02))
-                low = close * (1 - monthly_vol.fillna(0.02))
+                # Estimar High y Low basándonos en la volatilidad
+                volatility_factor = monthly_vol.fillna(0.02)  # Default 2% si no hay datos
+                high = close * (1 + volatility_factor)
+                low = close * (1 - volatility_factor)
                 
                 # Asegurar que High >= Close >= Low
                 high = pd.Series(np.maximum(high, close), index=close.index)
@@ -151,77 +155,6 @@ def inertia_score(monthly_prices_df, corte=680):
         print(f"Error en cálculo de inercia: {e}")
         return {}
 
-# El resto de las funciones (run_backtest, etc.) permanecen igual
-
-def debug_inertia_calculation(ticker_data, ticker_name, last_date=None):
-    """
-    Función mejorada para debuggear los cálculos paso a paso
-    """
-    close = ticker_data
-    if last_date:
-        close = close[:last_date]
-    
-    if len(close) < 15:
-        print(f"No hay suficientes datos para {ticker_name}")
-        return None
-    
-    # Obtener los últimos valores
-    last_close = close.iloc[-1]
-    close_10_ago = close.iloc[-11] if len(close) > 10 else np.nan
-    
-    # Calcular ROC en porcentaje (como AmiBroker)
-    roc_10_percent = ((last_close - close_10_ago) / close_10_ago) * 100 if close_10_ago != 0 else 0
-    
-    # Componentes ponderados
-    roc_10_w1 = roc_10_percent * 0.4
-    roc_10_w2 = roc_10_percent * 0.2
-    f1 = roc_10_w1 + roc_10_w2
-    
-    # ATR y SMA
-    tr = monthly_true_range(close, close, close)
-    atr14 = tr.rolling(14).mean().iloc[-1]
-    sma14 = close.rolling(14).mean().iloc[-1]
-    
-    # F2
-    volatility_ratio = atr14 / sma14 if sma14 != 0 else 0
-    f2 = volatility_ratio * 0.4
-    f2 = max(f2, 0.01)  # Evitar división por cero
-    
-    # Inercia
-    inercia = f1 / f2
-    
-    # Score con corte
-    score = max(inercia, 0) if inercia >= 680 else 0
-    
-    # Score ajustado
-    atr14_safe = max(atr14, 0.01)
-    score_adj = score / atr14_safe
-    
-    print(f"\n=== Debug para {ticker_name} ===")
-    print(f"Precio actual: ${last_close:.2f}")
-    print(f"Precio hace 10 meses: ${close_10_ago:.2f}")
-    print(f"ROC(10): {roc_10_percent:.2f}%")
-    print(f"ROC10 * 0.4: {roc_10_w1:.2f}")
-    print(f"ROC10 * 0.2: {roc_10_w2:.2f}")
-    print(f"F1 (suma): {f1:.2f}")
-    print(f"ATR(14): ${atr14:.2f}")
-    print(f"SMA(14): ${sma14:.2f}")
-    print(f"Ratio volatilidad (ATR/SMA): {volatility_ratio:.4f}")
-    print(f"F2 (ratio * 0.4): {f2:.4f}")
-    print(f"Inercia Alcista (F1/F2): {inercia:.2f}")
-    print(f"Score (con corte 680): {score:.2f}")
-    print(f"Score Ajustado (Score/ATR): {score_adj:.2f}")
-    
-    return {
-        'ROC10%': roc_10_percent,
-        'F1': f1,
-        'F2': f2,
-        'ATR14': atr14,
-        'InerciaAlcista': inercia,
-        'Score': score,
-        'ScoreAdjusted': score_adj
-    }
-        
 def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
     try:
         print("Iniciando backtest...")
@@ -421,30 +354,3 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
         empty_bt = pd.DataFrame(columns=["Equity", "Returns", "Drawdown"])
         empty_picks = pd.DataFrame(columns=["Date", "Rank", "Ticker", "Inercia", "ScoreAdj"])
         return empty_bt, empty_picks
-   
-    # Agregar DataFrame de debug
-    debug_data = []
-    
-    # En el loop donde calculas los scores
-    for i in range(1, len(prices_df_m)):
-        # ... código existente ...
-        
-        if debug and "InerciaAlcista" in df_score:
-            # Guardar datos de debug para los top tickers
-            for ticker in selected[:5]:  # Solo los top 5 para no saturar
-                if ticker in df_score["InerciaAlcista"].columns:
-                    debug_info = {
-                        "Date": date.strftime("%Y-%m-%d"),
-                        "Ticker": ticker,
-                        "InerciaAlcista": df_score["InerciaAlcista"].iloc[-1][ticker],
-                        "ATR14": df_score["ATR14"].iloc[-1][ticker],
-                        "F1": df_score["F1"].iloc[-1][ticker] if "F1" in df_score else None,
-                        "F2": df_score["F2"].iloc[-1][ticker] if "F2" in df_score else None,
-                        "ROC10": df_score["ROC10"].iloc[-1][ticker] if "ROC10" in df_score else None,
-                        "ScoreAdjusted": last_scores[ticker] if ticker in last_scores else 0
-                    }
-                    debug_data.append(debug_info)
-    
-    # Retornar también el DataFrame de debug
-    debug_df = pd.DataFrame(debug_data)
-    return bt, picks_df, debug_df
