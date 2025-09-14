@@ -162,6 +162,8 @@ def get_constituents_at_date(index_name, start_date, end_date):
     except Exception as e:
         return None, str(e)
 
+# ... (mantener las funciones de obtención de tickers de Wikipedia) ...
+
 def download_prices(tickers, start_date, end_date):
     """
     Carga precios desde archivos CSV en la carpeta data/
@@ -229,10 +231,10 @@ def download_prices(tickers, start_date, end_date):
             print(f"  Archivo no encontrado: {csv_path}")
     
     # Combinar en DataFrame
-    if prices_data:
+    if prices_
         prices_df = pd.DataFrame(prices_data)
-        # Rellenar valores faltantes hacia adelante y hacia atrás
-        prices_df = prices_df.fillna(method='ffill').fillna(method='bfill')
+        # Rellenar valores faltantes hacia adelante y hacia atrás (método nuevo)
+        prices_df = prices_df.ffill().bfill()
         return prices_df
     else:
         return pd.DataFrame()
