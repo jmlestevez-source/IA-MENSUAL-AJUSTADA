@@ -1,3 +1,4 @@
+# data_loader.py
 import pandas as pd
 import requests
 from io import StringIO
@@ -100,12 +101,16 @@ def get_nasdaq100_tickers_from_wikipedia():
                 df = table
                 break
         
-        # Si no encontramos por nombre de columna, usar la tercera tabla (índice 2) que típicamente es la de constituyentes
+        # Si no encontramos por nombre de columna, usar la tabla de componentes actuales
         if df is None:
-            if len(tables) >= 3:
-                df = tables[2]
-            else:
-                raise ValueError("No se encontró tabla de constituyentes")
+            # Buscar la tabla con los componentes actuales (debería tener muchos tickers)
+            for table in tables:
+                if len(table) > 50:  # La tabla de componentes debería tener muchos registros
+                    df = table
+                    break
+        
+        if df is None:
+            raise ValueError("No se encontró tabla de constituyentes")
         
         # Verificar y renombrar columna de tickers si es necesario
         ticker_column = None
@@ -161,8 +166,6 @@ def get_constituents_at_date(index_name, start_date, end_date):
         return tickers_data, None
     except Exception as e:
         return None, str(e)
-
-# ... (mantener las funciones de obtención de tickers de Wikipedia) ...
 
 def download_prices(tickers, start_date, end_date):
     """
