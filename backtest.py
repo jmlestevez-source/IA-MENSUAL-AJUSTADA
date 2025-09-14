@@ -1,29 +1,38 @@
 import pandas as pd
 import numpy as np
 
-def monthly_true_range(high, low, close):
+def calcular_atr_wilder(high, low, close, periods=14):
     """
-    Calcula el True Range mensual correctamente
-    Para datos ya mensualizados (solo close), usar el rango del mes
+    Calcula el ATR exactamente como AmiBroker usando el método de Wilder
     """
-    if high.equals(close) and low.equals(close):
-        # Datos ya mensualizados - calcular rango mensual
-        # Usar el cambio absoluto como proxy del rango
-        monthly_range = np.abs(close.pct_change()) * close
-        return monthly_range
-    else:
-        # Si tenemos high/low reales
-        prev_close = close.shift(1)
-        tr = pd.DataFrame({
-            'hl': high - low,
-            'hc': np.abs(high - prev_close),
-            'lc': np.abs(low - prev_close)
-        }).max(axis=1)
-        return tr
+    prev_close = close.shift(1)
+    
+    # True Range: máximo de tres valores
+    hl = high - low  # High - Low
+    hc = np.abs(high - prev_close)  # |High - PrevClose|
+    lc = np.abs(low - prev_close)  # |Low - PrevClose|
+    
+    # True Range es el máximo de los tres
+    tr = pd.DataFrame({'hl': hl, 'hc': hc, 'lc': lc}).max(axis=1)
+    
+    # ATR usando el método de Wilder
+    # Primer valor: media simple de los primeros 'periods' valores
+    atr = pd.Series(index=tr.index, dtype=float)
+    
+    # Calcular la media simple inicial
+    if len(tr) >= periods:
+        atr.iloc[periods-1] = tr.iloc[:periods].mean()
+        
+        # Aplicar la fórmula de Wilder para los siguientes valores
+        for i in range(periods, len(tr)):
+            atr.iloc[i] = (atr.iloc[i-1] * (periods - 1) + tr.iloc[i]) / periods
+    
+    return atr
 
 def inertia_score(monthly_prices_df, corte=680):
     """
     Calcula el score de inercia correctamente replicando el código AFL
+    con el método exacto de AmiBroker para el ATR
     """
     if monthly_prices_df is None or monthly_prices_df.empty:
         return pd.DataFrame()
@@ -39,6 +48,28 @@ def inertia_score(monthly_prices_df, corte=680):
                 if len(close) < 15:
                     continue
                 
+                # IMPORTANTE: Para datos de CSV que ya están mensualizados,
+                # necesitamos estimar High y Low basándonos en la volatilidad histórica
+                # O usar Close para los tres si no tenemos datos intradiarios
+                
+                # Opción 1: Si solo tenemos Close (datos ya mensualizados de CSV)
+                # Estimamos High y Low basándonos en la volatilidad típica
+                # Esta es una aproximación, pero necesaria sin datos intradiarios
+                
+                # Calcular volatilidad mensual promedio
+                monthly_returns = close.pct_change()
+                monthly_vol = monthly_returns.rolling(3).std()
+                
+                # Estimar High y Low (aproximación)
+                # High = Close * (1 + volatilidad/2)
+                # Low = Close * (1 - volatilidad/2)
+                high = close * (1 + monthly_vol.fillna(0.02))
+                low = close * (1 - monthly_vol.fillna(0.02))
+                
+                # Asegurar que High >= Close >= Low
+                high = pd.Series(np.maximum(high, close), index=close.index)
+                low = pd.Series(np.minimum(low, close), index=close.index)
+                
                 # Calcular ROC como porcentaje (AmiBroker style)
                 roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
                 
@@ -47,25 +78,13 @@ def inertia_score(monthly_prices_df, corte=680):
                 roc_10_w2 = roc_10_percent * 0.2
                 f1 = roc_10_w1 + roc_10_w2  # Total: ROC * 0.6
                 
-                # Calcular ATR(14) para datos mensuales
-                # En datos mensuales, el ATR es simplemente el rango promedio
-                # Usamos el cambio absoluto entre meses como proxy del True Range
-                high = close  # Para datos mensuales
-                low = close   # Para datos mensuales
-                
-                # True Range mensual: diferencia absoluta entre cierre actual y anterior
-                prev_close = close.shift(1)
-                # Para datos mensuales, el TR es el cambio absoluto
-                tr = np.abs(close - prev_close)
-                
-                # ATR(14) - promedio móvil del True Range
-                atr14 = tr.rolling(14).mean()
+                # Calcular ATR(14) con el método de Wilder
+                atr14 = calcular_atr_wilder(high, low, close, periods=14)
                 
                 # Calcular SMA(14)
                 sma14 = close.rolling(14).mean()
                 
                 # Calcular F2 = (ATR14/MA(C,14))*0.4
-                # Este es el denominador clave
                 with np.errstate(divide='ignore', invalid='ignore'):
                     volatility_ratio = atr14 / sma14
                     f2 = volatility_ratio * 0.4
@@ -73,7 +92,6 @@ def inertia_score(monthly_prices_df, corte=680):
                     # Manejar valores problemáticos
                     f2 = f2.replace([np.inf, -np.inf], np.nan)
                     f2 = f2.fillna(0.01)
-                    # NO aplicar un mínimo tan alto, dejar que sea más pequeño
                     f2 = f2.apply(lambda x: max(x, 0.0001) if not pd.isna(x) else 0.0001)
                 
                 # Calcular Inercia Alcista = F1 / F2
@@ -132,6 +150,8 @@ def inertia_score(monthly_prices_df, corte=680):
     except Exception as e:
         print(f"Error en cálculo de inercia: {e}")
         return {}
+
+# El resto de las funciones (run_backtest, etc.) permanecen igual
 
 def debug_inertia_calculation(ticker_data, ticker_name, last_date=None):
     """
