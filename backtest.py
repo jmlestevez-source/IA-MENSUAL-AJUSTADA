@@ -23,25 +23,23 @@ def inertia_score(monthly_prices_df, corte=680):
         return {}
 
     try:
-        # DataFrame para almacenar resultados
         results = {}
         
         for ticker in monthly_prices_df.columns:
             try:
-                # Obtener serie de precios para este ticker (ya mensualizados)
                 close = monthly_prices_df[ticker].dropna()
                 
                 if len(close) < 15:  # Necesitamos al menos 15 períodos
                     continue
                 
-                # Para datos mensuales, usar close como high y low si no tenemos datos separados
+                # Para datos mensuales, usar close como high y low
                 high = close
                 low = close
                 
                 # Calcular ROC(10) - cambio porcentual de 10 meses
                 roc_10 = close.pct_change(10)
                 
-                # Calcular F1 = ROC(C,10)*0.6 (en AmiBroker es ROC(C,10)*0.4 + ROC(C,10)*0.2)
+                # Calcular F1 = ROC(C,10)*0.6
                 f1 = roc_10 * 0.6
                 
                 # Calcular True Range mensual
@@ -56,12 +54,10 @@ def inertia_score(monthly_prices_df, corte=680):
                 # Protección contra divisiones por cero
                 with np.errstate(divide='ignore', invalid='ignore'):
                     # Calcular F2 = (ATR14/MA(C,14))*0.4
-                    # Evitar división por cero en SMA
                     safe_sma14 = np.where(np.abs(sma14) > 1e-10, sma14, 1e-10)
                     f2 = (atr14 / safe_sma14) * 0.4
                     
                     # Calcular InerciaAlcista = F1/F2
-                    # Evitar división por cero en F2
                     safe_f2 = np.where(np.abs(f2) > 1e-10, f2, 1e-10)
                     inercia_alcista = f1 / safe_f2
                     
@@ -69,7 +65,6 @@ def inertia_score(monthly_prices_df, corte=680):
                     score = np.where(inercia_alcista < corte, 0, np.maximum(inercia_alcista, 0))
                     
                     # Score ajustado: ScoreAdjusted = Score / ATR14
-                    # Evitar división por cero en ATR
                     safe_atr14 = np.where(np.abs(atr14) > 1e-10, atr14, 1e-10)
                     score_adj = score / safe_atr14
                 
@@ -88,13 +83,12 @@ def inertia_score(monthly_prices_df, corte=680):
         if not results:
             return {}
         
-        # Combinar resultados en estructura que espera run_backtest
+        # Combinar resultados
         combined_results = {}
         for metric in ["InerciaAlcista", "ATR14", "Score", "ScoreAdjusted"]:
             metric_data = {}
             for ticker in results.keys():
                 metric_data[ticker] = results[ticker][metric]
-            # Crear DataFrame con todos los tickers como columnas
             combined_results[metric] = pd.DataFrame(metric_data)
         
         return combined_results
@@ -115,9 +109,9 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
             empty_picks = pd.DataFrame(columns=["Date", "Rank", "Ticker", "Inercia", "ScoreAdj"])
             return empty_bt, empty_picks
 
-        # Mensualizar precios - usar el último día de cada mes
+        # Mensualizar precios
         if isinstance(prices, pd.Series):
-            prices_m = prices.resample('ME').last()  # ME = Month End
+            prices_m = prices.resample('ME').last()
             prices_df_m = pd.DataFrame({'Close': prices_m})
         else:
             try:
@@ -127,15 +121,6 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                 print(f"Error mensualizando precios: {e}")
                 prices_m = prices
                 prices_df_m = prices.copy()
-
-        # Mensualizar benchmark
-        try:
-            if isinstance(benchmark, pd.Series):
-                bench_m = benchmark.resample('ME').last()
-            else:
-                bench_m = benchmark.resample('ME').last()
-        except:
-            bench_m = benchmark
 
         if prices_df_m.empty:
             print("❌ No hay datos mensuales suficientes")
@@ -147,7 +132,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
 
         print(f"Datos mensuales preparados. Fechas: {len(prices_df_m)}")
 
-        # Iterar por cada mes (empezando desde el mes 15 para tener suficientes datos)
+        # Iterar desde el índice 15 para tener suficientes datos
         for i in range(15, len(prices_df_m)):
             try:
                 prev_date = prices_df_m.index[i - 1]
@@ -207,7 +192,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                     print(f"Error obteniendo precios para {date}: {e}")
                     continue
 
-                # Filtrar tickers válidos (que existan en ambos períodos y tengan precios válidos)
+                # Filtrar tickers válidos
                 valid_tickers = []
                 for ticker in selected:
                     try:
@@ -238,8 +223,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                         rets[ticker] = 0
 
                 rets = rets.fillna(0)
-                # Calcular retorno ponderado de la cartera
-                port_ret = (rets * weight).sum() - commission  # Aplicar comisión
+                port_ret = (rets * weight).sum() - commission
                 new_eq = equity[-1] * (1 + port_ret) if not np.isnan(port_ret) and not np.isinf(port_ret) else equity[-1]
 
                 equity.append(new_eq)
