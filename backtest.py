@@ -4,14 +4,22 @@ import numpy as np
 def monthly_true_range(high, low, close):
     """
     Calcula el True Range mensual correctamente
+    Para datos mensuales, el ATR debe ser calculado de manera diferente
     """
-    prev_close = close.shift(1)
-    tr = pd.DataFrame({
-        'hl': np.abs(high - low),
-        'hc': np.abs(high - prev_close),
-        'lc': np.abs(low - prev_close)
-    }).max(axis=1)
-    return tr
+    # Para datos mensuales, usar la diferencia entre high y low del mes
+    # Si solo tenemos close (datos ya mensualizados), usar volatilidad simple
+    if high.equals(close) and low.equals(close):
+        # Datos ya mensualizados - usar cambio absoluto entre meses
+        return np.abs(close - close.shift(1))
+    else:
+        # Datos con high/low reales
+        prev_close = close.shift(1)
+        tr = pd.DataFrame({
+            'hl': np.abs(high - low),
+            'hc': np.abs(high - prev_close),
+            'lc': np.abs(low - prev_close)
+        }).max(axis=1)
+        return tr
 
 def inertia_score(monthly_prices_df, corte=680):
     """
@@ -35,23 +43,18 @@ def inertia_score(monthly_prices_df, corte=680):
                 high = close
                 low = close
                 
-                # En AmiBroker, ROC devuelve el cambio porcentual como un número entero
-                # ROC(C,10) = ((C - Ref(C,-10)) / Ref(C,-10)) * 100
-                # Entonces si el precio subió 10%, ROC devuelve 10, no 0.10
+                # Calcular ROC como porcentaje (AmiBroker style)
                 roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
                 
                 # Aplicar los pesos según el código AFL
-                # ROC10 = ROC(C,N)*0.4;
-                # ROC101 = ROC(C,M)*0.2;  (donde M=10 también)
-                roc_10_weighted_1 = roc_10_percent * 0.4
-                roc_10_weighted_2 = roc_10_percent * 0.2
+                roc_10_w1 = roc_10_percent * 0.4
+                roc_10_w2 = roc_10_percent * 0.2
+                f1 = roc_10_w1 + roc_10_w2  # Total: ROC * 0.6
                 
-                # F1 = ROC10 + ROC101
-                f1 = roc_10_weighted_1 + roc_10_weighted_2  # Esto es ROC * 0.6
-                
-                # Calcular ATR(14)
-                tr = monthly_true_range(high, low, close)
-                atr14 = tr.rolling(14).mean()
+                # Para datos mensuales, el ATR debe ser calculado como volatilidad mensual
+                # Usar cambio absoluto entre meses
+                monthly_changes = np.abs(close - close.shift(1))
+                atr14 = monthly_changes.rolling(14).mean()
                 
                 # Calcular SMA(14)
                 sma14 = close.rolling(14).mean()
@@ -63,8 +66,7 @@ def inertia_score(monthly_prices_df, corte=680):
                     
                     # Manejar valores problemáticos
                     f2 = f2.replace([np.inf, -np.inf], np.nan)
-                    f2 = f2.fillna(0.01)  # Valor pequeño por defecto
-                    # Asegurar que F2 nunca sea cero o negativo
+                    f2 = f2.fillna(0.01)
                     f2 = f2.apply(lambda x: max(x, 0.01))
                 
                 # Calcular Inercia Alcista = F1 / F2
@@ -73,17 +75,18 @@ def inertia_score(monthly_prices_df, corte=680):
                     inercia_alcista = inercia_alcista.replace([np.inf, -np.inf], 0)
                     inercia_alcista = inercia_alcista.fillna(0)
                 
-                # Aplicar corte: Score = IIf(InerciaAlcista<Corte,0,Max(InerciaAlcista,0))
+                # Aplicar corte
                 score = pd.Series(
                     np.where(inercia_alcista < corte, 0, np.maximum(inercia_alcista, 0)),
                     index=inercia_alcista.index
                 )
                 
-                # ScoreAdjusted = Score / ATR14
-                # Asegurar que ATR14 nunca sea cero
+                # Score Ajustado = Score / ATR14
+                # IMPORTANTE: Para datos mensuales, el ATR es mucho menor que para datos diarios
+                # Necesitamos escalar apropiadamente
                 atr14_safe = atr14.copy()
-                atr14_safe = atr14_safe.fillna(0.01)
-                atr14_safe = atr14_safe.apply(lambda x: max(x, 0.01) if x > 0 else 0.01)
+                atr14_safe = atr14_safe.fillna(1.0)
+                atr14_safe = atr14_safe.apply(lambda x: max(x, 0.1))
                 
                 with np.errstate(divide='ignore', invalid='ignore'):
                     score_adj = score / atr14_safe
@@ -96,21 +99,19 @@ def inertia_score(monthly_prices_df, corte=680):
                     "ATR14": atr14,
                     "Score": score,
                     "ScoreAdjusted": score_adj,
-                    "F1": f1,  # Para debugging
-                    "F2": f2,  # Para debugging
-                    "ROC10": roc_10_percent  # Para debugging
+                    "F1": f1,
+                    "F2": f2,
+                    "ROC10": roc_10_percent
                 }
                 
             except Exception as e:
                 print(f"Error procesando ticker {ticker}: {e}")
-                import traceback
-                traceback.print_exc()
                 continue
         
         if not results:
             return pd.DataFrame()
         
-        # Combinar resultados en estructura esperada
+        # Combinar resultados
         combined_results = {}
         for metric in ["InerciaAlcista", "ATR14", "Score", "ScoreAdjusted", "F1", "F2", "ROC10"]:
             metric_data = {}
@@ -124,8 +125,6 @@ def inertia_score(monthly_prices_df, corte=680):
         
     except Exception as e:
         print(f"Error en cálculo de inercia: {e}")
-        import traceback
-        traceback.print_exc()
         return {}
 
 def debug_inertia_calculation(ticker_data, ticker_name, last_date=None):
