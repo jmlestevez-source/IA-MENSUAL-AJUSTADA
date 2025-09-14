@@ -222,8 +222,10 @@ if run_button:
             st.success("✅ Backtest completado")
 
             # -------------------------------------------------
+            # -------------------------------------------------
             # Métricas principales
             # -------------------------------------------------
+            # Calcular métricas de la estrategia
             if "Equity" in bt_results.columns and len(bt_results["Equity"]) > 0:
                 final_equity = float(bt_results["Equity"].iloc[-1])
                 initial_equity = float(bt_results["Equity"].iloc[0])
@@ -251,18 +253,10 @@ if run_button:
             else:
                 volatility = 0
                 sharpe_ratio = 0
-                
-            col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("Equity Final", f"${final_equity:,.0f}")
-            col2.metric("Retorno Total", f"{total_return:.2%}")
-            col3.metric("CAGR", f"{cagr:.2%}")
-            col4.metric("Máximo Drawdown", f"{max_drawdown:.2%}")
-            col5.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
 
             # -------------------------------------------------
-            # Gráficos mejorados
+            # Preparar datos del benchmark ANTES de mostrar métricas
             # -------------------------------------------------
-            # Preparar datos del benchmark
             bench_equity = None
             bench_drawdown = None
             if benchmark_df is not None and not benchmark_df.empty:
@@ -274,6 +268,50 @@ if run_button:
                 except Exception as e:
                     st.warning(f"Error calculando benchmark: {e}")
 
+            # Mostrar métricas de la estrategia
+            st.subheader("📊 Métricas de la Estrategia")
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Equity Final", f"${final_equity:,.0f}")
+            col2.metric("Retorno Total", f"{total_return:.2%}")
+            col3.metric("CAGR", f"{cagr:.2%}")
+            col4.metric("Máximo Drawdown", f"{max_drawdown:.2%}")
+            col5.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
+
+            # Calcular y mostrar métricas del benchmark
+            if bench_equity is not None and len(bench_equity) > 0:
+                bench_final = float(bench_equity.iloc[-1])
+                bench_initial = float(bench_equity.iloc[0])
+                bench_total_return = (bench_final / bench_initial) - 1 if bench_initial != 0 else 0
+                
+                # CAGR del benchmark
+                if years > 0:
+                    bench_cagr = (bench_final / bench_initial) ** (1/years) - 1
+                else:
+                    bench_cagr = 0
+                
+                # Drawdown del benchmark
+                if bench_drawdown is not None:
+                    bench_max_dd = float(bench_drawdown.min())
+                else:
+                    bench_max_dd = 0
+                
+                # Sharpe del benchmark
+                bench_returns = bench_equity.pct_change().fillna(0)
+                bench_volatility = float(bench_returns.std() * (12 ** 0.5)) if bench_returns.std() != 0 else 0
+                bench_sharpe = (float(bench_returns.mean() * 12) / (bench_volatility + 1e-8)) if bench_volatility != 0 else 0
+                
+                # Métricas del benchmark
+                st.subheader(f"📊 Métricas del Benchmark ({benchmark_ticker})")
+                col1b, col2b, col3b, col4b, col5b = st.columns(5)
+                col1b.metric("Equity Final", f"${bench_final:,.0f}")
+                col2b.metric("Retorno Total", f"{bench_total_return:.2%}")
+                col3b.metric("CAGR", f"{bench_cagr:.2%}")
+                col4b.metric("Máximo Drawdown", f"{bench_max_dd:.2%}")
+                col5b.metric("Sharpe Ratio", f"{bench_sharpe:.2f}")
+
+            # -------------------------------------------------
+            # Gráficos mejorados
+            # -------------------------------------------------
             # Gráfico de equity
             try:
                 fig_equity = go.Figure()
@@ -315,7 +353,7 @@ if run_button:
             except Exception as fig_error:
                 st.warning(f"Error al crear gráfico de equity: {fig_error}")
 
-                       # Gráfico de drawdown combinado
+            # Gráfico de drawdown combinado
             try:
                 if "Drawdown" in bt_results.columns:
                     fig_dd = go.Figure()
@@ -396,9 +434,7 @@ if run_button:
                 st.info("No se generaron picks en este backtest")
 
             # -------------------------------------------------
-            # -------------------------------------------------
-                        # -------------------------------------------------
-            # Sección de Debug de Cálculos
+            # Sección de Debug de Cálculos - CORREGIDA
             # -------------------------------------------------
             with st.expander("🔍 Debug de Cálculos de Inercia", expanded=False):
                 if 'prices_df' in locals() and prices_df is not None and not prices_df.empty:
@@ -437,7 +473,7 @@ if run_button:
                             roc_10_w2 = roc_10_percent * 0.2
                             f1 = roc_10_w1 + roc_10_w2
                             
-                            # ATR calculation (corregido)
+                            # ATR calculation (corregido para datos mensuales)
                             prev_close = close.shift(1)
                             tr = np.abs(close - prev_close)
                             atr14 = tr.rolling(14).mean()
@@ -501,8 +537,9 @@ if run_button:
                             st.error(f"No hay suficientes datos para {debug_ticker} (se necesitan al menos 15 meses)")
                 else:
                     st.info("Ejecuta primero el backtest para poder analizar los cálculos")
+
             # -------------------------------------------------
-            # Comparación con últimos picks - CORREGIDO
+            # Comparación con últimos picks
             # -------------------------------------------------
             if 'picks_df' in locals() and picks_df is not None and not picks_df.empty:
                 with st.expander("📊 Análisis de Consistencia de Picks"):
@@ -516,9 +553,6 @@ if run_button:
                         # Crear tabla de análisis
                         analysis_data = []
                         for _, pick in latest_picks.iterrows():
-                            # El ratio correcto es Score/ATR (que debería dar ScoreAdjusted)
-                            # Para verificar: ScoreAdjusted debería ser aproximadamente Score/ATR
-                            
                             analysis_data.append({
                                 'Rank': pick['Rank'],
                                 'Ticker': pick['Ticker'],
