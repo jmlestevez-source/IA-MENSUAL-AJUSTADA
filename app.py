@@ -1,3 +1,6 @@
+Aquí está el archivo `app.py` completo y corregido:
+
+```python
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -318,4 +321,4 @@ if run_button:
             # Gráfico de drawdown combinado
             try:
                 if "Drawdown" in bt_results.columns:
-                    fig_dd =
+                    fig_dd = go.Figure()                    
