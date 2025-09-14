@@ -396,17 +396,30 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
         empty_bt = pd.DataFrame(columns=["Equity", "Returns", "Drawdown"])
         empty_picks = pd.DataFrame(columns=["Date", "Rank", "Ticker", "Inercia", "ScoreAdj"])
         return empty_bt, empty_picks
-
-def validate_calculations(prices_df, ticker, date):
-    """
-    Valida los cálculos para un ticker específico en una fecha
-    """
-    # Obtener datos históricos hasta la fecha
-    historical = prices_df[ticker][:date]
+   
+    # Agregar DataFrame de debug
+    debug_data = []
     
-    if len(historical) < 15:
-        print(f"No hay suficientes datos para {ticker}")
-        return
+    # En el loop donde calculas los scores
+    for i in range(1, len(prices_df_m)):
+        # ... código existente ...
+        
+        if debug and "InerciaAlcista" in df_score:
+            # Guardar datos de debug para los top tickers
+            for ticker in selected[:5]:  # Solo los top 5 para no saturar
+                if ticker in df_score["InerciaAlcista"].columns:
+                    debug_info = {
+                        "Date": date.strftime("%Y-%m-%d"),
+                        "Ticker": ticker,
+                        "InerciaAlcista": df_score["InerciaAlcista"].iloc[-1][ticker],
+                        "ATR14": df_score["ATR14"].iloc[-1][ticker],
+                        "F1": df_score["F1"].iloc[-1][ticker] if "F1" in df_score else None,
+                        "F2": df_score["F2"].iloc[-1][ticker] if "F2" in df_score else None,
+                        "ROC10": df_score["ROC10"].iloc[-1][ticker] if "ROC10" in df_score else None,
+                        "ScoreAdjusted": last_scores[ticker] if ticker in last_scores else 0
+                    }
+                    debug_data.append(debug_info)
     
-    # Ejecutar debug
-    debug_inertia_calculation(historical, ticker)
+    # Retornar también el DataFrame de debug
+    debug_df = pd.DataFrame(debug_data)
+    return bt, picks_df, debug_df
