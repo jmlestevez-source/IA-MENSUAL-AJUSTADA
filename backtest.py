@@ -35,17 +35,16 @@ def inertia_score(monthly_prices_df, corte=680):
                 high = close
                 low = close
                 
-                # Calcular ROC al estilo AmiBroker (en porcentaje)
-                # ROC = ((Close - Close[n]) / Close[n]) * 100
-                def amibroker_roc(series, periods):
-                    return ((series - series.shift(periods)) / series.shift(periods)) * 100
+                # Calcular ROC como cambio porcentual (sin multiplicar por 100)
+                # En AmiBroker ROC(C,10) es equivalente a (C - Ref(C,-10)) / Ref(C,-10)
+                roc_10_base = (close - close.shift(10)) / close.shift(10)
                 
-                # Calcular los dos componentes del ROC
-                roc_10 = amibroker_roc(close, 10) * 0.4
-                roc_10_2 = amibroker_roc(close, 10) * 0.2  # Segundo ROC10
+                # Aplicar los pesos según el código AFL
+                roc_10_weighted_1 = roc_10_base * 0.4  # ROC10 * 0.4
+                roc_10_weighted_2 = roc_10_base * 0.2  # ROC101 * 0.2
                 
-                # F1 es la suma de ambos ROCs
-                f1 = roc_10 + roc_10_2  # Esto da ROC10 * 0.6 en total
+                # F1 es la suma de ambos componentes
+                f1 = roc_10_weighted_1 + roc_10_weighted_2  # Total: ROC10 * 0.6
                 
                 # Calcular ATR(14)
                 tr = monthly_true_range(high, low, close)
@@ -57,14 +56,22 @@ def inertia_score(monthly_prices_df, corte=680):
                 # Calcular F2 (denominador) exactamente como en AFL
                 # F2 = (ATR14/MA(C,14))*0.4
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    f2 = (atr14 / sma14) * 0.4
+                    # Ratio de volatilidad relativa
+                    volatility_ratio = atr14 / sma14
+                    f2 = volatility_ratio * 0.4
+                    
+                    # Manejar valores infinitos y NaN
                     f2 = f2.replace([np.inf, -np.inf], np.nan)
-                    f2 = f2.fillna(0.0001)  # Evitar división por cero
+                    # Usar un valor pequeño para evitar división por cero
+                    f2 = f2.fillna(0.0001)
+                    # Asegurar que F2 nunca sea cero
+                    f2 = f2.apply(lambda x: max(x, 0.0001) if not pd.isna(x) else 0.0001)
                 
                 # Calcular Inercia Alcista = F1 / F2
-                inercia_alcista = f1 / f2
-                inercia_alcista = inercia_alcista.replace([np.inf, -np.inf], 0)
-                inercia_alcista = inercia_alcista.fillna(0)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    inercia_alcista = f1 / f2
+                    inercia_alcista = inercia_alcista.replace([np.inf, -np.inf], 0)
+                    inercia_alcista = inercia_alcista.fillna(0)
                 
                 # Aplicar corte y calcular Score
                 score = pd.Series(
@@ -73,8 +80,11 @@ def inertia_score(monthly_prices_df, corte=680):
                 )
                 
                 # Score Ajustado = Score / ATR14
+                # Asegurar que ATR14 nunca sea cero
+                atr14_safe = atr14.apply(lambda x: max(x, 0.0001) if not pd.isna(x) else 0.0001)
+                
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    score_adj = score / atr14
+                    score_adj = score / atr14_safe
                     score_adj = score_adj.replace([np.inf, -np.inf], 0)
                     score_adj = score_adj.fillna(0)
                 
@@ -83,7 +93,10 @@ def inertia_score(monthly_prices_df, corte=680):
                     "InerciaAlcista": inercia_alcista,
                     "ATR14": atr14,
                     "Score": score,
-                    "ScoreAdjusted": score_adj
+                    "ScoreAdjusted": score_adj,
+                    "F1": f1,  # Para debugging
+                    "F2": f2,  # Para debugging
+                    "ROC10": roc_10_base  # Para debugging
                 }
                 
             except Exception as e:
@@ -95,10 +108,11 @@ def inertia_score(monthly_prices_df, corte=680):
         
         # Combinar resultados en estructura esperada
         combined_results = {}
-        for metric in ["InerciaAlcista", "ATR14", "Score", "ScoreAdjusted"]:
+        for metric in ["InerciaAlcista", "ATR14", "Score", "ScoreAdjusted", "F1", "F2", "ROC10"]:
             metric_data = {}
             for ticker in results.keys():
-                metric_data[ticker] = results[ticker][metric]
+                if metric in results[ticker]:
+                    metric_data[ticker] = results[ticker][metric]
             combined_results[metric] = pd.DataFrame(metric_data)
         
         return combined_results
@@ -106,6 +120,66 @@ def inertia_score(monthly_prices_df, corte=680):
     except Exception as e:
         print(f"Error en cálculo de inercia: {e}")
         return {}
+
+def debug_inertia_calculation(ticker_data, ticker_name, last_date=None):
+    """
+    Función para debuggear los cálculos paso a paso
+    """
+    close = ticker_data
+    if last_date:
+        close = close[:last_date]
+    
+    # Obtener los últimos valores
+    last_close = close.iloc[-1]
+    close_10_ago = close.iloc[-11] if len(close) > 10 else np.nan
+    
+    # Calcular ROC base
+    roc_10_base = (last_close - close_10_ago) / close_10_ago if close_10_ago != 0 else 0
+    
+    # Componentes ponderados
+    roc_10_w1 = roc_10_base * 0.4
+    roc_10_w2 = roc_10_base * 0.2
+    f1 = roc_10_w1 + roc_10_w2
+    
+    # ATR y SMA
+    tr = monthly_true_range(close, close, close)
+    atr14 = tr.rolling(14).mean().iloc[-1]
+    sma14 = close.rolling(14).mean().iloc[-1]
+    
+    # F2
+    volatility_ratio = atr14 / sma14 if sma14 != 0 else 0
+    f2 = volatility_ratio * 0.4
+    
+    # Inercia
+    inercia = f1 / f2 if f2 != 0 else 0
+    
+    # Score ajustado
+    score = max(inercia, 0) if inercia >= 680 else 0
+    score_adj = score / atr14 if atr14 != 0 else 0
+    
+    print(f"\n=== Debug para {ticker_name} ===")
+    print(f"Precio actual: ${last_close:.2f}")
+    print(f"Precio hace 10 meses: ${close_10_ago:.2f}")
+    print(f"ROC(10) base: {roc_10_base:.4f} ({roc_10_base*100:.2f}%)")
+    print(f"ROC10 * 0.4: {roc_10_w1:.4f}")
+    print(f"ROC10 * 0.2: {roc_10_w2:.4f}")
+    print(f"F1 (suma): {f1:.4f}")
+    print(f"ATR(14): {atr14:.4f}")
+    print(f"SMA(14): {sma14:.4f}")
+    print(f"Ratio volatilidad (ATR/SMA): {volatility_ratio:.4f}")
+    print(f"F2 (ratio * 0.4): {f2:.4f}")
+    print(f"Inercia Alcista (F1/F2): {inercia:.2f}")
+    print(f"Score (con corte 680): {score:.2f}")
+    print(f"Score Ajustado (Score/ATR): {score_adj:.2f}")
+    
+    return {
+        'ROC10': roc_10_base,
+        'F1': f1,
+        'F2': f2,
+        'ATR14': atr14,
+        'InerciaAlcista': inercia,
+        'ScoreAdjusted': score_adj
+    }
         
 def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
     try:
@@ -307,26 +381,16 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
         empty_picks = pd.DataFrame(columns=["Date", "Rank", "Ticker", "Inercia", "ScoreAdj"])
         return empty_bt, empty_picks
 
-def debug_calculations(ticker_data, ticker_name):
-    """Función para debuggear y comparar cálculos con AmiBroker"""
-    close = ticker_data
+def validate_calculations(prices_df, ticker, date):
+    """
+    Valida los cálculos para un ticker específico en una fecha
+    """
+    # Obtener datos históricos hasta la fecha
+    historical = prices_df[ticker][:date]
     
-    # Calcular componentes paso a paso
-    roc_10_1 = ((close - close.shift(10)) / close.shift(10)) * 100 * 0.4
-    roc_10_2 = ((close - close.shift(10)) / close.shift(10)) * 100 * 0.2
-    f1 = roc_10_1 + roc_10_2
+    if len(historical) < 15:
+        print(f"No hay suficientes datos para {ticker}")
+        return
     
-    atr14 = monthly_true_range(close, close, close).rolling(14).mean()
-    sma14 = close.rolling(14).mean()
-    f2 = (atr14 / sma14) * 0.4
-    
-    inercia = f1 / f2
-    
-    print(f"\nDebug para {ticker_name}:")
-    print(f"Último ROC10*0.4: {roc_10_1.iloc[-1]:.2f}")
-    print(f"Último ROC10*0.2: {roc_10_2.iloc[-1]:.2f}")
-    print(f"Último F1: {f1.iloc[-1]:.2f}")
-    print(f"Último ATR14: {atr14.iloc[-1]:.2f}")
-    print(f"Último SMA14: {sma14.iloc[-1]:.2f}")
-    print(f"Último F2: {f2.iloc[-1]:.4f}")
-    print(f"Última Inercia: {inercia.iloc[-1]:.2f}")
+    # Ejecutar debug
+    debug_inertia_calculation(historical, ticker)
