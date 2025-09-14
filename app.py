@@ -351,6 +351,198 @@ if run_button:
             else:
                 st.info("No se generaron picks en este backtest")
 
+    # Agregar esto después de la sección de "Todos los picks por mes" (alrededor de la línea 340)
+
+# -------------------------------------------------
+# Sección de Debug de Cálculos
+# -------------------------------------------------
+with st.expander("🔍 Debug de Cálculos de Inercia"):
+    if 'prices_df' in locals() and prices_df is not None and not prices_df.empty:
+        st.subheader("Análisis detallado de cálculos")
+        
+        # Selector de ticker
+        available_tickers = list(prices_df.columns)[:100]  # Limitar a 100 para no sobrecargar
+        debug_ticker = st.selectbox(
+            "Selecciona un ticker para analizar:",
+            available_tickers,
+            key="debug_ticker_select"
+        )
+        
+        if st.button("Analizar Ticker", key="debug_analyze"):
+            # Importar la función de cálculo de inercia
+            from backtest import inertia_score, monthly_true_range
+            
+            # Obtener datos del ticker
+            ticker_data = prices_df[[debug_ticker]].dropna()
+            
+            if len(ticker_data) >= 15:
+                # Mensualizar datos si es necesario
+                ticker_monthly = ticker_data.resample('ME').last()
+                
+                # Calcular componentes paso a paso
+                close = ticker_monthly[debug_ticker]
+                
+                # ROC calculation
+                roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
+                roc_10_w1 = roc_10_percent * 0.4
+                roc_10_w2 = roc_10_percent * 0.2
+                f1 = roc_10_w1 + roc_10_w2
+                
+                # ATR y SMA
+                tr = monthly_true_range(close, close, close)
+                atr14 = tr.rolling(14).mean()
+                sma14 = close.rolling(14).mean()
+                
+                # F2
+                volatility_ratio = atr14 / sma14
+                f2 = volatility_ratio * 0.4
+                
+                # Inercia
+                inercia_alcista = f1 / f2
+                
+                # Score
+                score = pd.Series(
+                    np.where(inercia_alcista < corte, 0, np.maximum(inercia_alcista, 0)),
+                    index=inercia_alcista.index
+                )
+                
+                # Score ajustado
+                score_adj = score / atr14
+                
+                # Mostrar últimos valores
+                st.subheader(f"📊 Últimos valores para {debug_ticker}")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Precio Actual", f"${close.iloc[-1]:.2f}")
+                    if len(close) > 10:
+                        st.metric("Precio hace 10 meses", f"${close.iloc[-11]:.2f}")
+                    st.metric("ROC(10)", f"{roc_10_percent.iloc[-1]:.2f}%")
+                    st.metric("F1 (ROC*0.6)", f"{f1.iloc[-1]:.2f}")
+                
+                with col2:
+                    st.metric("ATR(14)", f"${atr14.iloc[-1]:.2f}")
+                    st.metric("SMA(14)", f"${sma14.iloc[-1]:.2f}")
+                    st.metric("Ratio Vol (ATR/SMA)", f"{volatility_ratio.iloc[-1]:.4f}")
+                    st.metric("F2 (Ratio*0.4)", f"{f2.iloc[-1]:.4f}")
+                
+                with col3:
+                    st.metric("Inercia Alcista", f"{inercia_alcista.iloc[-1]:.2f}")
+                    st.metric("Score", f"{score.iloc[-1]:.2f}")
+                    st.metric("Score Ajustado", f"{score_adj.iloc[-1]:.2f}")
+                
+                # Mostrar si pasa el corte
+                if inercia_alcista.iloc[-1] >= corte:
+                    st.success(f"✅ Inercia ({inercia_alcista.iloc[-1]:.2f}) >= {corte} - PASA EL CORTE")
+                else:
+                    st.warning(f"❌ Inercia ({inercia_alcista.iloc[-1]:.2f}) < {corte} - NO PASA EL CORTE")
+                
+                # Tabla histórica
+                st.subheader("📈 Evolución histórica (últimos 12 meses)")
+                
+                # Crear DataFrame con los últimos 12 valores
+                history_df = pd.DataFrame({
+                    'Fecha': close.index[-12:],
+                    'Precio': close.iloc[-12:].values,
+                    'ROC(10)%': roc_10_percent.iloc[-12:].values,
+                    'F1': f1.iloc[-12:].values,
+                    'ATR(14)': atr14.iloc[-12:].values,
+                    'F2': f2.iloc[-12:].values,
+                    'Inercia': inercia_alcista.iloc[-12:].values,
+                    'Score': score.iloc[-12:].values,
+                    'Score Adj': score_adj.iloc[-12:].values
+                })
+                
+                # Formatear DataFrame
+                history_df['Fecha'] = history_df['Fecha'].dt.strftime('%Y-%m')
+                for col in ['Precio', 'ROC(10)%', 'F1', 'ATR(14)', 'F2', 'Inercia', 'Score', 'Score Adj']:
+                    history_df[col] = history_df[col].round(2)
+                
+                st.dataframe(history_df, use_container_width=True)
+                
+                # Gráfico de evolución
+                fig_debug = go.Figure()
+                
+                # Inercia Alcista
+                fig_debug.add_trace(go.Scatter(
+                    x=inercia_alcista.index[-24:],
+                    y=inercia_alcista.iloc[-24:],
+                    mode='lines+markers',
+                    name='Inercia Alcista',
+                    line=dict(width=3)
+                ))
+                
+                # Línea de corte
+                fig_debug.add_hline(
+                    y=corte, 
+                    line_dash="dash", 
+                    line_color="red",
+                    annotation_text=f"Corte = {corte}"
+                )
+                
+                fig_debug.update_layout(
+                    title=f"Evolución de Inercia Alcista - {debug_ticker}",
+                    xaxis_title="Fecha",
+                    yaxis_title="Inercia Alcista",
+                    height=400
+                )
+                
+                st.plotly_chart(fig_debug, use_container_width=True)
+                
+            else:
+                st.error(f"No hay suficientes datos para {debug_ticker} (se necesitan al menos 15 meses)")
+    else:
+        st.info("Ejecuta primero el backtest para poder analizar los cálculos")
+
+# -------------------------------------------------
+# Comparación con últimos picks
+# -------------------------------------------------
+if 'picks_df' in locals() and picks_df is not None and not picks_df.empty:
+    with st.expander("📊 Análisis de Consistencia de Picks"):
+        st.subheader("Comparación de valores calculados")
+        
+        # Obtener últimos picks
+        latest_date = picks_df["Date"].max()
+        latest_picks = picks_df[picks_df["Date"] == latest_date].head(10)
+        
+        if not latest_picks.empty:
+            # Crear tabla de análisis
+            analysis_data = []
+            for _, pick in latest_picks.iterrows():
+                # Calcular ratio para verificar consistencia
+                ratio = pick['ScoreAdj'] / pick['Inercia'] if pick['Inercia'] > 0 else 0
+                
+                analysis_data.append({
+                    'Rank': pick['Rank'],
+                    'Ticker': pick['Ticker'],
+                    'Inercia Alcista': f"{pick['Inercia']:.2f}",
+                    'Score Ajustado': f"{pick['ScoreAdj']:.2f}",
+                    'Ratio (ScoreAdj/Inercia)': f"{ratio:.4f}",
+                    'Pasa Corte': '✅' if pick['Inercia'] >= corte else '❌'
+                })
+            
+            analysis_df = pd.DataFrame(analysis_data)
+            st.dataframe(analysis_df, use_container_width=True)
+            
+            # Métricas de resumen
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                avg_inercia = latest_picks['Inercia'].mean()
+                st.metric("Promedio Inercia", f"{avg_inercia:.2f}")
+            with col2:
+                avg_score = latest_picks['ScoreAdj'].mean()
+                st.metric("Promedio Score Adj", f"{avg_score:.2f}")
+            with col3:
+                pass_count = (latest_picks['Inercia'] >= corte).sum()
+                st.metric("Tickers que pasan corte", f"{pass_count}/{len(latest_picks)}")
+            
+            # Advertencia si hay inconsistencias
+            if avg_inercia < 100:
+                st.warning("⚠️ Los valores de Inercia parecen bajos. Verifica los cálculos.")
+            elif avg_inercia > 5000:
+                st.warning("⚠️ Los valores de Inercia parecen muy altos. Verifica los cálculos.")
+
     except Exception as e:
         st.error(f"❌ Excepción no capturada: {str(e)}")
         st.exception(e)
