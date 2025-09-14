@@ -469,89 +469,248 @@ if run_button:
                             # Mensualizar datos si es necesario
                             ticker_monthly = ticker_data.resample('ME').last()
                             
-                            # En la sección de debug, reemplaza el cálculo del ATR con:
+                                       # -------------------------------------------------
+            # Sección de Debug de Cálculos - MÉTODO WILDER
+            # -------------------------------------------------
+            with st.expander("🔍 Debug de Cálculos de Inercia (Método AmiBroker)", expanded=False):
+                if 'prices_df' in locals() and prices_df is not None and not prices_df.empty:
+                    st.subheader("Análisis detallado de cálculos - Réplica exacta de AmiBroker")
+                    
+                    # Crear una copia de los tickers disponibles
+                    available_tickers = sorted(list(prices_df.columns))
+                    
+                    # Usar session state para mantener el ticker seleccionado
+                    if 'debug_ticker' not in st.session_state:
+                        st.session_state.debug_ticker = available_tickers[0] if available_tickers else None
+                    
+                    debug_ticker = st.selectbox(
+                        "Selecciona un ticker para analizar:",
+                        available_tickers,
+                        index=available_tickers.index(st.session_state.debug_ticker) if st.session_state.debug_ticker in available_tickers else 0,
+                        key="debug_ticker_select"
+                    )
+                    
+                    if st.button("Analizar Ticker", key="debug_analyze"):
+                        st.session_state.debug_ticker = debug_ticker
+                        
+                        # Obtener datos del ticker
+                        ticker_data = prices_df[[debug_ticker]].dropna()
+                        
+                        if len(ticker_data) >= 15:
+                            # Mensualizar datos si es necesario
+                            ticker_monthly = ticker_data.resample('ME').last()
+                            
+                            # Calcular componentes paso a paso
+                            close = ticker_monthly[debug_ticker]
+                            
+                            # Estimar High y Low para datos mensuales (aproximación necesaria)
+                            # Calcular volatilidad mensual promedio
+                            monthly_returns = close.pct_change()
+                            monthly_vol = monthly_returns.rolling(3).std()
+                            
+                            # Estimar High y Low basándonos en la volatilidad
+                            volatility_factor = monthly_vol.fillna(0.02)  # Default 2% si no hay datos
+                            high = close * (1 + volatility_factor)
+                            low = close * (1 - volatility_factor)
+                            
+                            # Asegurar que High >= Close >= Low
+                            high = pd.Series(np.maximum(high, close), index=close.index)
+                            low = pd.Series(np.minimum(low, close), index=close.index)
+                            
+                            # ROC calculation
+                            roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
+                            roc_10_w1 = roc_10_percent * 0.4
+                            roc_10_w2 = roc_10_percent * 0.2
+                            f1 = roc_10_w1 + roc_10_w2
+                            
+                            # ATR con método de Wilder (AmiBroker)
+                            def calcular_atr_wilder_debug(high, low, close, periods=14):
+                                prev_close = close.shift(1)
+                                
+                                # True Range: máximo de tres valores
+                                hl = high - low  # High - Low
+                                hc = np.abs(high - prev_close)  # |High - PrevClose|
+                                lc = np.abs(low - prev_close)  # |Low - PrevClose|
+                                
+                                # True Range es el máximo de los tres
+                                tr = pd.DataFrame({'hl': hl, 'hc': hc, 'lc': lc}).max(axis=1)
+                                
+                                # ATR usando el método de Wilder
+                                atr = pd.Series(index=tr.index, dtype=float)
+                                
+                                # Calcular la media simple inicial
+                                if len(tr) >= periods:
+                                    atr.iloc[periods-1] = tr.iloc[:periods].mean()
+                                    
+                                    # Aplicar la fórmula de Wilder para los siguientes valores
+                                    for i in range(periods, len(tr)):
+                                        atr.iloc[i] = (atr.iloc[i-1] * (periods - 1) + tr.iloc[i]) / periods
+                                
+                                return atr, tr
+                            
+                            atr14, true_range = calcular_atr_wilder_debug(high, low, close, periods=14)
+                            sma14 = close.rolling(14).mean()
+                            
+                            # F2 calculation
+                            volatility_ratio = atr14 / sma14
+                            f2 = volatility_ratio * 0.4
+                            
+                            # Inercia
+                            inercia_alcista = f1 / f2
+                            
+                            # Score
+                            score = pd.Series(
+                                np.where(inercia_alcista < corte, 0, np.maximum(inercia_alcista, 0)),
+                                index=inercia_alcista.index
+                            )
+                            
+                            # Score ajustado
+                            score_adj = score / atr14
+                            
+                            # Mostrar últimos valores
+                            st.subheader(f"📊 Últimos valores para {debug_ticker}")
+                            
+                            # Información del método
+                            st.info("""
+                            **Método Wilder para ATR (AmiBroker):**
+                            - True Range = max(H-L, |H-Cprev|, |L-Cprev|)
+                            - ATR inicial = Media simple de 14 períodos de TR
+                            - ATR siguiente = ((ATR_anterior × 13) + TR_actual) / 14
+                            """)
+                            
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                st.metric("Precio Actual", f"${close.iloc[-1]:.2f}")
+                                st.metric("High Estimado", f"${high.iloc[-1]:.2f}")
+                                st.metric("Low Estimado", f"${low.iloc[-1]:.2f}")
+                                if len(close) > 10:
+                                    st.metric("Precio hace 10 meses", f"${close.iloc[-11]:.2f}")
+                                st.metric("ROC(10)", f"{roc_10_percent.iloc[-1]:.2f}%")
+                                st.metric("F1 (ROC*0.6)", f"{f1.iloc[-1]:.2f}")
+                            
+                            with col2:
+                                st.metric("True Range", f"${true_range.iloc[-1]:.2f}")
+                                st.metric("ATR(14) Wilder", f"${atr14.iloc[-1]:.2f}")
+                                st.metric("SMA(14)", f"${sma14.iloc[-1]:.2f}")
+                                st.metric("Ratio ATR/SMA", f"{volatility_ratio.iloc[-1]:.4f}")
+                                st.metric("F2 (Ratio*0.4)", f"{f2.iloc[-1]:.4f}")
+                            
+                            with col3:
+                                st.metric("Inercia Alcista", f"{inercia_alcista.iloc[-1]:.2f}")
+                                st.metric("Score", f"{score.iloc[-1]:.2f}")
+                                st.metric("Score Ajustado", f"{score_adj.iloc[-1]:.2f}")
+                            
+                            # Mostrar cálculo detallado paso a paso
+                            st.subheader("📝 Verificación paso a paso")
+                            
+                            # Obtener valores de ejemplo (últimos valores válidos)
+                            idx = -1
+                            while pd.isna(f2.iloc[idx]) and abs(idx) < len(f2):
+                                idx -= 1
+                            
+                            st.code(f"""
+CÁLCULOS PASO A PASO PARA {debug_ticker}:
 
-# Calcular componentes paso a paso
-close = ticker_monthly[debug_ticker]
+1. ROC(10) = ((Close - Close_10) / Close_10) × 100
+   ROC(10) = (({close.iloc[idx]:.2f} - {close.iloc[idx-10]:.2f}) / {close.iloc[idx-10]:.2f}) × 100 = {roc_10_percent.iloc[idx]:.2f}%
 
-# Estimar High y Low para el debug
-monthly_returns = close.pct_change()
-monthly_vol = monthly_returns.rolling(3).std()
-high = close * (1 + monthly_vol.fillna(0.02))
-low = close * (1 - monthly_vol.fillna(0.02))
-high = pd.Series(np.maximum(high, close), index=close.index)
-low = pd.Series(np.minimum(low, close), index=close.index)
+2. F1 = ROC(10) × 0.6
+   F1 = {roc_10_percent.iloc[idx]:.2f} × 0.6 = {f1.iloc[idx]:.2f}
 
-# ROC calculation
-roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
-roc_10_w1 = roc_10_percent * 0.4
-roc_10_w2 = roc_10_percent * 0.2
-f1 = roc_10_w1 + roc_10_w2
+3. True Range = max(H-L, |H-Cprev|, |L-Cprev|)
+   True Range = max({high.iloc[idx]:.2f}-{low.iloc[idx]:.2f}, |{high.iloc[idx]:.2f}-{close.iloc[idx-1]:.2f}|, |{low.iloc[idx]:.2f}-{close.iloc[idx-1]:.2f}|)
+   True Range = {true_range.iloc[idx]:.2f}
 
-# ATR con método de Wilder
-from backtest import calcular_atr_wilder
-atr14 = calcular_atr_wilder(high, low, close, periods=14)
-sma14 = close.rolling(14).mean()
+4. ATR(14) usando método Wilder
+   ATR(14) = {atr14.iloc[idx]:.2f}
 
-# F2
-volatility_ratio = atr14 / sma14
-f2 = volatility_ratio * 0.4
+5. SMA(14) = {sma14.iloc[idx]:.2f}
 
-# Resto del cálculo igual...
-# Inercia
-inercia_alcista = f1 / f2
+6. F2 = (ATR14/SMA14) × 0.4
+   F2 = ({atr14.iloc[idx]:.2f}/{sma14.iloc[idx]:.2f}) × 0.4 = {f2.iloc[idx]:.4f}
 
-# Score
-score = pd.Series(
-    np.where(inercia_alcista < corte, 0, np.maximum(inercia_alcista, 0)),
-    index=inercia_alcista.index
-)
+7. Inercia Alcista = F1 / F2
+   Inercia = {f1.iloc[idx]:.2f} / {f2.iloc[idx]:.4f} = {inercia_alcista.iloc[idx]:.2f}
 
-# Score ajustado
-score_adj = score / atr14
+8. Score = {score.iloc[idx]:.2f} (Inercia si >= {corte}, sino 0)
 
-# Mostrar últimos valores
-st.subheader(f"📊 Últimos valores para {debug_ticker}")
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.metric("Precio Actual", f"${close.iloc[-1]:.2f}")
-    if len(close) > 10:
-        st.metric("Precio hace 10 meses", f"${close.iloc[-11]:.2f}")
-    st.metric("ROC(10)", f"{roc_10_percent.iloc[-1]:.2f}%")
-    st.metric("F1 (ROC*0.6)", f"{f1.iloc[-1]:.2f}")
-
-with col2:
-    st.metric("ATR(14)", f"${atr14.iloc[-1]:.2f}")
-    st.metric("SMA(14)", f"${sma14.iloc[-1]:.2f}")
-    st.metric("Ratio ATR/SMA", f"{volatility_ratio.iloc[-1]:.4f}")
-    st.metric("F2 (Ratio*0.4)", f"{f2.iloc[-1]:.4f}")
-
-with col3:
-    st.metric("Inercia Alcista", f"{inercia_alcista.iloc[-1]:.2f}")
-    st.metric("Score", f"{score.iloc[-1]:.2f}")
-    st.metric("Score Ajustado", f"{score_adj.iloc[-1]:.2f}")
-
-# Mostrar cálculo detallado
-st.info(f"""
-**Verificación del cálculo:**
-- F1 = ROC(10) × 0.6 = {f1.iloc[-1]:.2f}
-- F2 = (ATR/SMA) × 0.4 = ({atr14.iloc[-1]:.2f}/{sma14.iloc[-1]:.2f}) × 0.4 = {f2.iloc[-1]:.4f}
-- Inercia = F1/F2 = {f1.iloc[-1]:.2f}/{f2.iloc[-1]:.4f} = {inercia_alcista.iloc[-1]:.2f}
-- Score Ajustado = Score/ATR = {score.iloc[-1]:.2f}/{atr14.iloc[-1]:.2f} = {score_adj.iloc[-1]:.2f}
-""")
-
-# Mostrar si pasa el corte
-if inercia_alcista.iloc[-1] >= corte:
-    st.success(f"✅ Inercia ({inercia_alcista.iloc[-1]:.2f}) >= {corte} - PASA EL CORTE")
-else:
-    st.warning(f"❌ Inercia ({inercia_alcista.iloc[-1]:.2f}) < {corte} - NO PASA EL CORTE")
-
-else:
-    st.error(f"No hay suficientes datos para {debug_ticker} (se necesitan al menos 15 meses)")
-else:
-    st.info("Ejecuta primero el backtest para poder analizar los cálculos")
+9. Score Ajustado = Score / ATR14
+   Score Adj = {score.iloc[idx]:.2f} / {atr14.iloc[idx]:.2f} = {score_adj.iloc[idx]:.2f}
+                            """)
+                            
+                            # Mostrar si pasa el corte
+                            if inercia_alcista.iloc[idx] >= corte:
+                                st.success(f"✅ Inercia ({inercia_alcista.iloc[idx]:.2f}) >= {corte} - PASA EL CORTE")
+                            else:
+                                st.warning(f"❌ Inercia ({inercia_alcista.iloc[idx]:.2f}) < {corte} - NO PASA EL CORTE")
+                            
+                            # Tabla histórica de los últimos 12 meses
+                            st.subheader("📈 Evolución histórica (últimos 12 meses)")
+                            
+                            try:
+                                # Crear DataFrame con los últimos 12 valores válidos
+                                n_months = min(12, len(close))
+                                history_df = pd.DataFrame({
+                                    'Fecha': close.index[-n_months:].strftime('%Y-%m'),
+                                    'Precio': close.iloc[-n_months:].values,
+                                    'ROC(10)%': roc_10_percent.iloc[-n_months:].values,
+                                    'F1': f1.iloc[-n_months:].values,
+                                    'ATR(14)': atr14.iloc[-n_months:].values,
+                                    'F2': f2.iloc[-n_months:].values,
+                                    'Inercia': inercia_alcista.iloc[-n_months:].values,
+                                    'Score': score.iloc[-n_months:].values,
+                                    'Score Adj': score_adj.iloc[-n_months:].values
+                                })
+                                
+                                # Formatear DataFrame
+                                for col in ['Precio', 'ROC(10)%', 'F1', 'ATR(14)', 'F2', 'Inercia', 'Score', 'Score Adj']:
+                                    history_df[col] = history_df[col].round(2)
+                                
+                                st.dataframe(history_df, use_container_width=True)
+                                
+                            except Exception as hist_error:
+                                st.warning(f"Error creando tabla histórica: {hist_error}")
+                            
+                            # Gráfico de evolución de Inercia
+                            try:
+                                fig_debug = go.Figure()
+                                
+                                # Inercia Alcista últimos 24 meses
+                                last_24 = min(24, len(inercia_alcista))
+                                fig_debug.add_trace(go.Scatter(
+                                    x=inercia_alcista.index[-last_24:],
+                                    y=inercia_alcista.iloc[-last_24:],
+                                    mode='lines+markers',
+                                    name='Inercia Alcista',
+                                    line=dict(width=3, color='blue')
+                                ))
+                                
+                                # Línea de corte
+                                fig_debug.add_hline(
+                                    y=corte, 
+                                    line_dash="dash", 
+                                    line_color="red",
+                                    annotation_text=f"Corte = {corte}"
+                                )
+                                
+                                fig_debug.update_layout(
+                                    title=f"Evolución de Inercia Alcista - {debug_ticker} (Método Wilder)",
+                                    xaxis_title="Fecha",
+                                    yaxis_title="Inercia Alcista",
+                                    height=400,
+                                    showlegend=True
+                                )
+                                
+                                st.plotly_chart(fig_debug, use_container_width=True)
+                                
+                            except Exception as graph_error:
+                                st.warning(f"Error creando gráfico: {graph_error}")
+                            
+                        else:
+                            st.error(f"No hay suficientes datos para {debug_ticker} (se necesitan al menos 15 meses)")
+                else:
+                    st.info("Ejecuta primero el backtest para poder analizar los cálculos")
 
 # -------------------------------------------------
 # Comparación con últimos picks
