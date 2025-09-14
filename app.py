@@ -397,7 +397,7 @@ if run_button:
 
             # -------------------------------------------------
             # -------------------------------------------------
-            # -------------------------------------------------
+                        # -------------------------------------------------
             # Sección de Debug de Cálculos
             # -------------------------------------------------
             with st.expander("🔍 Debug de Cálculos de Inercia", expanded=False):
@@ -407,17 +407,20 @@ if run_button:
                     # Crear una copia de los tickers disponibles
                     available_tickers = sorted(list(prices_df.columns))
                     
-                    # Usar un formulario para evitar recargas
-                    with st.form("debug_form"):
-                        debug_ticker = st.selectbox(
-                            "Selecciona un ticker para analizar:",
-                            available_tickers,
-                            key="debug_ticker_select_form"
-                        )
-                        
-                        analyze_button = st.form_submit_button("Analizar Ticker")
+                    # Usar session state para mantener el ticker seleccionado
+                    if 'debug_ticker' not in st.session_state:
+                        st.session_state.debug_ticker = available_tickers[0] if available_tickers else None
                     
-                    if analyze_button and debug_ticker:
+                    debug_ticker = st.selectbox(
+                        "Selecciona un ticker para analizar:",
+                        available_tickers,
+                        index=available_tickers.index(st.session_state.debug_ticker) if st.session_state.debug_ticker in available_tickers else 0,
+                        key="debug_ticker_select"
+                    )
+                    
+                    if st.button("Analizar Ticker", key="debug_analyze"):
+                        st.session_state.debug_ticker = debug_ticker
+                        
                         # Obtener datos del ticker
                         ticker_data = prices_df[[debug_ticker]].dropna()
                         
@@ -434,14 +437,14 @@ if run_button:
                             roc_10_w2 = roc_10_percent * 0.2
                             f1 = roc_10_w1 + roc_10_w2
                             
-                            # ATR mensual mejorado
-                            monthly_pct_range = np.abs(close.pct_change())
-                            atr14_pct = monthly_pct_range.rolling(14).mean()
-                            atr14 = atr14_pct * close
+                            # ATR calculation (corregido)
+                            prev_close = close.shift(1)
+                            tr = np.abs(close - prev_close)
+                            atr14 = tr.rolling(14).mean()
                             sma14 = close.rolling(14).mean()
                             
-                            # F2
-                            volatility_ratio = atr14_pct  # Ya es un ratio
+                            # F2 calculation
+                            volatility_ratio = atr14 / sma14
                             f2 = volatility_ratio * 0.4
                             
                             # Inercia
@@ -469,15 +472,24 @@ if run_button:
                                 st.metric("F1 (ROC*0.6)", f"{f1.iloc[-1]:.2f}")
                             
                             with col2:
-                                st.metric("ATR(14) $", f"${atr14.iloc[-1]:.2f}")
-                                st.metric("ATR(14) %", f"{atr14_pct.iloc[-1]*100:.2f}%")
+                                st.metric("ATR(14)", f"${atr14.iloc[-1]:.2f}")
                                 st.metric("SMA(14)", f"${sma14.iloc[-1]:.2f}")
-                                st.metric("F2", f"{f2.iloc[-1]:.4f}")
+                                st.metric("Ratio ATR/SMA", f"{volatility_ratio.iloc[-1]:.4f}")
+                                st.metric("F2 (Ratio*0.4)", f"{f2.iloc[-1]:.4f}")
                             
                             with col3:
                                 st.metric("Inercia Alcista", f"{inercia_alcista.iloc[-1]:.2f}")
                                 st.metric("Score", f"{score.iloc[-1]:.2f}")
                                 st.metric("Score Ajustado", f"{score_adj.iloc[-1]:.2f}")
+                            
+                            # Mostrar cálculo detallado
+                            st.info(f"""
+                            **Verificación del cálculo:**
+                            - F1 = ROC(10) × 0.6 = {f1.iloc[-1]:.2f}
+                            - F2 = (ATR/SMA) × 0.4 = ({atr14.iloc[-1]:.2f}/{sma14.iloc[-1]:.2f}) × 0.4 = {f2.iloc[-1]:.4f}
+                            - Inercia = F1/F2 = {f1.iloc[-1]:.2f}/{f2.iloc[-1]:.4f} = {inercia_alcista.iloc[-1]:.2f}
+                            - Score Ajustado = Score/ATR = {score.iloc[-1]:.2f}/{atr14.iloc[-1]:.2f} = {score_adj.iloc[-1]:.2f}
+                            """)
                             
                             # Mostrar si pasa el corte
                             if inercia_alcista.iloc[-1] >= corte:
@@ -485,14 +497,10 @@ if run_button:
                             else:
                                 st.warning(f"❌ Inercia ({inercia_alcista.iloc[-1]:.2f}) < {corte} - NO PASA EL CORTE")
                             
-                            # Verificación del cálculo
-                            st.info(f"**Verificación**: Score Ajustado = Score / ATR = {score.iloc[-1]:.2f} / {atr14.iloc[-1]:.2f} = {score_adj.iloc[-1]:.2f}")
-                            
                         else:
                             st.error(f"No hay suficientes datos para {debug_ticker} (se necesitan al menos 15 meses)")
                 else:
                     st.info("Ejecuta primero el backtest para poder analizar los cálculos")
-
             # -------------------------------------------------
             # Comparación con últimos picks - CORREGIDO
             # -------------------------------------------------
