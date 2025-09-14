@@ -39,10 +39,6 @@ def inertia_score(monthly_prices_df, corte=680):
                 if len(close) < 15:
                     continue
                 
-                # Para datos mensuales, usar close como high y low
-                high = close
-                low = close
-                
                 # Calcular ROC como porcentaje (AmiBroker style)
                 roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
                 
@@ -51,28 +47,34 @@ def inertia_score(monthly_prices_df, corte=680):
                 roc_10_w2 = roc_10_percent * 0.2
                 f1 = roc_10_w1 + roc_10_w2  # Total: ROC * 0.6
                 
-                # Para datos mensuales, calcular ATR de manera apropiada
-                # Usar el rango porcentual mensual como proxy
-                monthly_pct_range = np.abs(close.pct_change())
+                # Calcular ATR(14) para datos mensuales
+                # En datos mensuales, el ATR es simplemente el rango promedio
+                # Usamos el cambio absoluto entre meses como proxy del True Range
+                high = close  # Para datos mensuales
+                low = close   # Para datos mensuales
                 
-                # ATR(14) para datos mensuales - promedio de los rangos porcentuales
-                # multiplicado por el precio para obtener valor en dólares
-                atr14_pct = monthly_pct_range.rolling(14).mean()
-                atr14 = atr14_pct * close
+                # True Range mensual: diferencia absoluta entre cierre actual y anterior
+                prev_close = close.shift(1)
+                # Para datos mensuales, el TR es el cambio absoluto
+                tr = np.abs(close - prev_close)
+                
+                # ATR(14) - promedio móvil del True Range
+                atr14 = tr.rolling(14).mean()
                 
                 # Calcular SMA(14)
                 sma14 = close.rolling(14).mean()
                 
                 # Calcular F2 = (ATR14/MA(C,14))*0.4
+                # Este es el denominador clave
                 with np.errstate(divide='ignore', invalid='ignore'):
-                    # Usar el ATR porcentual directamente
-                    volatility_ratio = atr14_pct  # Ya es un ratio
+                    volatility_ratio = atr14 / sma14
                     f2 = volatility_ratio * 0.4
                     
                     # Manejar valores problemáticos
                     f2 = f2.replace([np.inf, -np.inf], np.nan)
                     f2 = f2.fillna(0.01)
-                    f2 = f2.apply(lambda x: max(x, 0.001))
+                    # NO aplicar un mínimo tan alto, dejar que sea más pequeño
+                    f2 = f2.apply(lambda x: max(x, 0.0001) if not pd.isna(x) else 0.0001)
                 
                 # Calcular Inercia Alcista = F1 / F2
                 with np.errstate(divide='ignore', invalid='ignore'):
@@ -87,10 +89,9 @@ def inertia_score(monthly_prices_df, corte=680):
                 )
                 
                 # Score Ajustado = Score / ATR14
-                # Usar el ATR en dólares para el ajuste
                 atr14_safe = atr14.copy()
                 atr14_safe = atr14_safe.fillna(1.0)
-                atr14_safe = atr14_safe.apply(lambda x: max(x, 0.01))
+                atr14_safe = atr14_safe.apply(lambda x: max(x, 0.01) if not pd.isna(x) else 0.01)
                 
                 with np.errstate(divide='ignore', invalid='ignore'):
                     score_adj = score / atr14_safe
