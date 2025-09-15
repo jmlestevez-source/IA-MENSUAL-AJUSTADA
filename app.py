@@ -770,7 +770,7 @@ if run_button:
                                 final_picks = valid_picks[:min(top_n, len(valid_picks))]
                                 
                                 if not final_picks:
-                                st.warning("⚠️ No hay tickers que pasen el corte de inercia actualmente")
+                                    st.warning("⚠️ No hay tickers que pasen el corte de inercia actualmente")
                                 else:  # ✅ CORREGIDO: usar else en lugar de continue
                                 
                                 # Crear DataFrame para mostrar
