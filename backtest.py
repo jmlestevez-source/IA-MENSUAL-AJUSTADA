@@ -336,14 +336,14 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                 if spy_monthly is not None and prev_date in spy_monthly.index:
                     spy_price = spy_monthly.loc[prev_date]
                     
-                    # Filtro ROC
-                    if use_roc_filter and len(spy_monthly[:prev_date]) >= 11:
-                        spy_10m_ago = spy_monthly[:prev_date].iloc[-11]
-                        spy_roc_10m = ((spy_price - spy_10m_ago) / spy_10m_ago) * 100
+                    # Filtro ROC (12 MESES)
+                    if use_roc_filter and len(spy_monthly[:prev_date]) >= 13:
+                        spy_12m_ago = spy_monthly[:prev_date].iloc[-13]
+                        spy_roc_12m = ((spy_price - spy_12m_ago) / spy_12m_ago) * 100
                         
-                        if spy_roc_10m < 0:
+                        if spy_roc_12m < 0:
                             market_filter_active = True
-                            filter_reasons.append(f"ROC 10M SPY: {spy_roc_10m:.2f}% < 0")
+                            filter_reasons.append(f"ROC 12M SPY: {spy_roc_12m:.2f}% < 0")
                     
                     # Filtro SMA
                     if use_sma_filter and len(spy_monthly[:prev_date]) >= 10:
