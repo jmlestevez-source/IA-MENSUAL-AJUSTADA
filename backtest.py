@@ -74,6 +74,7 @@ def get_valid_tickers_for_date(target_date, historical_changes_data, current_tic
         # Si no hay datos históricos, usar todos los tickers actuales
         return set(current_tickers)
     
+    ```python
     # Convertir target_date a date si es datetime
     if isinstance(target_date, pd.Timestamp):
         target_date = target_date.date()
@@ -240,12 +241,18 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
         print(f"Error en cálculo de inercia: {e}")
         return {}
 
-def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_data=None, historical_info=None):
+def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_data=None, 
+                 historical_info=None, fixed_allocation=False, use_roc_filter=False, 
+                 use_sma_filter=False, spy_data=None):
     """
     Ejecuta backtest con verificación histórica de constituyentes
     
     Args:
         historical_info: dict con información histórica de cambios en índices
+        fixed_allocation: bool, si True asigna 10% a cada posición
+        use_roc_filter: bool, si True aplica filtro ROC del SPY
+        use_sma_filter: bool, si True aplica filtro SMA del SPY
+        spy_data: DataFrame con datos del SPY para filtros
     """
     try:
         print("Iniciando backtest con verificación histórica...")
@@ -277,6 +284,23 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
         except:
             bench_m = benchmark
 
+        # ✅ NUEVO: Preparar datos del SPY para filtros
+        spy_monthly = None
+        if (use_roc_filter or use_sma_filter) and spy_data is not None:
+            try:
+                if isinstance(spy_data, pd.DataFrame):
+                    spy_series = spy_data.iloc[:, 0]  # Primera columna
+                else:
+                    spy_series = spy_data
+                
+                # Mensualizar SPY
+                spy_monthly = spy_series.resample('ME').last()
+                print("✅ Datos del SPY preparados para filtros de mercado")
+            except Exception as e:
+                print(f"⚠️ Error preparando datos del SPY: {e}")
+                use_roc_filter = False
+                use_sma_filter = False
+
         if prices_df_m.empty:
             print("❌ No hay datos mensuales suficientes")
             raise ValueError("No hay datos mensuales suficientes para el backtest")
@@ -294,13 +318,56 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
         equity = [10000]
         dates = [prices_df_m.index[0]] if len(prices_df_m.index) > 0 else []
         picks_list = []
+        
+        # ✅ NUEVO: Variable para rastrear si estamos en efectivo por filtros
+        in_cash_by_filter = False
 
         print(f"Datos preparados. Fechas: {len(prices_df_m)}")
+        print(f"Configuración: fixed_allocation={fixed_allocation}, ROC_filter={use_roc_filter}, SMA_filter={use_sma_filter}")
 
         for i in range(1, len(prices_df_m)):
             try:
                 prev_date = prices_df_m.index[i - 1]
                 date = prices_df_m.index[i]
+
+                # ✅ NUEVO: Verificar filtros de mercado
+                market_filter_active = False
+                filter_reasons = []
+                
+                if spy_monthly is not None and prev_date in spy_monthly.index:
+                    spy_price = spy_monthly.loc[prev_date]
+                    
+                    # Filtro ROC
+                    if use_roc_filter and len(spy_monthly[:prev_date]) >= 11:
+                        spy_10m_ago = spy_monthly[:prev_date].iloc[-11]
+                        spy_roc_10m = ((spy_price - spy_10m_ago) / spy_10m_ago) * 100
+                        
+                        if spy_roc_10m < 0:
+                            market_filter_active = True
+                            filter_reasons.append(f"ROC 10M SPY: {spy_roc_10m:.2f}% < 0")
+                    
+                    # Filtro SMA
+                    if use_sma_filter and len(spy_monthly[:prev_date]) >= 10:
+                        spy_sma_10m = spy_monthly[:prev_date].iloc[-10:].mean()
+                        
+                        if spy_price < spy_sma_10m:
+                            market_filter_active = True
+                            filter_reasons.append(f"SPY ${spy_price:.2f} < SMA10 ${spy_sma_10m:.2f}")
+                
+                # Si los filtros están activos, mantener efectivo
+                if market_filter_active:
+                    if not in_cash_by_filter:
+                        print(f"🛡️ {prev_date.strftime('%Y-%m-%d')}: Filtros de mercado ACTIVADOS - {', '.join(filter_reasons)}")
+                        in_cash_by_filter = True
+                    
+                    # Mantener equity igual (efectivo)
+                    equity.append(equity[-1])
+                    dates.append(date)
+                    continue
+                else:
+                    if in_cash_by_filter:
+                        print(f"✅ {prev_date.strftime('%Y-%m-%d')}: Filtros de mercado DESACTIVADOS - Reanudando inversiones")
+                        in_cash_by_filter = False
 
                 # VERIFICACIÓN HISTÓRICA: Obtener tickers válidos para prev_date
                 if historical_changes is not None:
@@ -334,6 +401,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                     historical_ohlc = {}
                     for ticker in available_valid_tickers:
                         if ticker in ohlc_data:
+                            ```python
                             historical_ohlc[ticker] = {
                                 'High': ohlc_data[ticker]['High'].loc[:prev_date],
                                 'Low': ohlc_data[ticker]['Low'].loc[:prev_date],
@@ -343,8 +411,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                 # Calcular scores solo para tickers válidos
                 df_score = inertia_score(historical_data_filtered, corte=corte, ohlc_data=historical_ohlc)
                 if df_score is None or not df_score:
-
-                                    # Mantener equity igual (efectivo)
+                    # Mantener equity igual (efectivo)
                     equity.append(equity[-1])
                     dates.append(date)
                     continue
@@ -420,14 +487,26 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                     
                     # Ordenar por score ajustado y seleccionar top N
                     valid_tickers_scores = sorted(valid_tickers_scores, key=lambda x: x['score_adj'], reverse=True)
-                    selected_picks = valid_tickers_scores[:min(top_n, len(valid_tickers_scores))]
-                    selected = [pick['ticker'] for pick in selected_picks]
+                    
+                    if fixed_allocation:
+                        # ✅ NUEVO: Asignación fija de 10%
+                        selected_picks = valid_tickers_scores[:10]  # Máximo 10 posiciones
+                        selected = [pick['ticker'] for pick in selected_picks]
+                        weight = 0.1  # 10% por posición
+                        print(f"💰 Asignación fija: {len(selected)} posiciones, 10% cada una")
+                    else:
+                        # Seleccionar hasta top_n de los válidos
+                        selected_picks = valid_tickers_scores[:min(top_n, len(valid_tickers_scores))]
+                        selected = [pick['ticker'] for pick in selected_picks]
+                        weight = 1.0 / len(selected)  # Peso equitativo
+                        print(f"💰 Distribución equitativa: {len(selected)} posiciones, {weight*100:.1f}% cada una")
                     
                     print(f"📊 {prev_date.strftime('%Y-%m-%d')}: {len(selected)} tickers válidos seleccionados de {len(last_scores)} disponibles")
                     
                 else:
                     # Fallback si no hay datos de inercia
                     selected = last_scores.sort_values(ascending=False).head(top_n).index.tolist()
+                    weight = 1.0 / len(selected)
                     print(f"⚠️ Sin datos de inercia para {prev_date}, usando fallback")
 
                 if not selected:
@@ -435,10 +514,6 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                     equity.append(equity[-1])
                     dates.append(date)
                     continue
-
-                # El peso se distribuye equitativamente entre los seleccionados VÁLIDOS
-                weight = 1.0 / len(selected)
-                print(f"💰 Distribuyendo capital: {len(selected)} posiciones, {weight*100:.1f}% cada una")
 
                 try:
                     available_prices = prices_df_m.loc[date]
@@ -470,7 +545,11 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                     continue
 
                 # Recalcular peso con tickers que tienen precios válidos
-                weight = 1.0 / len(valid_tickers)
+                if fixed_allocation:
+                    weight = 0.1
+                    valid_tickers = valid_tickers[:10]  # Limitar a máximo 10
+                else:
+                    weight = 1.0 / len(valid_tickers)
 
                 rets = pd.Series(dtype=float)
                 for ticker in valid_tickers:
@@ -541,7 +620,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
         returns = equity_series.pct_change().fillna(0)
         drawdown = (equity_series / equity_series.cummax() - 1).fillna(0)
 
-        bt = pd.DataFrame({
+                bt = pd.DataFrame({
             "Equity": equity_series,
             "Returns": returns,
             "Drawdown": drawdown
@@ -577,4 +656,4 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
 # Mantener para compatibilidad
 def monthly_true_range(high, low, close):
     """Función mantenida para compatibilidad"""
-    return calcular_atr_amibroker(high, low, close, periods=1)    
+    return calcular_atr_amibroker(high, low, close, periods=1)
