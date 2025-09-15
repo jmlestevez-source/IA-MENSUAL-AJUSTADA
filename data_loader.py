@@ -23,22 +23,48 @@ def parse_wikipedia_date(date_str):
     
     date_str = str(date_str).strip()
     
-    # Patrones comunes en Wikipedia
-    patterns = [
-        r'(\d{4})-(\d{1,2})-(\d{1,2})',  # 2020-12-15
-        r'(\d{1,2})/(\d{1,2})/(\d{4})',  # 12/15/2020
-        r'(\w+)\s+(\d{1,2}),?\s+(\d{4})', # December 15, 2020
-        r'(\d{1,2})\s+(\w+)\s+(\d{4})',   # 15 December 2020
-    ]
-    
     try:
-        # Intentar parsing directo
-        return parser.parse(date_str, fuzzy=True).date()
+        # Intentar parsing directo con dateutil
+        parsed_date = parser.parse(date_str, fuzzy=True)
+        return parsed_date.date()
     except:
         try:
-            # Limpiar string
-            date_clean = re.sub(r'[^\w\s\-/,]', '', date_str)
-            return parser.parse(date_clean, fuzzy=True).date()
+            # Patrones específicos para fechas del S&P 500
+            # Ejemplo: "September 22, 2025"
+            month_map = {
+                'january': 1, 'february': 2, 'march': 3, 'april': 4,
+                'may': 5, 'june': 6, 'july': 7, 'august': 8,
+                'september': 9, 'october': 10, 'november': 11, 'december': 12,
+                'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
+                'jun': 6, 'jul': 7, 'aug': 8, 'sep': 9,
+                'oct': 10, 'nov': 11, 'dec': 12
+            }
+            
+            # Limpiar y dividir
+            clean_date = re.sub(r'[^\w\s,]', ' ', date_str.lower())
+            parts = clean_date.split()
+            
+            if len(parts) >= 3:
+                # Buscar mes
+                month = None
+                for part in parts:
+                    if part.replace(',', '') in month_map:
+                        month = month_map[part.replace(',', '')]
+                        break
+                
+                # Buscar día y año
+                numbers = [int(re.findall(r'\d+', part)[0]) for part in parts if re.findall(r'\d+', part)]
+                
+                if month and len(numbers) >= 2:
+                    # Determinar cuál es día y cuál es año
+                    day = min(numbers)  # El número menor suele ser el día
+                    year = max(numbers)  # El número mayor suele ser el año
+                    
+                    if day <= 31 and year >= 1900:
+                        from datetime import date
+                        return date(year, month, day)
+            
+            return None
         except:
             return None
 
@@ -57,74 +83,115 @@ def get_sp500_historical_changes():
         response.raise_for_status()
         tables = pd.read_html(StringIO(response.text))
         
-        # Buscar tabla de cambios (normalmente la segunda tabla)
+        # La tabla de cambios del S&P 500 normalmente es la segunda tabla (índice 1)
         changes_df = None
+        
+        # Buscar tabla que contenga "Effective Date" o "Date" y "Added/Removed"
         for i, table in enumerate(tables):
-            # Buscar tabla que contenga columnas relacionadas con cambios
-            cols = [str(col).lower() for col in table.columns]
-            if any('date' in col for col in cols) and any('add' in col for col in cols):
+            # Convertir columnas a string para buscar
+            col_text = ' '.join([str(col) for col in table.columns]).lower()
+            
+            if ('effective' in col_text or 'date' in col_text) and ('added' in col_text or 'removed' in col_text):
                 changes_df = table
-                print(f"Encontrada tabla de cambios en posición {i}")
+                print(f"Encontrada tabla de cambios S&P 500 en posición {i}")
                 break
         
         if changes_df is None:
-            print("No se encontró tabla de cambios, usando tabla por defecto")
+            # Fallback: usar la segunda tabla que suele ser la de cambios
             if len(tables) > 1:
-                changes_df = tables[1]  # Tabla típica de cambios
+                changes_df = tables[1]
+                print("Usando tabla por defecto (posición 1) para cambios S&P 500")
             else:
+                print("No se encontró tabla de cambios para S&P 500")
                 return pd.DataFrame()
         
-        # Normalizar nombres de columnas
-        changes_df.columns = [str(col).strip() for col in changes_df.columns]
+        # Manejar columnas multi-nivel si existen
+        if hasattr(changes_df.columns, 'levels') and len(changes_df.columns.levels) > 1:
+            # Columnas multi-nivel - aplanar
+            changes_df.columns = [' '.join(col).strip() for col in changes_df.columns.values]
         
-        # Buscar columnas relevantes
+        # Buscar columnas relevantes con los patrones del S&P 500
         date_col = None
-        added_col = None
-        removed_col = None
+        added_ticker_col = None
+        removed_ticker_col = None
         
+        # Patrones de búsqueda para las columnas del S&P 500
         for col in changes_df.columns:
-            col_lower = col.lower()
-            if 'date' in col_lower and date_col is None:
+            col_lower = str(col).lower().strip()
+            
+            # Buscar columna de fecha
+            if date_col is None and ('effective' in col_lower or 'date' in col_lower):
                 date_col = col
-            elif 'add' in col_lower and added_col is None:
-                added_col = col
-            elif 'remov' in col_lower and removed_col is None:
-                removed_col = col
+                print(f"Columna de fecha encontrada: {col}")
+            
+            # Buscar columna de ticker agregado
+            elif added_ticker_col is None and 'added' in col_lower and 'ticker' in col_lower:
+                added_ticker_col = col
+                print(f"Columna de ticker agregado encontrada: {col}")
+            
+            # Buscar columna de ticker removido  
+            elif removed_ticker_col is None and 'removed' in col_lower and 'ticker' in col_lower:
+                removed_ticker_col = col
+                print(f"Columna de ticker removido encontrada: {col}")
         
-        if not all([date_col, added_col, removed_col]):
-            print(f"Columnas encontradas: {changes_df.columns.tolist()}")
-            # Intentar con las primeras 3 columnas
-            if len(changes_df.columns) >= 3:
-                date_col, added_col, removed_col = changes_df.columns[:3]
+        # Si no encuentra columnas específicas, usar posiciones por defecto
+        if not all([date_col, added_ticker_col, removed_ticker_col]):
+            print("No se encontraron columnas específicas, usando posiciones por defecto")
+            print(f"Columnas disponibles: {list(changes_df.columns)}")
+            
+            # Para la tabla del S&P 500, las posiciones típicas son:
+            # 0: Effective Date
+            # 1: Added Ticker  
+            # 2: Added Security (ignoramos)
+            # 3: Removed Ticker
+            # 4: Removed Security (ignoramos)
+            # 5: Reason (ignoramos)
+            
+            if len(changes_df.columns) >= 4:
+                date_col = changes_df.columns[0]
+                added_ticker_col = changes_df.columns[1]
+                removed_ticker_col = changes_df.columns[3]
+                print(f"Usando columnas por posición: Date={date_col}, Added={added_ticker_col}, Removed={removed_ticker_col}")
             else:
+                print("Tabla no tiene suficientes columnas")
                 return pd.DataFrame()
         
         # Procesar datos
         changes_clean = []
-        for _, row in changes_df.iterrows():
+        print(f"Procesando {len(changes_df)} filas de cambios...")
+        
+        for idx, row in changes_df.iterrows():
             try:
+                # Obtener y parsear fecha
                 date_str = str(row[date_col]).strip()
-                date_parsed = parse_wikipedia_date(date_str)
-                
-                if date_parsed is None:
+                if not date_str or date_str.lower() in ['nan', 'none', '']:
                     continue
                 
-                added_ticker = str(row[added_col]).strip().upper() if pd.notna(row[added_col]) else None
-                removed_ticker = str(row[removed_col]).strip().upper() if pd.notna(row[removed_col]) else None
+                date_parsed = parse_wikipedia_date(date_str)
+                if date_parsed is None:
+                    print(f"No se pudo parsear fecha: {date_str}")
+                    continue
                 
-                # Limpiar tickers
-                if added_ticker and added_ticker not in ['NAN', 'NONE', '']:
-                    added_ticker = added_ticker.replace('.', '-')
-                    if len(added_ticker) <= 6 and not added_ticker.isdigit():
+                # Obtener tickers agregados y removidos
+                added_ticker = str(row[added_ticker_col]).strip().upper() if pd.notna(row[added_ticker_col]) else None
+                removed_ticker = str(row[removed_ticker_col]).strip().upper() if pd.notna(row[removed_ticker_col]) else None
+                
+                # Procesar ticker agregado
+                if added_ticker and added_ticker not in ['NAN', 'NONE', '', 'N/A']:
+                    # Limpiar ticker
+                    added_ticker = added_ticker.replace('.', '-').replace(' ', '')
+                    if len(added_ticker) <= 6 and not added_ticker.isdigit() and added_ticker.isalnum():
                         changes_clean.append({
                             'Date': date_parsed,
                             'Action': 'Added',
                             'Ticker': added_ticker
                         })
                 
-                if removed_ticker and removed_ticker not in ['NAN', 'NONE', '']:
-                    removed_ticker = removed_ticker.replace('.', '-')
-                    if len(removed_ticker) <= 6 and not removed_ticker.isdigit():
+                # Procesar ticker removido
+                if removed_ticker and removed_ticker not in ['NAN', 'NONE', '', 'N/A']:
+                    # Limpiar ticker
+                    removed_ticker = removed_ticker.replace('.', '-').replace(' ', '')
+                    if len(removed_ticker) <= 6 and not removed_ticker.isdigit() and removed_ticker.isalnum():
                         changes_clean.append({
                             'Date': date_parsed,
                             'Action': 'Removed',
@@ -132,21 +199,32 @@ def get_sp500_historical_changes():
                         })
                         
             except Exception as e:
+                print(f"Error procesando fila {idx}: {e}")
                 continue
         
         if changes_clean:
             result_df = pd.DataFrame(changes_clean)
             result_df = result_df.sort_values('Date', ascending=False)  # Más reciente primero
-            print(f"Procesados {len(result_df)} cambios históricos del S&P 500")
+            
+            # Eliminar duplicados
+            initial_count = len(result_df)
+            result_df = result_df.drop_duplicates(subset=['Date', 'Ticker', 'Action'])
+            final_count = len(result_df)
+            
+            print(f"✅ Procesados {final_count} cambios únicos del S&P 500 (de {initial_count} registros)")
+            if final_count != initial_count:
+                print(f"   Eliminados {initial_count - final_count} duplicados")
+            
             return result_df
         else:
-            print("No se pudieron procesar cambios históricos")
+            print("No se pudieron procesar cambios históricos del S&P 500")
             return pd.DataFrame()
             
     except Exception as e:
         print(f"Error obteniendo cambios históricos S&P 500: {e}")
+        import traceback
+        traceback.print_exc()
         return pd.DataFrame()
-
 def get_nasdaq100_historical_changes():
     """Obtiene los cambios históricos del NASDAQ-100 desde Wikipedia"""
     print("Descargando cambios históricos del NASDAQ-100...")
