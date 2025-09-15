@@ -28,7 +28,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install yfinance pandas requests
+          pip install yfinance pandas requests lxml html5lib
 
       - name: Create update script directory
         run: |
@@ -44,22 +44,51 @@ jobs:
           import glob
           import sys
           from datetime import datetime, timedelta
+          import requests
+          from io import StringIO
           
           DATA_DIR = "data"
           os.makedirs(DATA_DIR, exist_ok=True)
           
-          def get_existing_tickers():
-              """Obtiene tickers que ya existen en la carpeta data/"""
-              csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-              tickers = []
-              for file_path in csv_files:
-                  filename = os.path.basename(file_path)
-                  if filename.endswith('.csv'):
-                      ticker = filename.replace('.csv', '')
-                      # Excluir benchmarks para manejarlos por separado
-                      if ticker not in ['SPY', 'QQQ']:
-                          tickers.append(ticker)
-              return tickers
+          def get_sp500_tickers():
+              """Obtiene tickers actuales del S&P 500"""
+              try:
+                  headers = {
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                  }
+                  url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+                  tables = pd.read_html(url, header=0)
+                  df = tables[0]
+                  tickers = df.iloc[:, 0].str.replace('.', '-').tolist()  # Primera columna
+                  return [t for t in tickers if t and len(t) <= 6]
+              except Exception as e:
+                  print(f"Error obteniendo tickers S&P 500: {e}")
+                  return []
+          
+          def get_nasdaq100_tickers():
+              """Obtiene tickers actuales del Nasdaq-100"""
+              try:
+                  headers = {
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                  }
+                  url = "https://en.wikipedia.org/wiki/NASDAQ-100"
+                  tables = pd.read_html(url, header=0)
+                  # Buscar tabla de constituyentes (usualmente la tercera)
+                  for table in tables:
+                      if len(table.columns) >= 2:
+                          # Buscar columna de tickers
+                          for col in table.columns:
+                              if 'Ticker' in str(col) or 'Symbol' in str(col):
+                                  tickers = table[col].str.replace('.', '-').tolist()
+                                  return [t for t in tickers if t and len(t) <= 6]
+                  # Fallback a tabla 3
+                  if len(tables) >= 3:
+                      tickers = tables[2].iloc[:, 1].str.replace('.', '-').tolist()
+                      return [t for t in tickers if t and len(t) <= 6]
+                  return []
+              except Exception as e:
+                  print(f"Error obteniendo tickers Nasdaq-100: {e}")
+                  return []
           
           def update_ticker(ticker):
               """Actualiza un ticker específico"""
@@ -133,25 +162,32 @@ jobs:
           
           if __name__ == "__main__":
               print("=== Actualización de Datos Diaria ===")
+              print("Obteniendo tickers actuales de índices...")
               
-              # Obtener tickers existentes en la carpeta data/
-              existing_tickers = get_existing_tickers()
-              print(f"Encontrados {len(existing_tickers)} tickers para actualizar")
+              # Obtener tickers actuales de ambos índices
+              sp500_tickers = get_sp500_tickers()
+              print(f"S&P 500: {len(sp500_tickers)} tickers")
               
-              # También agregar benchmarks
+              nasdaq100_tickers = get_nasdaq100_tickers()
+              print(f"Nasdaq-100: {len(nasdaq100_tickers)} tickers")
+              
+              # Combinar y eliminar duplicados
+              current_tickers = list(set(sp500_tickers + nasdaq100_tickers))
+              print(f"Total tickers únicos: {len(current_tickers)}")
+              
+              # Agregar benchmarks
               benchmark_tickers = ['SPY', 'QQQ']
-              all_tickers = list(set(existing_tickers + benchmark_tickers))
-              
-              print(f"\nActualizando {len(all_tickers)} tickers en total...")
+              all_tickers_to_update = list(set(current_tickers + benchmark_tickers))
+              print(f"Incluyendo benchmarks: {len(all_tickers_to_update)} tickers totales")
               
               # Variables para tracking
               successful_updates = 0
               failed_updates = []
               
               # Actualizar cada ticker
-              for i, ticker in enumerate(all_tickers, 1):
+              for i, ticker in enumerate(all_tickers_to_update, 1):
                   try:
-                      print(f"[{i}/{len(all_tickers)}] Actualizando {ticker}...")
+                      print(f"[{i}/{len(all_tickers_to_update)}] Actualizando {ticker}...")
                       success = update_ticker(ticker)
                       if success:
                           successful_updates += 1
@@ -172,7 +208,7 @@ jobs:
               summary_file = os.path.join(DATA_DIR, "update_summary.txt")
               with open(summary_file, "w") as f:
                   f.write(f"Actualización {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                  f.write(f"Total tickers: {len(all_tickers)}\n")
+                  f.write(f"Total tickers: {len(all_tickers_to_update)}\n")
                   f.write(f"Exitosos: {successful_updates}\n")
                   f.write(f"Fallidos: {len(failed_updates)}\n")
                   if failed_updates:
