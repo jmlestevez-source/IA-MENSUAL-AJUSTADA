@@ -73,8 +73,7 @@ def get_valid_tickers_for_date(target_date, historical_changes_data, current_tic
     if historical_changes_data is None or historical_changes_data.empty:
         # Si no hay datos históricos, usar todos los tickers actuales
         return set(current_tickers)
-    
-    ```python
+       
     # Convertir target_date a date si es datetime
     if isinstance(target_date, pd.Timestamp):
         target_date = target_date.date()
