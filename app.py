@@ -748,7 +748,7 @@ if run_button:
                             last_scores = score_df.iloc[-1].dropna().sort_values(ascending=False)
                             last_inercia = inercia_df.iloc[-1] if not inercia_df.empty else pd.Series()
                             
-                                                        if len(last_scores) > 0:
+                            if len(last_scores) > 0:
                                 # ✅ CORREGIDO: Filtrar PRIMERO los que pasan el corte
                                 valid_picks = []
                                 for ticker in last_scores.index:
@@ -911,7 +911,8 @@ if run_button:
                                     - NO se invierte en tickers que no cumplen criterios
                                     """)
                             else:
-                                st.warning("No se encontraron señales actuales")                        else:
+                                st.warning("No se encontraron señales actuales")
+                        else:
                             st.warning("No hay datos suficientes para calcular señales actuales")
                     else:
                         st.error("No se pudieron calcular las señales actuales")
