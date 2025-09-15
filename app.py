@@ -158,11 +158,20 @@ def update_changes_with_new_data(index_name, current_changes_df):
             st.success(f"💾 Guardado {len(current_changes_df)} cambios iniciales para {index_name}")
         return current_changes_df
     
-    # Encontrar la última fecha registrada
-    last_date = local_changes["Date"].max() if not local_changes.empty else datetime(1900, 1, 1)
+    # Encontrar la última fecha registrada - CORREGIDO
+    if not local_changes.empty:
+        # Convertir a datetime.date para comparación consistente
+        last_date = pd.to_datetime(local_changes["Date"]).dt.date.max()
+        last_date = pd.Timestamp(last_date)  # Convertir a Timestamp para comparación
+    else:
+        last_date = pd.Timestamp(datetime(1900, 1, 1))
     
-    # Filtrar cambios nuevos desde la última fecha
+    # Filtrar cambios nuevos desde la última fecha - CORREGIDO
     if not current_changes_df.empty:
+        # Asegurar que la columna Date sea datetime
+        current_changes_df['Date'] = pd.to_datetime(current_changes_df['Date'])
+        
+        # Comparar fechas correctamente
         new_changes = current_changes_df[current_changes_df["Date"] > last_date]
         
         if not new_changes.empty:
