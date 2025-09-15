@@ -662,49 +662,77 @@ if run_button:
             st.success("✅ Backtest completado")
 
             # -------------------------------------------------
-            # Métricas principales CORREGIDAS
             # -------------------------------------------------
-            # Calcular métricas de la estrategia
-            if "Equity" in bt_results.columns and len(bt_results["Equity"]) > 0:
-                final_equity = float(bt_results["Equity"].iloc[-1])
-                initial_equity = float(bt_results["Equity"].iloc[0])
-                total_return = (final_equity / initial_equity) - 1 if initial_equity != 0 else 0
-                
-                # Calcular CAGR
-                years = (bt_results.index[-1] - bt_results.index[0]).days / 365.25
-                if years > 0:
-                    cagr = (final_equity / initial_equity) ** (1/years) - 1
-                else:
-                    cagr = 0
+# Métricas principales CORREGIDAS
+# -------------------------------------------------
+# Calcular métricas de la estrategia
+if "Equity" in bt_results.columns and len(bt_results["Equity"]) > 0 and not bt_results["Equity"].isna().all():
+    # Protección adicional contra valores inválidos
+    equity_clean = bt_results["Equity"].dropna()
+    if len(equity_clean) > 1:
+        final_equity = float(equity_clean.iloc[-1])
+        initial_equity = float(equity_clean.iloc[0])
+        total_return = (final_equity / initial_equity) - 1 if initial_equity != 0 and not np.isnan(initial_equity) else 0
+        
+        # Calcular CAGR
+        if len(equity_clean.index) > 1:
+            years = (equity_clean.index[-1] - equity_clean.index[0]).days / 365.25
+            if years > 0 and not np.isnan(years):
+                cagr = (final_equity / initial_equity) ** (1/years) - 1 if initial_equity != 0 else 0
+                cagr = cagr if not np.isnan(cagr) and not np.isinf(cagr) else 0
             else:
-                final_equity = 10000
-                total_return = 0
                 cagr = 0
-                
-            if "Drawdown" in bt_results.columns:
-                max_drawdown = float(bt_results["Drawdown"].min())
-            else:
-                max_drawdown = 0
-                
-            # ✅ SHARPE RATIO CORREGIDO
-            if "Returns" in bt_results.columns and len(bt_results["Returns"]) > 1:
-                # Asumir tasa libre de riesgo del 2% anual (0.02/12 mensual)
-                risk_free_rate_monthly = 0.02 / 12
-                
-                monthly_returns = bt_results["Returns"]
-                excess_returns = monthly_returns - risk_free_rate_monthly
-                
-                # Calcular Sharpe ratio anualizado correctamente
-                if excess_returns.std() != 0:
-                    sharpe_ratio = (excess_returns.mean() * 12) / (excess_returns.std() * (12 ** 0.5))
-                else:
-                    sharpe_ratio = 0
-                    
-                # Volatilidad anualizada
-                volatility = float(monthly_returns.std() * (12 ** 0.5))
-            else:
-                volatility = 0
-                sharpe_ratio = 0
+        else:
+            cagr = 0
+    else:
+        final_equity = 10000
+        total_return = 0
+        cagr = 0
+else:
+    final_equity = 10000
+    total_return = 0
+    cagr = 0
+    
+if "Drawdown" in bt_results.columns and not bt_results["Drawdown"].isna().all():
+    drawdown_clean = bt_results["Drawdown"].dropna()
+    if len(drawdown_clean) > 0:
+        max_drawdown = float(drawdown_clean.min())
+        max_drawdown = max_drawdown if not np.isnan(max_drawdown) and not np.isinf(max_drawdown) else 0
+    else:
+        max_drawdown = 0
+else:
+    max_drawdown = 0
+    
+# ✅ SHARPE RATIO CORREGIDO CON PROTECCIÓN
+if "Returns" in bt_results.columns and len(bt_results["Returns"]) > 1:
+    # Asumir tasa libre de riesgo del 2% anual (0.02/12 mensual)
+    risk_free_rate_monthly = 0.02 / 12
+    
+    monthly_returns = bt_results["Returns"].dropna()
+    
+    # Protección adicional
+    if len(monthly_returns) > 1:
+        excess_returns = monthly_returns - risk_free_rate_monthly
+        
+        # Calcular Sharpe ratio anualizado correctamente con protección
+        std_excess = excess_returns.std()
+        mean_excess = excess_returns.mean()
+        
+        if std_excess != 0 and not np.isnan(std_excess) and not np.isinf(std_excess) and not np.isnan(mean_excess):
+            sharpe_ratio = (mean_excess * 12) / (std_excess * (12 ** 0.5))
+            sharpe_ratio = sharpe_ratio if not np.isnan(sharpe_ratio) and not np.isinf(sharpe_ratio) else 0
+        else:
+            sharpe_ratio = 0
+            
+        # Volatilidad anualizada
+        volatility = float(monthly_returns.std() * (12 ** 0.5))
+        volatility = volatility if not np.isnan(volatility) and not np.isinf(volatility) else 0
+    else:
+        volatility = 0
+        sharpe_ratio = 0
+else:
+    volatility = 0
+    sharpe_ratio = 0
 
             # Preparar datos del benchmark ANTES de mostrar métricas
             bench_equity = None
