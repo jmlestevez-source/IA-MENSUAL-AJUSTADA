@@ -11,6 +11,8 @@ on:
 jobs:
   update-data:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -26,7 +28,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install yfinance pandas requests lxml html5lib beautifulsoup4
+          pip install yfinance pandas requests
 
       - name: Create update script directory
         run: |
@@ -40,45 +42,11 @@ jobs:
           import pandas as pd
           import os
           import glob
+          import sys
           from datetime import datetime, timedelta
-          import requests
-          from io import StringIO
           
           DATA_DIR = "data"
           os.makedirs(DATA_DIR, exist_ok=True)
-          
-          def get_sp500_tickers():
-              """Obtiene tickers actuales del S&P 500"""
-              try:
-                  url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-                  tables = pd.read_html(url)
-                  df = tables[0]
-                  tickers = df['Symbol'].str.replace('.', '-').tolist()
-                  return tickers
-              except Exception as e:
-                  print(f"Error obteniendo tickers S&P 500: {e}")
-                  return []
-          
-          def get_nasdaq100_tickers():
-              """Obtiene tickers actuales del Nasdaq-100"""
-              try:
-                  url = "https://en.wikipedia.org/wiki/NASDAQ-100"
-                  tables = pd.read_html(url)
-                  # Buscar la tabla correcta (usualmente la tercera)
-                  for table in tables:
-                      if len(table.columns) >= 2:
-                          ticker_cols = [col for col in table.columns if 'Ticker' in str(col) or 'Symbol' in str(col)]
-                          if ticker_cols:
-                              tickers = table[ticker_cols[0]].str.replace('.', '-').tolist()
-                              return tickers
-                  # Fallback
-                  if len(tables) >= 3:
-                      tickers = tables[2].iloc[:, 1].str.replace('.', '-').tolist()
-                      return tickers
-                  return []
-              except Exception as e:
-                  print(f"Error obteniendo tickers Nasdaq-100: {e}")
-                  return []
           
           def get_existing_tickers():
               """Obtiene tickers que ya existen en la carpeta data/"""
@@ -88,7 +56,7 @@ jobs:
                   filename = os.path.basename(file_path)
                   if filename.endswith('.csv'):
                       ticker = filename.replace('.csv', '')
-                      # Excluir benchmarks
+                      # Excluir benchmarks para manejarlos por separado
                       if ticker not in ['SPY', 'QQQ']:
                           tickers.append(ticker)
               return tickers
@@ -106,9 +74,10 @@ jobs:
                           # Asegurar que tenga las columnas necesarias
                           data.to_csv(file_path)
                           print(f"{ticker}: Datos históricos guardados.")
+                          return True
                       else:
-                          print(f"{ticker}: No se pudieron descargar datos históricos.")
-                      return
+                          print(f"❌ {ticker}: No se pudieron descargar datos históricos.")
+                          return False
                   
                   # Si existe, cargar y actualizar con datos recientes
                   df = pd.read_csv(file_path, index_col="Date", parse_dates=True)
@@ -121,7 +90,7 @@ jobs:
                       # Si ya está actualizado (últimos 3 días), salir
                       if last_date.date() >= (today - timedelta(days=3)):
                           print(f"{ticker}: Ya está actualizado hasta {last_date.date()}.")
-                          return
+                          return True
                       
                       # Descargar datos desde la última fecha hasta hoy
                       start_date = last_date - timedelta(days=5)  # Margen de seguridad
@@ -143,24 +112,31 @@ jobs:
                           # Guardar
                           df_combined.to_csv(file_path)
                           print(f"{ticker}: Actualizado hasta {df_combined.index[-1].date()}.")
+                          return True
                       else:
-                          print(f"{ticker}: No hay nuevos datos.")
+                          print(f"⚠️ {ticker}: No hay nuevos datos.")
+                          return True
                   else:
                       print(f"{ticker}: Archivo vacío, descargando datos históricos...")
                       data = yf.download(ticker, period="max")
                       if not data.empty:
                           data.to_csv(file_path)
                           print(f"{ticker}: Datos históricos guardados.")
+                          return True
+                      else:
+                          print(f"❌ {ticker}: No se pudieron descargar datos históricos.")
+                          return False
                       
               except Exception as e:
-                  print(f"Error actualizando {ticker}: {e}")
+                  print(f"❌ Error actualizando {ticker}: {e}")
+                  return False
           
           if __name__ == "__main__":
               print("=== Actualización de Datos Diaria ===")
               
               # Obtener tickers existentes en la carpeta data/
               existing_tickers = get_existing_tickers()
-              print(f"Encontrados {len(existing_tickers)} tickers para actualizar: {', '.join(existing_tickers[:10])}...")
+              print(f"Encontrados {len(existing_tickers)} tickers para actualizar")
               
               # También agregar benchmarks
               benchmark_tickers = ['SPY', 'QQQ']
@@ -168,20 +144,54 @@ jobs:
               
               print(f"\nActualizando {len(all_tickers)} tickers en total...")
               
+              # Variables para tracking
+              successful_updates = 0
+              failed_updates = []
+              
               # Actualizar cada ticker
               for i, ticker in enumerate(all_tickers, 1):
                   try:
                       print(f"[{i}/{len(all_tickers)}] Actualizando {ticker}...")
-                      update_ticker(ticker)
+                      success = update_ticker(ticker)
+                      if success:
+                          successful_updates += 1
+                      else:
+                          failed_updates.append(ticker)
                   except Exception as e:
-                      print(f"Error general actualizando {ticker}: {e}")
+                      print(f"❌ Error general actualizando {ticker}: {e}")
+                      failed_updates.append(ticker)
               
-              print("\n=== Actualización completada ===")
+              # Resumen
+              print(f"\n=== Resumen de Actualización ===")
+              print(f"✅ Exitosos: {successful_updates}")
+              print(f"❌ Fallidos: {len(failed_updates)}")
+              if failed_updates:
+                  print(f"Tickers fallidos: {', '.join(failed_updates)}")
+              
+              # Guardar resumen en archivo
+              summary_file = os.path.join(DATA_DIR, "update_summary.txt")
+              with open(summary_file, "w") as f:
+                  f.write(f"Actualización {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                  f.write(f"Total tickers: {len(all_tickers)}\n")
+                  f.write(f"Exitosos: {successful_updates}\n")
+                  f.write(f"Fallidos: {len(failed_updates)}\n")
+                  if failed_updates:
+                      f.write(f"Tickers fallidos: {', '.join(failed_updates)}\n")
+              
+              print(f"Resumen guardado en {summary_file}")
+              
+              # Salir con código de error si hay fallos
+              if len(failed_updates) > 0:
+                  sys.exit(1)
+              else:
+                  sys.exit(0)
           EOF
 
       - name: Run update script
+        id: update
         run: |
           python scripts/update_data.py
+        continue-on-error: true
 
       - name: Check for changes
         run: |
@@ -189,14 +199,17 @@ jobs:
           git status --porcelain
           echo "=========================="
 
-      - name: Commit and push changes
+      - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/*.csv
+
+      - name: Commit and push changes
+        run: |
+          git add data/*.csv data/update_summary.txt
           if ! git diff --staged --quiet; then
               git commit -m "Actualización automática de datos ($(date +'%Y-%m-%d %H:%M:%S'))"
-              git push
+              git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
               echo "✅ Cambios commiteados y subidos"
           else
               echo "ℹ️ No hay cambios para commitear"
