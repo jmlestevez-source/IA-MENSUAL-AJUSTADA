@@ -714,29 +714,61 @@ if run_button:
                             last_scores = score_df.iloc[-1].dropna().sort_values(ascending=False)
                             last_inercia = inercia_df.iloc[-1] if not inercia_df.empty else pd.Series()
                             
-                            if len(last_scores) > 0:
-                                # Top picks actuales
-                                current_picks = []
-                                for rank, (ticker, score_adj) in enumerate(last_scores.head(top_n).items(), 1):
+                                                        if len(last_scores) > 0:
+                                # ✅ CORREGIDO: Filtrar PRIMERO los que pasan el corte
+                                # Obtener inercia para filtrar
+                                last_inercia = inercia_df.iloc[-1] if not inercia_df.empty else pd.Series()
+                                
+                                # Filtrar solo tickers que pasan el corte de inercia
+                                valid_picks = []
+                                for ticker in last_scores.index:
                                     inercia_val = last_inercia.get(ticker, 0) if not last_inercia.empty else 0
+                                    score_adj = last_scores[ticker]
                                     
+                                    # Solo incluir si pasa el corte Y tiene score > 0
+                                    if inercia_val >= corte and score_adj > 0:
+                                        valid_picks.append({
+                                            'ticker': ticker,
+                                            'inercia': inercia_val,
+                                            'score_adj': score_adj
+                                        })
+                                
+                                # Ordenar por score ajustado y tomar top N válidos
+                                valid_picks = sorted(valid_picks, key=lambda x: x['score_adj'], reverse=True)
+                                
+                                # Tomar solo hasta top_n O todos los válidos si son menos
+                                final_picks = valid_picks[:min(top_n, len(valid_picks))]
+                                
+                                if not final_picks:
+                                    st.warning("⚠️ No hay tickers que pasen el corte de inercia actualmente")
+                                    continue
+                                
+                                # Crear DataFrame para mostrar
+                                current_picks = []
+                                for rank, pick in enumerate(final_picks, 1):
+                                    ticker = pick['ticker']
                                     current_picks.append({
                                         'Rank': rank,
                                         'Ticker': ticker,
-                                        'Inercia Alcista': inercia_val,
-                                        'Score Ajustado': score_adj,
-                                        'Pasa Corte': '✅' if inercia_val >= corte else '❌',
+                                        'Inercia Alcista': pick['inercia'],
+                                        'Score Ajustado': pick['score_adj'],
+                                        'Pasa Corte': '✅',  # Todos pasan porque ya filtramos
                                         'Precio Actual': prices_df[ticker].iloc[-1] if ticker in prices_df.columns else 0
                                     })
                                 
                                 current_picks_df = pd.DataFrame(current_picks)
+                                actual_count = len(current_picks_df)
                                 
                                 # Mostrar fecha de los datos
                                 data_date = prices_df.index[-1].strftime('%Y-%m-%d')
                                 st.info(f"📅 **Datos hasta**: {data_date} (vela en formación)")
                                 
+                                # Información importante sobre filtrado
+                                if actual_count < top_n:
+                                    st.warning(f"⚠️ Solo {actual_count} de {top_n} tickers solicitados pasan el corte de inercia ({corte})")
+                                
                                 # Tabla de picks actuales
-                                st.subheader(f"🔥 Top {top_n} Picks Actuales")
+                                st.subheader(f"🔥 Top {actual_count} Picks Válidos (de {top_n} solicitados)")
                                 
                                 # Formatear tabla para mostrar
                                 display_df = current_picks_df.copy()
