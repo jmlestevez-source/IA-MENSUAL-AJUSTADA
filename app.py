@@ -769,7 +769,7 @@ if run_button:
                                 # Tomar solo hasta top_n O todos los válidos si son menos
                                 final_picks = valid_picks[:min(top_n, len(valid_picks))]
                                 
-                                                                if not final_picks:
+                                    if not final_picks:
                                     st.warning("⚠️ No hay tickers que pasen el corte de inercia actualmente")
                                 else:  # ✅ CORREGIDO: usar else en lugar de continue
                                 
