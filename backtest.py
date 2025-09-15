@@ -83,6 +83,10 @@ def get_valid_tickers_for_date(target_date, historical_changes_data, current_tic
     # Empezar con tickers actuales
     valid_tickers = set(current_tickers)
     
+    # Convertir fechas en historical_changes_data a date para comparación
+    historical_changes_data = historical_changes_data.copy()
+    historical_changes_data['Date'] = pd.to_datetime(historical_changes_data['Date']).dt.date
+    
     # Procesar cambios desde target_date hacia adelante (revertir cambios futuros)
     future_changes = historical_changes_data[historical_changes_data['Date'] > target_date]
     future_changes = future_changes.sort_values('Date', ascending=True)  # Más antiguos primero
@@ -100,7 +104,6 @@ def get_valid_tickers_for_date(target_date, historical_changes_data, current_tic
             valid_tickers.add(ticker)
     
     return valid_tickers
-
 def inertia_score_with_historical_filter(monthly_prices_df, target_date, valid_tickers, corte=680, ohlc_data=None):
     """
     Calcula el score de inercia solo para tickers válidos en la fecha objetivo
