@@ -47,10 +47,10 @@ run_button = st.sidebar.button("🏃 Ejecutar backtest")
 # -------------------------------------------------
 # Función para cargar datos desde CSV
 # -------------------------------------------------
-def load_prices_from_csv(tickers, start_date, end_date, load_ohlc=False):
-    """Carga precios desde archivos CSV en la carpeta data/"""
+def load_prices_from_csv(tickers, start_date, end_date, load_full_data=True):
+    """Carga precios desde archivos CSV en la carpeta data/ con datos completos OHLC"""
     prices_data = {}
-    ohlc_data = {}  # Para almacenar OHLC si está disponible
+    ohlc_data = {}
     
     for ticker in tickers:
         csv_path = f"data/{ticker}.csv"
@@ -63,7 +63,7 @@ def load_prices_from_csv(tickers, start_date, end_date, load_ohlc=False):
                 df = df[(df.index.date >= start_date) & (df.index.date <= end_date)]
                 
                 if not df.empty:
-                    # Usar precios ajustados (Close ajustado)
+                    # Para el precio de cierre (para compatibilidad)
                     if 'Adj Close' in df.columns:
                         prices_data[ticker] = df['Adj Close']
                     elif 'Close' in df.columns:
@@ -73,9 +73,14 @@ def load_prices_from_csv(tickers, start_date, end_date, load_ohlc=False):
                         if len(numeric_cols) > 0:
                             prices_data[ticker] = df[numeric_cols[0]]
                     
-                    # Si queremos OHLC completo y está disponible
-                    if load_ohlc and all(col in df.columns for col in ['High', 'Low', 'Close']):
-                        ohlc_data[ticker] = df[['High', 'Low', 'Close']]
+                    # Cargar datos OHLC completos si están disponibles
+                    if load_full_data and all(col in df.columns for col in ['High', 'Low', 'Close']):
+                        ohlc_data[ticker] = {
+                            'High': df['High'],
+                            'Low': df['Low'], 
+                            'Close': df['Adj Close'] if 'Adj Close' in df.columns else df['Close'],
+                            'Volume': df['Volume'] if 'Volume' in df.columns else None
+                        }
                         
             except Exception as e:
                 st.warning(f"Error cargando datos de {ticker}: {e}")
@@ -87,7 +92,7 @@ def load_prices_from_csv(tickers, start_date, end_date, load_ohlc=False):
         prices_df = pd.DataFrame(prices_data)
         prices_df = prices_df.fillna(method='ffill').fillna(method='bfill')
         
-        if load_ohlc and ohlc_data:
+        if load_full_data and ohlc_data:
             return prices_df, ohlc_data
         return prices_df
     else:
