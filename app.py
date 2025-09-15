@@ -223,12 +223,15 @@ else:
                 st.error("❌ No hay suficientes datos para ejecutar el backtest (se necesitan al menos 20 períodos)")
                 st.stop()
                 
-            bt_results, picks_df = run_backtest(
-                prices=prices_df,
-                benchmark=benchmark_series,
-                commission=commission,
-                top_n=top_n,
-                corte=corte
+            # Reemplaza la llamada a run_backtest por:
+bt_results, picks_df = run_backtest(
+    prices=prices_df,
+    benchmark=benchmark_series,
+    commission=commission,
+    top_n=top_n,
+    corte=corte,
+    ohlc_data=ohlc_data  # Pasar los datos OHLC
+)
             )
             
             if bt_results is None or bt_results.empty or len(bt_results) < 2:
