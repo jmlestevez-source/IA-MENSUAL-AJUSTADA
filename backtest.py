@@ -417,6 +417,44 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                 equity.append(new_eq)
                 dates.append(date)
 
+                                # ✅ CORREGIDO: Filtrar por corte antes de seleccionar
+                if not isinstance(last_scores, pd.Series):
+                    continue
+                    
+                last_scores = last_scores.dropna()
+                
+                # Obtener inercia para filtrar
+                inercia_data = df_score.get("InerciaAlcista")
+                if inercia_data is not None and not inercia_data.empty:
+                    last_inercia = inercia_data.iloc[-1]
+                    
+                    # Filtrar solo tickers que pasan el corte
+                    valid_scores = {}
+                    for ticker in last_scores.index:
+                        if ticker in last_inercia.index:
+                            inercia_val = last_inercia[ticker]
+                            if inercia_val >= corte and last_scores[ticker] > 0:
+                                valid_scores[ticker] = last_scores[ticker]
+                    
+                    if not valid_scores:
+                        print(f"⚠️ No hay tickers que pasen el corte en {prev_date}")
+                        continue
+                    
+                    # Convertir a Series y ordenar
+                    filtered_scores = pd.Series(valid_scores).sort_values(ascending=False)
+                    
+                    # Seleccionar hasta top_n válidos
+                    selected = filtered_scores.head(top_n).index.tolist()
+                else:
+                    # Fallback si no hay datos de inercia
+                    selected = last_scores.sort_values(ascending=False).head(top_n).index.tolist()
+
+                if not selected:
+                    continue
+
+                # El peso se distribuye equitativamente entre los seleccionados
+                weight = 1.0 / len(selected)
+
                 # Guardar picks con información de validez histórica
                 for rank, ticker in enumerate(valid_tickers[:top_n], 1):
                     try:
