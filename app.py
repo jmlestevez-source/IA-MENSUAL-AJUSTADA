@@ -156,7 +156,17 @@ if run_button:
                 st.info(f"Tickers de ejemplo: {', '.join(sample_tickers)}")
 
             # Cargar precios desde CSV
-            prices_df = load_prices_from_csv(all_tickers_data['tickers'], start_date, end_date)
+            # Reemplaza la línea donde cargas los precios por:
+            result = load_prices_from_csv(all_tickers_data['tickers'], start_date, end_date, load_full_data=True)
+
+if isinstance(result, tuple):
+    prices_df, ohlc_data = result
+    st.success(f"✅ Cargados precios OHLC completos para {len(prices_df.columns)} tickers")
+    st.info(f"Datos OHLC disponibles para: {len(ohlc_data)} tickers")
+else:
+    prices_df = result
+    ohlc_data = None
+    st.warning("⚠️ Solo se cargaron precios de cierre. OHLC no disponible.")
             
             # Validación adicional de precios
             if prices_df is None or prices_df.empty or len(prices_df.columns) == 0:
