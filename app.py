@@ -159,11 +159,11 @@ if run_button:
             # Reemplaza la línea donde cargas los precios por:
             result = load_prices_from_csv(all_tickers_data['tickers'], start_date, end_date, load_full_data=True)
 
-if isinstance(result, tuple):
+            if isinstance(result, tuple):
     prices_df, ohlc_data = result
     st.success(f"✅ Cargados precios OHLC completos para {len(prices_df.columns)} tickers")
     st.info(f"Datos OHLC disponibles para: {len(ohlc_data)} tickers")
-else:
+            else:
     prices_df = result
     ohlc_data = None
     st.warning("⚠️ Solo se cargaron precios de cierre. OHLC no disponible.")
