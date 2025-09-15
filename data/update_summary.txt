@@ -1,4 +1,5 @@
-Actualización 2025-09-15 21:51:26
-Total tickers: 584
-Exitosos: 584
-Fallidos: 0
+Actualización 2025-09-15 22:00:07
+Total tickers: 2
+Exitosos: 1
+Fallidos: 1
+Tickers fallidos: QQQ
