@@ -7,6 +7,7 @@ import time
 import numpy as np
 import os
 import requests
+import base64
 
 # Importar nuestros módulos
 from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes
@@ -181,6 +182,53 @@ def update_changes_with_new_data(index_name, current_changes_df):
         return local_changes
 
 # -------------------------------------------------
+# Función para crear enlaces de descarga
+# -------------------------------------------------
+def create_download_link(df, filename, link_text):
+    """Crea un enlace de descarga para un DataFrame"""
+    try:
+        csv = df.to_csv(index=False)
+        b64 = base64.b64encode(csv.encode()).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">{link_text}</a>'
+        return href
+    except Exception as e:
+        st.error(f"Error creando enlace de descarga: {e}")
+        return None
+
+def show_download_buttons(sp500_df, ndx_df):
+    """Muestra botones de descarga para los archivos CSV generados"""
+    st.subheader("📥 Descargar CSV de Cambios Históricos")
+    st.info("💾 Guarda estos archivos y súbelos a la raíz de tu repositorio de GitHub para usarlos en futuras ejecuciones")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if not sp500_df.empty:
+            sp500_link = create_download_link(sp500_df, "sp500_changes.csv", "💾 Descargar sp500_changes.csv")
+            if sp500_link:
+                st.markdown(sp500_link, unsafe_allow_html=True)
+                st.text(f"📊 {len(sp500_df)} cambios históricos del S&P 500")
+        else:
+            st.warning("No hay datos del S&P 500 para descargar")
+    
+    with col2:
+        if not ndx_df.empty:
+            ndx_link = create_download_link(ndx_df, "ndx_changes.csv", "💾 Descargar ndx_changes.csv")
+            if ndx_link:
+                st.markdown(ndx_link, unsafe_allow_html=True)
+                st.text(f"📊 {len(ndx_df)} cambios históricos del NASDAQ-100")
+        else:
+            st.warning("No hay datos del NASDAQ-100 para descargar")
+    
+    st.info("""
+    📋 **Instrucciones para futuras ejecuciones más rápidas:**
+    1. Haz clic en los botones de descarga de arriba
+    2. Sube los archivos descargados a la raíz de tu repositorio en GitHub
+    3. En futuras ejecuciones, el sistema los descargará directamente desde GitHub
+    4. Esto evitará tener que scrapear Wikipedia en cada ejecución
+    """)
+
+# -------------------------------------------------
 # Función para cargar datos desde CSV
 # -------------------------------------------------
 def load_prices_from_csv(tickers, start_date, end_date, load_full_data=True):
@@ -250,8 +298,10 @@ def load_prices_from_csv(tickers, start_date, end_date, load_full_data=True):
 # Main content
 # -------------------------------------------------
 if run_button:
-    # Inicializar variable para evitar errores
+    # Inicializar variables
     historical_info = None
+    sp500_changes_df = pd.DataFrame()
+    ndx_changes_df = pd.DataFrame()
     
     try:
         with st.spinner("Cargando datos desde CSV..."):
@@ -449,6 +499,7 @@ if run_button:
                         try:
                             sp500_changes_current = get_sp500_historical_changes()
                             sp500_changes_updated = update_changes_with_new_data("sp500", sp500_changes_current)
+                            sp500_changes_df = sp500_changes_updated  # Guardar para descarga
                             
                             if not sp500_changes_updated.empty:
                                 changes_data = pd.concat([changes_data, sp500_changes_updated], ignore_index=True)
@@ -464,6 +515,7 @@ if run_button:
                         try:
                             ndx_changes_current = get_nasdaq100_historical_changes()
                             ndx_changes_updated = update_changes_with_new_data("ndx", ndx_changes_current)
+                            ndx_changes_df = ndx_changes_updated  # Guardar para descarga
                             
                             if not ndx_changes_updated.empty:
                                 changes_data = pd.concat([changes_data, ndx_changes_updated], ignore_index=True)
@@ -1174,6 +1226,12 @@ if run_button:
                             st.plotly_chart(fig_changes, use_container_width=True)
                     except Exception as e:
                         st.warning(f"Error creando gráfico de cambios: {e}")
+
+            # -------------------------------------------------
+            # ✅ NUEVO: Mostrar botones de descarga de CSV
+            # -------------------------------------------------
+            if use_historical_verification and (not sp500_changes_df.empty or not ndx_changes_df.empty):
+                show_download_buttons(sp500_changes_df, ndx_changes_df)
 
     except Exception as e:
         st.error(f"❌ Excepción no capturada: {str(e)}")
