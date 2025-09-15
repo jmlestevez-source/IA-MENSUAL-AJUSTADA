@@ -617,14 +617,15 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
 
         equity_series = pd.Series(equity, index=dates)
         returns = equity_series.pct_change().fillna(0)
+        # ... código anterior ...
         drawdown = (equity_series / equity_series.cummax() - 1).fillna(0)
 
-                bt = pd.DataFrame({
-            "Equity": equity_series,
-            "Returns": returns,
-            "Drawdown": drawdown
-        })
-        picks_df = pd.DataFrame(picks_list)
+        bt = pd.DataFrame({  # <-- 4 espacios de indentación
+            "Equity": equity_series,  # <-- 8 espacios (4 más que la línea anterior)
+            "Returns": returns,       # <-- 8 espacios
+            "Drawdown": drawdown      # <-- 8 espacios
+        })  # <-- 4 espacios
+        picks_df = pd.DataFrame(picks_list) # <-- 4 espacios
         
         print(f"✅ Backtest completado con verificación histórica. Equity final: {equity_series.iloc[-1]:.2f}")
         
