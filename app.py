@@ -209,7 +209,73 @@ if run_button:
                         st.text(f"Primeros 20 faltantes: {', '.join(sorted(list(missing_tickers))[:20])}")
                 
                 st.stop()
-            
+
+                        # Generar y mostrar información sobre tickers removidos
+            if historical_info and historical_info.get('has_historical_data', False):
+                try:
+                    # Generar resumen de tickers removidos
+                    from data_loader import generate_removed_tickers_summary
+                    removed_summary = generate_removed_tickers_summary()
+                    
+                    if not removed_summary.empty:
+                        with st.expander("📥 Tickers Removidos - Oportunidad de Datos", expanded=False):
+                            st.subheader("Tickers removidos de los índices")
+                            st.info(f"""
+                            💡 **Oportunidad**: Estos {len(removed_summary)} tickers fueron removidos de los índices pero 
+                            podrían ser útiles para el backtest en las fechas cuando SÍ estaban incluidos.
+                            
+                            📥 **CSV generados**:
+                            - `data/sp500_removed_tickers.csv`: Solo tickers del S&P 500
+                            - `data/all_removed_tickers_summary.csv`: Resumen completo
+                            
+                            🔍 **Siguiente paso**: Descarga datos históricos de estos tickers y agrégalos a tu carpeta `data/`
+                            """)
+                            
+                            # Mostrar los más recientes
+                            st.subheader("Tickers removidos más recientemente")
+                            recent_removed = removed_summary.head(20)
+                            
+                            # Formatear fechas para mostrar
+                            display_removed = recent_removed.copy()
+                            display_removed['First_Removed'] = pd.to_datetime(display_removed['First_Removed']).dt.strftime('%Y-%m-%d')
+                            display_removed['Last_Removed'] = pd.to_datetime(display_removed['Last_Removed']).dt.strftime('%Y-%m-%d')
+                            
+                            st.dataframe(display_removed, use_container_width=True)
+                            
+                            # Estadísticas
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                sp500_count = len(removed_summary[removed_summary['Indices'].str.contains('SP500')])
+                                st.metric("S&P 500 Removidos", sp500_count)
+                            
+                            with col2:
+                                ndx_count = len(removed_summary[removed_summary['Indices'].str.contains('NDX')])
+                                st.metric("NASDAQ-100 Removidos", ndx_count)
+                            
+                            with col3:
+                                both_count = len(removed_summary[removed_summary['Indices'].str.contains('SP500') & 
+                                                              removed_summary['Indices'].str.contains('NDX')])
+                                st.metric("Removidos de Ambos", both_count)
+                            
+                            # Lista de tickers para copiar
+                            st.subheader("📋 Lista de tickers para descargar")
+                            tickers_list = ', '.join(removed_summary['Ticker'].tolist())
+                            st.code(tickers_list, language="text")
+                            
+                            st.warning("""
+                            ⚠️ **Importante**: Estos tickers fueron removidos por razones como:
+                            - Capitalización de mercado baja
+                            - Fusiones/adquisiciones  
+                            - Cambio de sector
+                            - Delisting
+                            
+                            Algunos pueden no tener datos disponibles o haber cambiado de ticker.
+                            """)
+                
+                except Exception as e:
+                    st.warning(f"Error generando información de removidos: {e}")
+                    
             # Información sobre cobertura de datos
             available_tickers = set(prices_df.columns)
             requested_tickers = set(all_tickers_data['tickers'])
