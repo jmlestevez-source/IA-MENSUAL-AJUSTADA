@@ -1,4 +1,4 @@
-name: Actualizar Datos Diarios
+name: Update CSVs daily
 
 on:
   schedule:
@@ -6,249 +6,142 @@ on:
     - cron: "0 21 * * 1-5"
     # Horario de verano (CEST): 22:00 España = 20:00 UTC  
     - cron: "0 20 * * 1-5"
-  workflow_dispatch: # Para ejecutar manualmente
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   update-data:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ github.ref }}
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install yfinance pandas requests lxml html5lib
-
-      - name: Create update script directory
-        run: |
-          mkdir -p scripts
 
       - name: Create update script
         run: |
-          cat > scripts/update_data.py << 'EOF'
-          # scripts/update_data.py
+          cat > update_csv.py << 'EOF'
           import yfinance as yf
           import pandas as pd
           import os
-          import glob
-          import sys
           from datetime import datetime, timedelta
           import requests
           from io import StringIO
           
-          DATA_DIR = "data"
-          os.makedirs(DATA_DIR, exist_ok=True)
-          
           def get_sp500_tickers():
               """Obtiene tickers actuales del S&P 500"""
               try:
-                  headers = {
-                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                  }
                   url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-                  tables = pd.read_html(url, header=0)
+                  tables = pd.read_html(url)
                   df = tables[0]
-                  tickers = df.iloc[:, 0].str.replace('.', '-').tolist()  # Primera columna
+                  tickers = df.iloc[:, 0].str.replace('.', '-').tolist()
                   return [t for t in tickers if t and len(t) <= 6]
-              except Exception as e:
-                  print(f"Error obteniendo tickers S&P 500: {e}")
+              except:
                   return []
           
           def get_nasdaq100_tickers():
               """Obtiene tickers actuales del Nasdaq-100"""
               try:
-                  headers = {
-                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                  }
                   url = "https://en.wikipedia.org/wiki/NASDAQ-100"
-                  tables = pd.read_html(url, header=0)
-                  # Buscar tabla de constituyentes (usualmente la tercera)
+                  tables = pd.read_html(url)
+                  # Intentar encontrar la tabla correcta
                   for table in tables:
                       if len(table.columns) >= 2:
-                          # Buscar columna de tickers
                           for col in table.columns:
                               if 'Ticker' in str(col) or 'Symbol' in str(col):
                                   tickers = table[col].str.replace('.', '-').tolist()
                                   return [t for t in tickers if t and len(t) <= 6]
-                  # Fallback a tabla 3
+                  # Fallback
                   if len(tables) >= 3:
                       tickers = tables[2].iloc[:, 1].str.replace('.', '-').tolist()
                       return [t for t in tickers if t and len(t) <= 6]
                   return []
-              except Exception as e:
-                  print(f"Error obteniendo tickers Nasdaq-100: {e}")
+              except:
                   return []
           
-          def update_ticker(ticker):
-              """Actualiza un ticker específico"""
+          def update_ticker_data(ticker):
+              """Actualiza datos de un ticker específico"""
               try:
-                  file_path = os.path.join(DATA_DIR, f"{ticker}.csv")
+                  filename = f"data/{ticker}.csv"
                   
-                  # Si el archivo no existe, descargar datos históricos
-                  if not os.path.exists(file_path):
-                      print(f"{ticker}: Descargando datos históricos...")
+                  # Si no existe el archivo, descargar todo el historial
+                  if not os.path.exists(filename):
+                      print(f"Descargando historial para {ticker}...")
                       data = yf.download(ticker, period="max")
                       if not data.empty:
-                          # Asegurar que tenga las columnas necesarias
-                          data.to_csv(file_path)
-                          print(f"{ticker}: Datos históricos guardados.")
+                          data.to_csv(filename)
+                          print(f"Guardado {ticker}")
                           return True
-                      else:
-                          print(f"❌ {ticker}: No se pudieron descargar datos históricos.")
-                          return False
+                      return False
                   
-                  # Si existe, cargar y actualizar con datos recientes
-                  df = pd.read_csv(file_path, index_col="Date", parse_dates=True)
-                  
-                  # Verificar que el DataFrame no esté vacío
-                  if len(df.index) > 0:
+                  # Si existe, solo actualizar datos recientes
+                  df = pd.read_csv(filename, index_col="Date", parse_dates=True)
+                  if len(df) > 0:
                       last_date = df.index[-1]
-                      today = datetime.today().date()
-                      
-                      # Si ya está actualizado (últimos 3 días), salir
-                      if last_date.date() >= (today - timedelta(days=3)):
-                          print(f"{ticker}: Ya está actualizado hasta {last_date.date()}.")
+                      # Si ya está actualizado (últimos 2 días), no hacer nada
+                      if last_date.date() >= (datetime.now().date() - timedelta(days=2)):
+                          print(f"{ticker} ya está actualizado")
                           return True
                       
-                      # Descargar datos desde la última fecha hasta hoy
-                      start_date = last_date - timedelta(days=5)  # Margen de seguridad
-                      end_date = today + timedelta(days=1)
-                      
-                      data = yf.download(ticker, start=start_date, end=end_date)
-                      if not data.empty and len(data) > 0:
-                          # Asegurar formato
-                          data.index = pd.to_datetime(data.index)
-                          data = data.rename_axis("Date")
-                          
-                          # Combinar datos existentes con nuevos
-                          df_combined = pd.concat([df, data])
-                          # Eliminar duplicados manteniendo el más reciente
-                          df_combined = df_combined[~df_combined.index.duplicated(keep='last')]
-                          # Ordenar por fecha
-                          df_combined = df_combined.sort_index()
-                          
-                          # Guardar
-                          df_combined.to_csv(file_path)
-                          print(f"{ticker}: Actualizado hasta {df_combined.index[-1].date()}.")
-                          return True
-                      else:
-                          print(f"⚠️ {ticker}: No hay nuevos datos.")
+                      # Descargar datos desde la última fecha
+                      start_date = last_date - timedelta(days=5)
+                      new_data = yf.download(ticker, start=start_date)
+                      if not new_data.empty:
+                          combined = pd.concat([df, new_data])
+                          combined = combined[~combined.index.duplicated(keep='last')].sort_index()
+                          combined.to_csv(filename)
+                          print(f"Actualizado {ticker}")
                           return True
                   else:
-                      print(f"{ticker}: Archivo vacío, descargando datos históricos...")
+                      # Archivo vacío, descargar historial
                       data = yf.download(ticker, period="max")
                       if not data.empty:
-                          data.to_csv(file_path)
-                          print(f"{ticker}: Datos históricos guardados.")
+                          data.to_csv(filename)
+                          print(f"Guardado {ticker} (archivo vacío)")
                           return True
-                      else:
-                          print(f"❌ {ticker}: No se pudieron descargar datos históricos.")
-                          return False
-                      
+                          
               except Exception as e:
-                  print(f"❌ Error actualizando {ticker}: {e}")
+                  print(f"Error con {ticker}: {e}")
                   return False
+              return False
           
           if __name__ == "__main__":
-              print("=== Actualización de Datos Diaria ===")
-              print("Obteniendo tickers actuales de índices...")
+              print("Obteniendo tickers actuales...")
+              sp500 = get_sp500_tickers()
+              nasdaq = get_nasdaq100_tickers()
+              tickers = list(set(sp500 + nasdaq + ['SPY', 'QQQ']))  # Incluir benchmarks
               
-              # Obtener tickers actuales de ambos índices
-              sp500_tickers = get_sp500_tickers()
-              print(f"S&P 500: {len(sp500_tickers)} tickers")
+              print(f"Actualizando {len(tickers)} tickers...")
+              updated = 0
+              errors = 0
               
-              nasdaq100_tickers = get_nasdaq100_tickers()
-              print(f"Nasdaq-100: {len(nasdaq100_tickers)} tickers")
+              for i, ticker in enumerate(tickers, 1):
+                  print(f"[{i}/{len(tickers)}] {ticker}")
+                  if update_ticker_data(ticker):
+                      updated += 1
+                  else:
+                      errors += 1
               
-              # Combinar y eliminar duplicados
-              current_tickers = list(set(sp500_tickers + nasdaq100_tickers))
-              print(f"Total tickers únicos: {len(current_tickers)}")
-              
-              # Agregar benchmarks
-              benchmark_tickers = ['SPY', 'QQQ']
-              all_tickers_to_update = list(set(current_tickers + benchmark_tickers))
-              print(f"Incluyendo benchmarks: {len(all_tickers_to_update)} tickers totales")
-              
-              # Variables para tracking
-              successful_updates = 0
-              failed_updates = []
-              
-              # Actualizar cada ticker
-              for i, ticker in enumerate(all_tickers_to_update, 1):
-                  try:
-                      print(f"[{i}/{len(all_tickers_to_update)}] Actualizando {ticker}...")
-                      success = update_ticker(ticker)
-                      if success:
-                          successful_updates += 1
-                      else:
-                          failed_updates.append(ticker)
-                  except Exception as e:
-                      print(f"❌ Error general actualizando {ticker}: {e}")
-                      failed_updates.append(ticker)
-              
-              # Resumen
-              print(f"\n=== Resumen de Actualización ===")
-              print(f"✅ Exitosos: {successful_updates}")
-              print(f"❌ Fallidos: {len(failed_updates)}")
-              if failed_updates:
-                  print(f"Tickers fallidos: {', '.join(failed_updates)}")
-              
-              # Guardar resumen en archivo
-              summary_file = os.path.join(DATA_DIR, "update_summary.txt")
-              with open(summary_file, "w") as f:
-                  f.write(f"Actualización {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                  f.write(f"Total tickers: {len(all_tickers_to_update)}\n")
-                  f.write(f"Exitosos: {successful_updates}\n")
-                  f.write(f"Fallidos: {len(failed_updates)}\n")
-                  if failed_updates:
-                      f.write(f"Tickers fallidos: {', '.join(failed_updates)}\n")
-              
-              print(f"Resumen guardado en {summary_file}")
-              
-              # Salir con código de error si hay fallos
-              if len(failed_updates) > 0:
-                  sys.exit(1)
-              else:
-                  sys.exit(0)
+              print(f"Completado: {updated} actualizados, {errors} errores")
           EOF
 
       - name: Run update script
-        id: update
-        run: |
-          python scripts/update_data.py
-        continue-on-error: true
-
-      - name: Check for changes
-        run: |
-          echo "=== Archivos modificados ==="
-          git status --porcelain
-          echo "=========================="
-
-      - name: Configure Git
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        run: python update_csv.py
 
       - name: Commit and push changes
         run: |
-          git add data/*.csv data/update_summary.txt
-          if ! git diff --staged --quiet; then
-              git commit -m "Actualización automática de datos ($(date +'%Y-%m-%d %H:%M:%S'))"
-              git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-              echo "✅ Cambios commiteados y subidos"
-          else
-              echo "ℹ️ No hay cambios para commitear"
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/*.csv
+          git diff --staged --quiet || (git commit -m "Auto-update CSVs ($(date -u +'%Y-%m-%d %H:%M:%S'))" && git push) || echo "No changes to commit or push failed"
