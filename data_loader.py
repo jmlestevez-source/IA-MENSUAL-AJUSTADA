@@ -1,689 +1,754 @@
 import pandas as pd
-import numpy as np
+import requests
+from io import StringIO
+import os
+import random
+import time
 from datetime import datetime, timedelta
+import numpy as np
+import re
+from dateutil import parser
 
-def calcular_atr_amibroker(high, low, close, periods=14):
-    """
-    Calcula el ATR exactamente como AmiBroker - IDÉNTICO al código Python que funciona
-    """
-    prev_close = close.shift(1)
+# Directorio para datos
+DATA_DIR = "data"
+os.makedirs(DATA_DIR, exist_ok=True)
 
-    # True Range: máximo de tres valores
-    hl = high - low  # High - Low
-    hc = np.abs(high - prev_close)  # |High - PrevClose|
-    lc = np.abs(low - prev_close)  # |Low - PrevClose|
+# Cache para datos históricos
+_historical_cache = {}
 
-    # True Range es el máximo de los tres
-    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-
-    # ATR usando el método de Wilder - EXACTO como en el código Python
-    atr = tr.rolling(window=periods).mean()
-
-    # Aplicar la fórmula de Wilder para los siguientes valores
-    for i in range(periods, len(tr)):
-        if i == periods:
-            continue  # Ya tenemos el primer valor
-        atr.iloc[i] = (atr.iloc[i-1] * (periods - 1) + tr.iloc[i]) / periods
-
-    return atr
-
-def convertir_a_mensual_con_ohlc(ohlc_data):
-    """
-    Convierte datos diarios OHLC a mensuales - EXACTO como en el código Python
-    """
-    monthly_data = {}
+def parse_wikipedia_date(date_str):
+    """Parsea fechas de Wikipedia en diferentes formatos"""
+    if pd.isna(date_str) or not date_str or str(date_str).lower() in ['nan', 'none', '']:
+        return None
     
-    for ticker, data in ohlc_data.items():
+    date_str = str(date_str).strip()
+    
+    try:
+        # Intentar parsing directo con dateutil
+        parsed_date = parser.parse(date_str, fuzzy=True)
+        return parsed_date.date()
+    except:
         try:
-            # Crear DataFrame con OHLC
-            df = pd.DataFrame({
-                'High': data['High'],
-                'Low': data['Low'],
-                'Close': data['Close']
-            })
-            
-            # Agregación mensual - EXACTA como en el código Python
-            df_monthly = df.resample('ME').agg({
-                'High': 'max',   # Máximo del mes
-                'Low': 'min',    # Mínimo del mes  
-                'Close': 'last'  # Cierre del último día del mes
-            })
-            
-            monthly_data[ticker] = {
-                'High': df_monthly['High'],
-                'Low': df_monthly['Low'],
-                'Close': df_monthly['Close']
+            # Patrones específicos para fechas del S&P 500
+            # Ejemplo: "September 22, 2025"
+            month_map = {
+                'january': 1, 'february': 2, 'march': 3, 'april': 4,
+                'may': 5, 'june': 6, 'july': 7, 'august': 8,
+                'september': 9, 'october': 10, 'november': 11, 'december': 12,
+                'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4,
+                'jun': 6, 'jul': 7, 'aug': 8, 'sep': 9,
+                'oct': 10, 'nov': 11, 'dec': 12
             }
             
-        except Exception as e:
-            print(f"Error convirtiendo {ticker} a mensual: {e}")
-            continue
-    
-    return monthly_data
-
-def get_valid_tickers_for_date(target_date, historical_changes_data, current_tickers):
-    """
-    Retorna los tickers que estaban válidos en el índice en una fecha específica 
-    
-    Args:
-        target_date: fecha objetivo
-        historical_changes_data: DataFrame con cambios históricos
-        current_tickers: lista de tickers actuales
-    """
-    if historical_changes_data is None or historical_changes_data.empty:
-        # Si no hay datos históricos, usar todos los tickers actuales
-        return set(current_tickers)
-       
-    # Convertir target_date a date si es datetime
-    if isinstance(target_date, pd.Timestamp):
-        target_date = target_date.date()
-    elif isinstance(target_date, datetime):
-        target_date = target_date.date()
-    
-    # Empezar con tickers actuales
-    valid_tickers = set(current_tickers)
-    
-    # Procesar cambios desde target_date hacia adelante (revertir cambios futuros)
-    future_changes = historical_changes_data[historical_changes_data['Date'] > target_date]
-    future_changes = future_changes.sort_values('Date', ascending=True)  # Más antiguos primero
-    
-    for _, change in future_changes.iterrows():
-        ticker = change['Ticker']
-        action = change['Action']
-        
-        # Revertir cambios futuros
-        if action == 'Added':
-            # Si fue agregado después de target_date, no debería estar en target_date
-            valid_tickers.discard(ticker)
-        elif action == 'Removed':
-            # Si fue removido después de target_date, debería estar en target_date
-            valid_tickers.add(ticker)
-    
-    return valid_tickers
-
-def inertia_score_with_historical_filter(monthly_prices_df, target_date, valid_tickers, corte=680, ohlc_data=None):
-    """
-    Calcula el score de inercia solo para tickers válidos en la fecha objetivo
-    """
-    if monthly_prices_df is None or monthly_prices_df.empty:
-        return pd.DataFrame()
-    
-    # Filtrar solo tickers válidos para la fecha
-    available_tickers = set(monthly_prices_df.columns)
-    tickers_to_use = list(available_tickers.intersection(valid_tickers))
-    
-    if not tickers_to_use:
-        return {}
-    
-    # Filtrar DataFrame
-    filtered_prices = monthly_prices_df[tickers_to_use]
-    
-    # Filtrar OHLC data también
-    filtered_ohlc = None
-    if ohlc_data:
-        filtered_ohlc = {ticker: data for ticker, data in ohlc_data.items() if ticker in tickers_to_use}
-    
-    # Usar la función original de cálculo de inercia
-    return inertia_score(filtered_prices, corte=corte, ohlc_data=filtered_ohlc)
-
-def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
-    """
-    Calcula el score de inercia - IDÉNTICO al código Python que funciona
-    """
-    if monthly_prices_df is None or monthly_prices_df.empty:
-        return pd.DataFrame()
-
-    try:
-        results = {}
-        
-        # Si tenemos datos OHLC reales, usarlos
-        if ohlc_data:
-            monthly_ohlc = convertir_a_mensual_con_ohlc(ohlc_data)
-        else:
-            monthly_ohlc = None
-        
-        for ticker in monthly_prices_df.columns:
-            try:
-                # Si tenemos datos OHLC reales, usarlos
-                if monthly_ohlc and ticker in monthly_ohlc:
-                    high = monthly_ohlc[ticker]['High']
-                    low = monthly_ohlc[ticker]['Low']
-                    close = monthly_ohlc[ticker]['Close']
-                else:
-                    # Fallback: usar solo Close (esto debería evitarse)
-                    close = monthly_prices_df[ticker].dropna()
-                    if len(close) < 15:
-                        continue
-                    
-                    # Mensualizar si es necesario
-                    if close.index.freq != 'ME' and close.index.freq != 'M':
-                        close = close.resample('ME').last()
-                    
-                    # Estimar High/Low (menos preciso)
-                    monthly_returns = close.pct_change().dropna()
-                    vol = monthly_returns.rolling(3).std().fillna(0.02)
-                    vol = vol.clip(0.005, 0.03)
-                    
-                    high = close * (1 + vol * 0.5)
-                    low = close * (1 - vol * 0.5)
-                    high = pd.Series(np.maximum(high, close), index=close.index)
-                    low = pd.Series(np.minimum(low, close), index=close.index)
-
-                if len(close) < 15:
-                    continue
-
-                # CÁLCULOS EXACTOS COMO EN EL CÓDIGO PYTHON QUE FUNCIONA
+            # Limpiar y dividir
+            clean_date = re.sub(r'[^\w\s,]', ' ', date_str.lower())
+            parts = clean_date.split()
+            
+            if len(parts) >= 3:
+                # Buscar mes
+                month = None
+                for part in parts:
+                    if part.replace(',', '') in month_map:
+                        month = month_map[part.replace(',', '')]
+                        break
                 
-                # Calcular ROC de 10 meses (en porcentaje)
-                roc_10 = ((close - close.shift(10)) / close.shift(10)) * 100
-
-                # F1 = ROC(10) * 0.6 (0.4 + 0.2)
-                f1 = roc_10 * 0.6
-
-                # Calcular ATR(14) exactamente como AmiBroker
-                atr_14 = calcular_atr_amibroker(high, low, close, periods=14)
-
-                # Calcular SMA(14)
-                sma_14 = close.rolling(14).mean()
-
-                # F2 = (ATR14/SMA14) * 0.4
-                volatility_ratio = atr_14 / sma_14
-                f2 = volatility_ratio * 0.4
-
-                # Inercia Alcista = F1 / F2
-                inercia_alcista = f1 / f2
-
-                # Score = Inercia si >= corte, sino 0
-                score = np.where(inercia_alcista >= corte, inercia_alcista, 0)
-                score = pd.Series(score, index=inercia_alcista.index)
-
-                # Score Adjusted = Score / ATR14
-                score_adjusted = score / atr_14
-
-                # Limpiar valores infinitos y NaN
-                inercia_alcista = inercia_alcista.replace([np.inf, -np.inf], np.nan).fillna(0)
-                score = score.replace([np.inf, -np.inf], np.nan).fillna(0)
-                score_adjusted = score_adjusted.replace([np.inf, -np.inf], np.nan).fillna(0)
+                # Buscar día y año
+                numbers = [int(re.findall(r'\d+', part)[0]) for part in parts if re.findall(r'\d+', part)]
                 
-                # Almacenar resultados
-                results[ticker] = {
-                    "InerciaAlcista": inercia_alcista,
-                    "ATR14": atr_14,
-                    "Score": score,
-                    "ScoreAdjusted": score_adjusted,
-                    "F1": f1,
-                    "F2": f2,
-                    "ROC10": roc_10,
-                    "VolatilityRatio": volatility_ratio
-                }
-                
-            except Exception as e:
-                print(f"Error procesando ticker {ticker}: {e}")
-                continue
-        
-        if not results:
-            return pd.DataFrame()
-        
-        # Combinar resultados
-        combined_results = {}
-        for metric in ["InerciaAlcista", "ATR14", "Score", "ScoreAdjusted", "F1", "F2", "ROC10", "VolatilityRatio"]:
-            metric_data = {}
-            for ticker in results.keys():
-                if metric in results[ticker]:
-                    metric_data[ticker] = results[ticker][metric]
-            if metric_data:
-                combined_results[metric] = pd.DataFrame(metric_data)
-        
-        return combined_results
-        
-    except Exception as e:
-        print(f"Error en cálculo de inercia: {e}")
-        return {}
-
-def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
-    """
-    Calcula el Sharpe Ratio anualizado con tasa libre de riesgo
-    
-    Args:
-        returns: serie de retornos mensuales
-        risk_free_rate: tasa libre de riesgo anual (por defecto 2%)
-    
-    Returns:
-        sharpe_ratio: Sharpe Ratio anualizado
-    """
-    if len(returns) < 2:
-        return 0.0
-    
-    # Convertir tasa anual a mensual
-    risk_free_rate_monthly = risk_free_rate / 12
-    
-    # Calcular exceso de retornos
-    excess_returns = returns - risk_free_rate_monthly
-    
-    # Calcular desviación estándar de exceso de retornos
-    std_excess = excess_returns.std()
-    
-    # Si no hay volatilidad, Sharpe = 0
-    if std_excess == 0 or np.isnan(std_excess):
-        return 0.0
-    
-    # Calcular Sharpe Ratio anualizado
-    sharpe_ratio = (excess_returns.mean() * 12) / (std_excess * np.sqrt(12))
-    
-    return sharpe_ratio if not np.isnan(sharpe_ratio) else 0.0
-
-def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_data=None, 
-                 historical_info=None, fixed_allocation=False, use_roc_filter=False, 
-                 use_sma_filter=False, spy_data=None):
-    """
-    Ejecuta backtest con verificación histórica de constituyentes
-    
-    Args:
-        historical_info: dict con información histórica de cambios en índices
-        fixed_allocation: bool, si True asigna 10% a cada posición
-        use_roc_filter: bool, si True aplica filtro ROC del SPY
-        use_sma_filter: bool, si True aplica filtro SMA del SPY
-        spy_data: DataFrame con datos del SPY para filtros
-    """
-    try:
-        print("Iniciando backtest con verificación histórica...")
-        
-        # Validar entrada
-        if prices is None or (hasattr(prices, 'empty') and prices.empty):
-            print("❌ Datos de precios vacíos")
-            empty_bt = pd.DataFrame(columns=["Equity", "Returns", "Drawdown"])
-            empty_picks = pd.DataFrame(columns=["Date", "Rank", "Ticker", "Inercia", "ScoreAdj"])
-            return empty_bt, empty_picks
-
-        # Mensualizar precios (solo para el backtest, los cálculos usan OHLC)
-        if isinstance(prices, pd.Series):
-            prices_m = prices.resample('ME').last()
-            prices_df_m = pd.DataFrame({'Close': prices_m})
-        else:
-            try:
-                prices_m = prices.resample('ME').last()
-                prices_df_m = prices_m.copy()
-            except Exception:
-                prices_df_m = prices.copy()
-
-        # Mensualizar benchmark
-        try:
-            if isinstance(benchmark, pd.Series):
-                bench_m = benchmark.resample('ME').last()
-            else:
-                bench_m = benchmark.resample('ME').last()
+                if month and len(numbers) >= 2:
+                    # Determinar cuál es día y cuál es año
+                    day = min(numbers)  # El número menor suele ser el día
+                    year = max(numbers)  # El número mayor suele ser el año
+                    
+                    if day <= 31 and year >= 1900:
+                        from datetime import date
+                        return date(year, month, day)
+            
+            return None
         except:
-            bench_m = benchmark
+            return None
 
-        # ✅ NUEVO: Preparar datos del SPY para filtros
-        spy_monthly = None
-        if (use_roc_filter or use_sma_filter) and spy_data is not None:
-            try:
-                if isinstance(spy_data, pd.DataFrame):
-                    spy_series = spy_data.iloc[:, 0]  # Primera columna
-                else:
-                    spy_series = spy_data
-                
-                # Mensualizar SPY
-                spy_monthly = spy_series.resample('ME').last()
-                print("✅ Datos del SPY preparados para filtros de mercado")
-            except Exception as e:
-                print(f"⚠️ Error preparando datos del SPY: {e}")
-                use_roc_filter = False
-                use_sma_filter = False
-
-        if prices_df_m.empty:
-            print("❌ No hay datos mensuales suficientes")
-            raise ValueError("No hay datos mensuales suficientes para el backtest")
-
-        # Preparar datos históricos si están disponibles
-        historical_changes = None
-        current_tickers = list(prices_df_m.columns)
+def get_sp500_historical_changes():
+    """Obtiene los cambios históricos del S&P 500 desde Wikipedia"""
+    print("Descargando cambios históricos del S&P 500...")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        tables = pd.read_html(StringIO(response.text))
         
-        if historical_info and 'changes_data' in historical_info:
-            historical_changes = historical_info['changes_data']
-            print(f"✅ Usando datos históricos para verificación de constituyentes")
+        # Buscar la tabla de cambios históricos (normalmente es la tercera tabla)
+        changes_df = None
+        
+        # Buscar tabla que contenga la estructura específica del S&P 500
+        for i, table in enumerate(tables):
+            print(f"Analizando tabla {i} con shape: {table.shape}")
+            
+            # Verificar si es tabla multi-nivel
+            if hasattr(table.columns, 'nlevels') and table.columns.nlevels > 1:
+                print(f"Tabla {i} tiene {table.columns.nlevels} niveles de columnas")
+                # Buscar la estructura específica: Date, Added, Removed
+                level_0 = [str(col[0]).lower() for col in table.columns]
+                if any('date' in col or 'effective' in col for col in level_0) and 'added' in level_0 and 'removed' in level_0:
+                    changes_df = table
+                    print(f"✅ Encontrada tabla de cambios S&P 500 en posición {i}")
+                    break
+            else:
+                # Tabla de nivel simple, verificar contenido
+                col_text = ' '.join([str(col) for col in table.columns]).lower()
+                if ('effective' in col_text or 'date' in col_text) and 'added' in col_text and 'removed' in col_text:
+                    changes_df = table
+                    print(f"✅ Encontrada tabla de cambios S&P 500 (nivel simple) en posición {i}")
+                    break
+        
+        if changes_df is None:
+            print("❌ No se encontró tabla de cambios para S&P 500")
+            # Intentar con la tabla por defecto (índice 2)
+            if len(tables) >= 3:
+                changes_df = tables[2]
+                print("Usando tabla 2 por defecto")
+            else:
+                return pd.DataFrame()
+        
+        print(f"Procesando tabla con columnas: {changes_df.columns.tolist()}")
+        
+        # Procesar datos
+        changes_clean = []
+        removed_tickers_info = []  # Para generar CSV
+        
+        print(f"Procesando {len(changes_df)} filas de cambios...")
+        
+        # Identificar columnas correctamente
+        if hasattr(changes_df.columns, 'nlevels') and changes_df.columns.nlevels > 1:
+            # Tabla multi-nivel
+            date_col = changes_df.columns[0]  # Primera columna (fecha)
+            added_ticker_col = changes_df.columns[1]  # Segunda columna (Added Ticker)
+            removed_ticker_col = changes_df.columns[3] if len(changes_df.columns) > 3 else None  # Cuarta columna (Removed Ticker)
         else:
-            print("⚠️  No hay datos históricos, usando todos los tickers disponibles")
-
-        equity = [10000]
-        dates = [prices_df_m.index[0]] if len(prices_df_m.index) > 0 else []
-        picks_list = []
+            # Tabla simple
+            if len(changes_df.columns) >= 4:
+                date_col = changes_df.columns[0]
+                added_ticker_col = changes_df.columns[1]
+                removed_ticker_col = changes_df.columns[3]
+            elif len(changes_df.columns) >= 3:
+                date_col = changes_df.columns[0]
+                added_ticker_col = changes_df.columns[1]
+                removed_ticker_col = changes_df.columns[2]
+            else:
+                return pd.DataFrame()
         
-        # ✅ NUEVO: Variable para rastrear si estamos en efectivo por filtros
-        in_cash_by_filter = False
-
-        print(f"Datos preparados. Fechas: {len(prices_df_m)}")
-        print(f"Configuración: fixed_allocation={fixed_allocation}, ROC_filter={use_roc_filter}, SMA_filter={use_sma_filter}")
-
-        for i in range(1, len(prices_df_m)):
+        for idx, row in changes_df.iterrows():
             try:
-                prev_date = prices_df_m.index[i - 1]
-                date = prices_df_m.index[i]
-
-                # ✅ NUEVO: Verificar filtros de mercado
-                market_filter_active = False
-                filter_reasons = []
+                # Obtener y parsear fecha
+                date_value = row[date_col]
+                date_str = str(date_value).strip()
                 
-                if spy_monthly is not None and prev_date in spy_monthly.index:
-                    spy_price = spy_monthly.loc[prev_date]
-                    
-                    # Filtro ROC (12 MESES)
-                    if use_roc_filter and len(spy_monthly[:prev_date]) >= 13:
-                        spy_12m_ago = spy_monthly[:prev_date].iloc[-13]
-                        spy_roc_12m = ((spy_price - spy_12m_ago) / spy_12m_ago) * 100
-                        
-                        if spy_roc_12m < 0:
-                            market_filter_active = True
-                            filter_reasons.append(f"ROC 12M SPY: {spy_roc_12m:.2f}% < 0")
-                    
-                    # Filtro SMA
-                    if use_sma_filter and len(spy_monthly[:prev_date]) >= 10:
-                        spy_sma_10m = spy_monthly[:prev_date].iloc[-10:].mean()
-                        
-                        if spy_price < spy_sma_10m:
-                            market_filter_active = True
-                            filter_reasons.append(f"SPY ${spy_price:.2f} < SMA10 ${spy_sma_10m:.2f}")
-                
-                # Si los filtros están activos, mantener efectivo
-                if market_filter_active:
-                    if not in_cash_by_filter:
-                        print(f"🛡️ {prev_date.strftime('%Y-%m-%d')}: Filtros de mercado ACTIVADOS - {', '.join(filter_reasons)}")
-                        in_cash_by_filter = True
-                    
-                    # Mantener equity igual (efectivo)
-                    equity.append(equity[-1])
-                    dates.append(date)
-                    continue
-                else:
-                    if in_cash_by_filter:
-                        print(f"✅ {prev_date.strftime('%Y-%m-%d')}: Filtros de mercado DESACTIVADOS - Reanudando inversiones")
-                        in_cash_by_filter = False
-
-                # VERIFICACIÓN HISTÓRICA: Obtener tickers válidos para prev_date
-                if historical_changes is not None:
-                    valid_tickers_for_date = get_valid_tickers_for_date(
-                        prev_date, historical_changes, current_tickers
-                    )
-                    print(f"📅 {prev_date.strftime('%Y-%m-%d')}: {len(valid_tickers_for_date)} tickers válidos de {len(current_tickers)} disponibles")
-                else:
-                    valid_tickers_for_date = set(current_tickers)
-
-                # Calcular scores usando datos históricos hasta la fecha anterior
-                # SOLO para tickers que estaban en el índice en esa fecha
-                historical_data = prices_df_m.loc[:prev_date].copy()
-                if len(historical_data) < 15:
-                    continue
-
-                # Filtrar historical_data para incluir solo tickers válidos
-                available_valid_tickers = list(set(historical_data.columns).intersection(valid_tickers_for_date))
-                if not available_valid_tickers:
-                    print(f"⚠️  No hay tickers válidos disponibles para {prev_date}")
-                    # Mantener equity igual (efectivo)
-                    equity.append(equity[-1])
-                    dates.append(date)
+                if not date_str or date_str.lower() in ['nan', 'none', '']:
                     continue
                 
-                historical_data_filtered = historical_data[available_valid_tickers]
-
-                # Pasar también los datos OHLC históricos filtrados
-                historical_ohlc = None
-                if ohlc_data:
-                    historical_ohlc = {}
-                    for ticker in available_valid_tickers:
-                        if ticker in ohlc_data:
-                            historical_ohlc[ticker] = {
-                                'High': ohlc_data[ticker]['High'].loc[:prev_date],
-                                'Low': ohlc_data[ticker]['Low'].loc[:prev_date],
-                                'Close': ohlc_data[ticker]['Close'].loc[:prev_date]
-                            }
-
-                # Calcular scores solo para tickers válidos
-                df_score = inertia_score(historical_data_filtered, corte=corte, ohlc_data=historical_ohlc)
-                if df_score is None or not df_score:
-                    # Mantener equity igual (efectivo)
-                    equity.append(equity[-1])
-                    dates.append(date)
+                date_parsed = parse_wikipedia_date(date_str)
+                if date_parsed is None:
+                    print(f"⚠️  No se pudo parsear fecha en fila {idx}: '{date_str}'")
                     continue
-
-                # ✅ CORREGIDO: Filtrar por corte ANTES de seleccionar
-                try:
-                    if "ScoreAdjusted" in df_score:
-                        score_adjusted_df = df_score["ScoreAdjusted"]
-                        if not score_adjusted_df.empty and len(score_adjusted_df) > 0:
-                            last_scores = score_adjusted_df.iloc[-1]
-                            if not isinstance(last_scores, pd.Series):
-                                if hasattr(last_scores, 'items'):
-                                    last_scores = pd.Series(last_scores)
-                                else:
-                                    last_scores = pd.Series(dtype=float)
-                        else:
-                            # Mantener equity igual (efectivo)
-                            equity.append(equity[-1])
-                            dates.append(date)
-                            continue
-                    else:
-                        # Mantener equity igual (efectivo)
-                        equity.append(equity[-1])
-                        dates.append(date)
-                        continue
-                except Exception as e:
-                    print(f"Error obteniendo scores: {e}")
-                    # Mantener equity igual (efectivo)
-                    equity.append(equity[-1])
-                    dates.append(date)
-                    continue
-
-                if not isinstance(last_scores, pd.Series):
-                    # Mantener equity igual (efectivo)
-                    equity.append(equity[-1])
-                    dates.append(date)
-                    continue
-                    
-                last_scores = last_scores.dropna()
-
-                if len(last_scores) == 0:
-                    # Mantener equity igual (efectivo)
-                    equity.append(equity[-1])
-                    dates.append(date)
-                    continue
-
-                # ✅ NUEVO: Filtrar PRIMERO por corte de inercia
-                inercia_data = df_score.get("InerciaAlcista")
-                if inercia_data is not None and not inercia_data.empty:
-                    last_inercia = inercia_data.iloc[-1]
-                    
-                    # Filtrar solo tickers que pasan el corte
-                    valid_tickers_scores = []
-                    for ticker in last_scores.index:
-                        if ticker in last_inercia.index:
-                            inercia_val = last_inercia[ticker]
-                            score_adj_val = last_scores[ticker]
-                            
-                            # Solo incluir si pasa el corte Y tiene score ajustado > 0
-                            if inercia_val >= corte and score_adj_val > 0:
-                                valid_tickers_scores.append({
-                                    'ticker': ticker,
-                                    'inercia': inercia_val,
-                                    'score_adj': score_adj_val
-                                })
-                    
-                    if not valid_tickers_scores:
-                        print(f"⚠️ No hay tickers que pasen el corte en {prev_date}")
-                        # Mantener equity igual (efectivo)
-                        equity.append(equity[-1])
-                        dates.append(date)
-                        continue
-                    
-                    # Ordenar por score ajustado y seleccionar top N
-                    valid_tickers_scores = sorted(valid_tickers_scores, key=lambda x: x['score_adj'], reverse=True)
-                    
-                    if fixed_allocation:
-                        # ✅ NUEVO: Asignación fija de 10%
-                        selected_picks = valid_tickers_scores[:10]  # Máximo 10 posiciones
-                        selected = [pick['ticker'] for pick in selected_picks]
-                        weight = 0.1  # 10% por posición
-                        print(f"💰 Asignación fija: {len(selected)} posiciones, 10% cada una")
-                    else:
-                        # Seleccionar hasta top_n de los válidos
-                        selected_picks = valid_tickers_scores[:min(top_n, len(valid_tickers_scores))]
-                        selected = [pick['ticker'] for pick in selected_picks]
-                        weight = 1.0 / len(selected)  # Peso equitativo
-                        print(f"💰 Distribución equitativa: {len(selected)} posiciones, {weight*100:.1f}% cada una")
-                    
-                    print(f"📊 {prev_date.strftime('%Y-%m-%d')}: {len(selected)} tickers válidos seleccionados de {len(last_scores)} disponibles")
-                    
-                else:
-                    # Fallback si no hay datos de inercia
-                    selected = last_scores.sort_values(ascending=False).head(top_n).index.tolist()
-                    weight = 1.0 / len(selected)
-                    print(f"⚠️ Sin datos de inercia para {prev_date}, usando fallback")
-
-                if not selected:
-                    # Mantener equity igual (efectivo)
-                    equity.append(equity[-1])
-                    dates.append(date)
-                    continue
-
-                try:
-                    available_prices = prices_df_m.loc[date]
-                    prev_prices = prices_df_m.loc[prev_date]
-                except Exception as e:
-                    print(f"Error obteniendo precios para {date}: {e}")
-                    # Mantener equity igual (efectivo)
-                    equity.append(equity[-1])
-                    dates.append(date)
-                    continue
-
-                valid_tickers = []
-                for ticker in selected:
-                    try:
-                        if (ticker in available_prices.index and 
-                            ticker in prev_prices.index and
-                            not pd.isna(available_prices[ticker]) and 
-                            not pd.isna(prev_prices[ticker]) and
-                            prev_prices[ticker] != 0):
-                            valid_tickers.append(ticker)
-                    except:
-                        continue
-
-                if len(valid_tickers) == 0:
-                    print(f"⚠️ No hay precios válidos para {date}")
-                    # Mantener equity igual (efectivo)
-                    equity.append(equity[-1])
-                    dates.append(date)
-                    continue
-
-                # Recalcular peso con tickers que tienen precios válidos
-                if fixed_allocation:
-                    weight = 0.1
-                    valid_tickers = valid_tickers[:10]  # Limitar a máximo 10
-                else:
-                    weight = 1.0 / len(valid_tickers)
-
-                rets = pd.Series(dtype=float)
-                for ticker in valid_tickers:
-                    try:
-                        prev_price = prev_prices[ticker]
-                        curr_price = available_prices[ticker]
-                        if prev_price != 0 and not pd.isna(prev_price) and not pd.isna(curr_price):
-                            ret_value = (curr_price / prev_price) - 1
-                            rets[ticker] = ret_value if not np.isinf(ret_value) and not np.isnan(ret_value) else 0
-                        else:
-                            rets[ticker] = 0
-                    except:
-                        rets[ticker] = 0
-
-                rets = rets.fillna(0)
-                port_ret = (rets * weight).sum() - commission
-                new_eq = equity[-1] * (1 + port_ret) if not np.isnan(port_ret) and not np.isinf(port_ret) else equity[-1]
-
-                equity.append(new_eq)
-                dates.append(date)
-
-                # Guardar picks SOLO para tickers válidos que fueron seleccionados
-                for rank, ticker in enumerate(valid_tickers, 1):
-                    try:
-                        inercia_val = 0
-                        score_adj_val = 0
+                
+                # Obtener tickers agregados y removidos
+                added_ticker = str(row[added_ticker_col]).strip().upper() if pd.notna(row[added_ticker_col]) else None
+                removed_ticker = str(row[removed_ticker_col]).strip().upper() if removed_ticker_col and pd.notna(row[removed_ticker_col]) else None
+                
+                # Procesar ticker agregado
+                if added_ticker and added_ticker not in ['NAN', 'NONE', '', 'N/A', 'nan']:
+                    # Limpiar ticker
+                    clean_added = added_ticker.replace('.', '-').replace(' ', '').strip()
+                    if len(clean_added) <= 6 and clean_added and not clean_added.isdigit():
+                        changes_clean.append({
+                            'Date': date_parsed,
+                            'Action': 'Added',
+                            'Ticker': clean_added
+                        })
+                        print(f"✅ Agregado: {clean_added} en {date_parsed}")
+                
+                # Procesar ticker removido
+                if removed_ticker and removed_ticker not in ['NAN', 'NONE', '', 'N/A', 'nan']:
+                    # Limpiar ticker
+                    clean_removed = removed_ticker.replace('.', '-').replace(' ', '').strip()
+                    if len(clean_removed) <= 6 and clean_removed and not clean_removed.isdigit():
+                        changes_clean.append({
+                            'Date': date_parsed,
+                            'Action': 'Removed',
+                            'Ticker': clean_removed
+                        })
                         
-                        if "InerciaAlcista" in df_score:
-                            try:
-                                inercia_data = df_score["InerciaAlcista"]
-                                if isinstance(inercia_data, pd.DataFrame) and len(inercia_data) > 0 and ticker in inercia_data.columns:
-                                    inercia_val = inercia_data.iloc[-1][ticker] if len(inercia_data) > 0 else 0
-                            except:
-                                inercia_val = 0
+                        # Agregar a lista de removidos para CSV
+                        removed_tickers_info.append({
+                            'Ticker': clean_removed,
+                            'Removed_Date': date_parsed.strftime('%Y-%m-%d'),
+                            'Year': date_parsed.year
+                        })
+                        print(f"✅ Removido: {clean_removed} en {date_parsed}")
                         
-                        if ticker in last_scores.index:
-                            score_adj_val = last_scores[ticker]
-
-                        # ✅ VALIDACIÓN: Solo guardar si realmente pasa el corte
-                        if inercia_val >= corte and score_adj_val > 0:
-                            picks_list.append({
-                                "Date": date.strftime("%Y-%m-%d"),
-                                "Rank": rank,
-                                "Ticker": str(ticker),
-                                "Inercia": float(inercia_val) if not pd.isna(inercia_val) else 0,
-                                "ScoreAdj": float(score_adj_val) if not pd.isna(score_adj_val) else 0,
-                                "HistoricallyValid": ticker in valid_tickers_for_date
-                            })
-                        else:
-                            print(f"⚠️ ADVERTENCIA: {ticker} no debería estar seleccionado (Inercia: {inercia_val:.2f})")
-                            
-                    except Exception as e:
-                        print(f"Error procesando pick {ticker}: {e}")
-                        continue
-
             except Exception as e:
-                print(f"Error en iteración {i}: {e}")
-                # Mantener equity igual en caso de error
-                equity.append(equity[-1])
-                dates.append(date)
+                print(f"⚠️  Error procesando fila {idx}: {e}")
                 continue
-
-        if len(equity) <= 1:
-            print("❌ No se generaron resultados de backtest")
-            raise ValueError("No se generaron resultados de backtest")
-
-        equity_series = pd.Series(equity, index=dates)
-        returns = equity_series.pct_change().fillna(0)
-        drawdown = (equity_series / equity_series.cummax() - 1).fillna(0)
-
-        bt = pd.DataFrame({
-            "Equity": equity_series,
-            "Returns": returns,
-            "Drawdown": drawdown
-        })
-        picks_df = pd.DataFrame(picks_list)
         
-        print(f"✅ Backtest completado con verificación histórica. Equity final: {equity_series.iloc[-1]:.2f}")
+        # Generar CSV con tickers removidos
+        if removed_tickers_info:
+            try:
+                removed_df = pd.DataFrame(removed_tickers_info)
+                
+                # Eliminar duplicados y ordenar
+                removed_df = removed_df.drop_duplicates(subset=['Ticker'])
+                removed_df = removed_df.sort_values('Removed_Date', ascending=False)
+                
+                # Guardar CSV
+                csv_path = os.path.join(DATA_DIR, 'sp500_removed_tickers.csv')
+                removed_df.to_csv(csv_path, index=False)
+                print(f"✅ Guardado CSV con {len(removed_df)} tickers removidos en: {csv_path}")
+                
+                # Mostrar algunos ejemplos
+                print("📋 Tickers removidos más recientes:")
+                for _, row in removed_df.head(10).iterrows():
+                    print(f"   {row['Ticker']} (removido el {row['Removed_Date']})")
+                    
+            except Exception as e:
+                print(f"⚠️  Error generando CSV de removidos: {e}")
         
-        # Estadísticas adicionales
-        if not picks_df.empty and 'HistoricallyValid' in picks_df.columns:
-            total_picks = len(picks_df)
-            valid_picks = picks_df['HistoricallyValid'].sum()
-            print(f"📊 Picks históricamente válidos: {valid_picks}/{total_picks} ({valid_picks/total_picks*100:.1f}%)")
-        
-        # Estadísticas de selección
-        if not picks_df.empty:
-            picks_by_month = picks_df.groupby('Date').size()
-            avg_picks_per_month = picks_by_month.mean()
-            min_picks = picks_by_month.min()
-            max_picks = picks_by_month.max()
-            print(f"📈 Picks por mes - Promedio: {avg_picks_per_month:.1f}, Min: {min_picks}, Max: {max_picks}")
-        
-        return bt, picks_df
-
+        # Crear DataFrame final
+        if changes_clean:
+            result_df = pd.DataFrame(changes_clean)
+            result_df = result_df.sort_values('Date', ascending=False)  # Más reciente primero
+            
+            # Eliminar duplicados
+            initial_count = len(result_df)
+            result_df = result_df.drop_duplicates(subset=['Date', 'Ticker', 'Action'])
+            final_count = len(result_df)
+            
+            print(f"✅ Procesados {final_count} cambios únicos del S&P 500 (de {initial_count} registros)")
+            if final_count != initial_count:
+                print(f"   Eliminados {initial_count - final_count} duplicados")
+            
+            # Estadísticas
+            added_count = len(result_df[result_df['Action'] == 'Added'])
+            removed_count = len(result_df[result_df['Action'] == 'Removed'])
+            print(f"📊 Agregados: {added_count}, Removidos: {removed_count}")
+            
+            return result_df
+        else:
+            print("❌ No se pudieron procesar cambios históricos del S&P 500")
+            return pd.DataFrame()
+            
     except Exception as e:
-        print(f"❌ Error crítico en run_backtest: {e}")
+        print(f"❌ Error obteniendo cambios históricos S&P 500: {e}")
         import traceback
         traceback.print_exc()
-        empty_bt = pd.DataFrame(columns=["Equity", "Returns", "Drawdown"])
-        empty_picks = pd.DataFrame(columns=["Date", "Rank", "Ticker", "Inercia", "ScoreAdj"])
-        return empty_bt, empty_picks
+        return pd.DataFrame()
 
-# Mantener para compatibilidad
-def monthly_true_range(high, low, close):
-    """Función mantenida para compatibilidad"""
-    return calcular_atr_amibroker(high, low, close, periods=1)
+def get_nasdaq100_historical_changes():
+    """Obtiene los cambios históricos del NASDAQ-100 desde Wikipedia"""
+    print("Descargando cambios históricos del NASDAQ-100...")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    url = "https://en.wikipedia.org/wiki/NASDAQ-100"
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        tables = pd.read_html(StringIO(response.text))
+        
+        # Buscar tabla de cambios históricos
+        changes_df = None
+        for i, table in enumerate(tables):
+            cols = [str(col).lower() for col in table.columns]
+            print(f"Tabla {i} columnas: {cols}")
+            if any('date' in col for col in cols) and any('add' in col or 'remove' in col for col in cols):
+                changes_df = table
+                print(f"Encontrada tabla de cambios NASDAQ-100 en posición {i}")
+                break
+        
+        if changes_df is None:
+            print("No se encontró tabla de cambios para NASDAQ-100")
+            # Intentar con la tabla por defecto
+            if len(tables) >= 4:
+                changes_df = tables[3]  # A menudo es la cuarta tabla
+                print("Usando tabla 3 por defecto")
+            else:
+                return pd.DataFrame()
+        
+        # Procesar similar a S&P 500
+        changes_df.columns = [str(col).strip() for col in changes_df.columns]
+        
+        # Identificar columnas
+        date_col = None
+        added_col = None
+        removed_col = None
+        
+        for col in changes_df.columns:
+            col_lower = col.lower()
+            if 'date' in col_lower and date_col is None:
+                date_col = col
+            elif ('add' in col_lower or 'ticker' in col_lower) and added_col is None:
+                added_col = col
+            elif ('remov' in col_lower or 'delete' in col_lower) and removed_col is None:
+                removed_col = col
+        
+        # Fallback si no se encuentran las columnas
+        if date_col is None and len(changes_df.columns) > 0:
+            date_col = changes_df.columns[0]
+        if added_col is None and len(changes_df.columns) > 1:
+            added_col = changes_df.columns[1]
+        if removed_col is None and len(changes_df.columns) > 2:
+            removed_col = changes_df.columns[2]
+        
+        if not all([date_col]):
+            print("No se pudieron identificar las columnas necesarias")
+            return pd.DataFrame()
+        
+        changes_clean = []
+        for _, row in changes_df.iterrows():
+            try:
+                date_str = str(row[date_col]).strip()
+                date_parsed = parse_wikipedia_date(date_str)
+                
+                if date_parsed is None:
+                    continue
+                
+                # Procesar tickers agregados
+                if added_col and added_col in changes_df.columns:
+                    added_ticker = str(row[added_col]).strip().upper() if pd.notna(row[added_col]) else None
+                    if added_ticker and added_ticker not in ['NAN', 'NONE', '', 'N/A', 'nan']:
+                        added_ticker = added_ticker.replace('.', '-')
+                        if len(added_ticker) <= 6 and not added_ticker.isdigit():
+                            changes_clean.append({
+                                'Date': date_parsed,
+                                'Action': 'Added',
+                                'Ticker': added_ticker
+                            })
+                
+                # Procesar tickers removidos
+                if removed_col and removed_col in changes_df.columns:
+                    removed_ticker = str(row[removed_col]).strip().upper() if pd.notna(row[removed_col]) else None
+                    if removed_ticker and removed_ticker not in ['NAN', 'NONE', '', 'N/A', 'nan']:
+                        removed_ticker = removed_ticker.replace('.', '-')
+                        if len(removed_ticker) <= 6 and not removed_ticker.isdigit():
+                            changes_clean.append({
+                                'Date': date_parsed,
+                                'Action': 'Removed',
+                                'Ticker': removed_ticker
+                            })
+                        
+            except Exception as e:
+                print(f"Error procesando fila: {e}")
+                continue
+        
+        if changes_clean:
+            result_df = pd.DataFrame(changes_clean)
+            result_df = result_df.sort_values('Date', ascending=False)
+            print(f"Procesados {len(result_df)} cambios históricos del NASDAQ-100")
+            return result_df
+        else:
+            return pd.DataFrame()
+            
+    except Exception as e:
+        print(f"Error obteniendo cambios históricos NASDAQ-100: {e}")
+        import traceback
+        traceback.print_exc()
+        return pd.DataFrame()
+
+def get_current_constituents(index_name):
+    """Obtiene los constituyentes actuales de un índice"""
+    if index_name == "SP500":
+        return get_sp500_tickers_from_wikipedia()
+    elif index_name == "NDX":
+        return get_nasdaq100_tickers_from_wikipedia()
+    else:
+        raise ValueError(f"Índice {index_name} no soportado")
+
+def get_sp500_tickers_from_wikipedia():
+    """Obtiene los tickers actuales del S&P 500"""
+    print("Obteniendo constituyentes actuales S&P 500...")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        tables = pd.read_html(StringIO(response.text))
+        
+        df = tables[0]  # Primera tabla contiene constituyentes actuales
+        
+        symbol_column = None
+        for col in df.columns:
+            if 'symbol' in str(col).lower() or 'ticker' in str(col).lower():
+                symbol_column = col
+                break
+        
+        if symbol_column is None:
+            symbol_column = df.columns[0]
+        
+        tickers = df[symbol_column].astype(str).str.strip().str.upper().tolist()
+        tickers = [t.replace('.', '-') for t in tickers]
+        tickers = [t for t in tickers if t and t != 'nan' and len(t) <= 6 and not t.isdigit()]
+        
+        print(f"Obtenidos {len(tickers)} constituyentes actuales S&P 500")
+        
+        return {
+            'tickers': tickers,
+            'data': df.to_dict('records'),
+            'timestamp': datetime.now().timestamp(),
+            'date': datetime.now()
+        }
+        
+    except Exception as e:
+        print(f"Error obteniendo constituyentes actuales S&P 500: {e}")
+        fallback_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'JPM', 'JNJ', 'V']
+        return {
+            'tickers': fallback_tickers,
+            'data': [{'Symbol': t} for t in fallback_tickers],
+            'timestamp': datetime.now().timestamp(),
+            'date': datetime.now()
+        }
+
+def get_nasdaq100_tickers_from_wikipedia():
+    """Obtiene los tickers actuales del NASDAQ-100"""
+    print("Obteniendo constituyentes actuales NASDAQ-100...")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    url = "https://en.wikipedia.org/wiki/NASDAQ-100"
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        tables = pd.read_html(StringIO(response.text))
+        
+        df = None
+        # Buscar la tabla que contiene los constituyentes
+        for table in tables:
+            if len(table.columns) >= 2:  # Debe tener al menos 2 columnas
+                ticker_cols = [col for col in table.columns if 'Ticker' in str(col) or 'Symbol' in str(col)]
+                if ticker_cols:
+                    df = table
+                    break
+        
+        if df is None:
+            # Fallback: usar la tercera tabla típicamente
+            if len(tables) >= 3:
+                df = tables[2]
+            else:
+                raise ValueError("No se encontró tabla de constituyentes")
+        
+        ticker_column = None
+        for col in df.columns:
+            if 'Ticker' in str(col) or 'Symbol' in str(col):
+                ticker_column = col
+                break
+        
+        if ticker_column is None:
+            ticker_column = df.columns[1]  # Usualmente la segunda columna
+        
+        tickers = df[ticker_column].astype(str).str.strip().str.upper().tolist()
+        tickers = [t.replace('.', '-') for t in tickers]
+        tickers = [t for t in tickers if t and t != 'nan' and len(t) <= 6 and not t.isdigit()]
+        
+        print(f"Obtenidos {len(tickers)} constituyentes actuales NASDAQ-100")
+        
+        return {
+            'tickers': tickers,
+            'data': df.to_dict('records'),
+            'timestamp': datetime.now().timestamp(),
+            'date': datetime.now()
+        }
+        
+    except Exception as e:
+        print(f"Error obteniendo constituyentes actuales NASDAQ-100: {e}")
+        fallback_tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NVDA', 'ADBE', 'PEP', 'COST']
+        return {
+            'tickers': fallback_tickers,
+            'data': [{'Symbol': t} for t in fallback_tickers],
+            'timestamp': datetime.now().timestamp(),
+            'date': datetime.now()
+        }
+
+def get_valid_constituents_for_period(index_name, start_date, end_date, changes_df):
+    """
+    Obtiene los tickers que estuvieron en el índice durante un período específico
+    """
+    try:
+        # Obtener constituyentes actuales
+        current_data = get_current_constituents(index_name)
+        current_tickers = set(current_data['tickers'])
+        
+        if changes_df.empty:
+            print(f"⚠️  No hay datos históricos para {index_name}, usando constituyentes actuales")
+            return current_tickers, current_data['data']
+        
+        # Convertir fechas
+        if isinstance(start_date, datetime):
+            start_date = start_date.date()
+        if isinstance(end_date, datetime):
+            end_date = end_date.date()
+        
+        # Empezar con tickers actuales
+        valid_tickers = set(current_tickers)
+        
+        # Procesar cambios para identificar tickers válidos en el período
+        # Estrategia: revertir cambios futuros para encontrar estado en start_date
+        
+        # Cambios después de start_date que afectan la composición
+        future_changes = changes_df[changes_df['Date'] > start_date].sort_values('Date', ascending=True)
+        
+        for _, change in future_changes.iterrows():
+            ticker = change['Ticker']
+            action = change['Action']
+            
+            # Revertir los cambios futuros para obtener el estado en start_date
+            if action == 'Added':
+                # Si fue agregado después de start_date, no estaba en start_date
+                valid_tickers.discard(ticker)
+            elif action == 'Removed':
+                # Si fue removido después de start_date, estaba en start_date
+                valid_tickers.add(ticker)
+        
+        # También considerar cambios antes de start_date que afectan el período
+        past_changes = changes_df[changes_df['Date'] <= start_date]
+        
+        # Para cada ticker que fue removido antes de start_date
+        for _, change in past_changes.iterrows():
+            ticker = change['Ticker']
+            action = change['Action']
+            
+            if action == 'Removed':
+                # Verificar si fue re-agregado después
+                was_readded = not future_changes[
+                    (future_changes['Ticker'] == ticker) & 
+                    (future_changes['Action'] == 'Added')
+                ].empty
+                
+                if not was_readded:
+                    # Si fue removido y no re-agregado, no estaba en el período
+                    valid_tickers.discard(ticker)
+        
+        # Crear datos históricos
+        historical_data = []
+        for ticker in valid_tickers:
+            # Buscar fecha de incorporación más reciente
+            ticker_additions = changes_df[
+                (changes_df['Ticker'] == ticker) & 
+                (changes_df['Action'] == 'Added') &
+                (changes_df['Date'] <= start_date)
+            ].sort_values('Date', ascending=False)
+            
+            added_date = ticker_additions['Date'].iloc[0] if not ticker_additions.empty else None
+            
+            historical_data.append({
+                'ticker': ticker,
+                'added': added_date.strftime('%Y-%m-%d') if added_date else 'Unknown',
+                'in_current': ticker in current_tickers,
+                'status': 'Historical constituent'
+            })
+        
+        return list(valid_tickers), historical_data
+        
+    except Exception as e:
+        print(f"Error en get_valid_constituents_for_period: {e}")
+        # Fallback
+        current_data = get_current_constituents(index_name)
+        return current_data['tickers'], current_data['data']
+
+def get_constituents_at_date(index_name, start_date, end_date):
+    """
+    Obtiene constituyentes históricos válidos para el rango de fechas
+    """
+    cache_key = f"{index_name}_{start_date}_{end_date}"
+    
+    if cache_key in _historical_cache:
+        print(f"Usando cache para {index_name}")
+        return _historical_cache[cache_key], None
+    
+    try:
+        # Obtener cambios históricos
+        if index_name == "SP500":
+            changes_df = get_sp500_historical_changes()
+        elif index_name == "NDX":
+            changes_df = get_nasdaq100_historical_changes()
+        else:
+            raise ValueError(f"Índice {index_name} no soportado")
+        
+        # Obtener tickers válidos para el período
+        valid_tickers, historical_data = get_valid_constituents_for_period(
+            index_name, start_date, end_date, changes_df
+        )
+        
+        # Limpiar tickers
+        valid_tickers = [t for t in valid_tickers if t and len(t) <= 6 and not t.isdigit()]
+        
+        result = {
+            'tickers': valid_tickers,
+            'data': historical_data,
+            'historical_data_available': not changes_df.empty,
+            'changes_processed': len(changes_df) if not changes_df.empty else 0,
+            'period_start': start_date.strftime('%Y-%m-%d') if hasattr(start_date, 'strftime') else str(start_date),
+            'period_end': end_date.strftime('%Y-%m-%d') if hasattr(end_date, 'strftime') else str(end_date),
+            'note': f'Historical constituents for {index_name}'
+        }
+        
+        _historical_cache[cache_key] = result
+        return result, None
+        
+    except Exception as e:
+        error_msg = f"Error obteniendo constituyentes históricos para {index_name}: {e}"
+        print(error_msg)
+        
+        # Fallback a constituyentes actuales
+        try:
+            current_data = get_current_constituents(index_name)
+            fallback_result = {
+                'tickers': current_data['tickers'],
+                'data': current_data['data'],
+                'historical_data_available': False,
+                'note': f'Fallback to current constituents due to error: {str(e)}'
+            }
+            return fallback_result, f"Warning: {error_msg}"
+        except:
+            return None, error_msg
+
+def generate_removed_tickers_summary():
+    """Genera resumen completo de tickers removidos de ambos índices"""
+    try:
+        all_removed = []
+        
+        # S&P 500
+        sp500_changes = get_sp500_historical_changes()
+        if not sp500_changes.empty:
+            sp500_removed = sp500_changes[sp500_changes['Action'] == 'Removed'].copy()
+            sp500_removed['Index'] = 'SP500'
+            all_removed.append(sp500_removed)
+        
+        # NASDAQ-100
+        ndx_changes = get_nasdaq100_historical_changes()
+        if not ndx_changes.empty:
+            ndx_removed = ndx_changes[ndx_changes['Action'] == 'Removed'].copy()
+            ndx_removed['Index'] = 'NDX'
+            all_removed.append(ndx_removed)
+        
+        if all_removed:
+            # Combinar todos los removidos
+            combined_removed = pd.concat(all_removed, ignore_index=True)
+            
+            # Crear resumen por ticker
+            summary = combined_removed.groupby('Ticker').agg({
+                'Date': ['min', 'max', 'count'],
+                'Index': lambda x: ', '.join(sorted(set(x)))
+            }).reset_index()
+            
+            # Aplanar columnas
+            summary.columns = ['Ticker', 'First_Removed', 'Last_Removed', 'Times_Removed', 'Indices']
+            
+            # Ordenar por fecha más reciente
+            summary = summary.sort_values('Last_Removed', ascending=False)
+            
+            # Guardar CSV
+            csv_path = os.path.join(DATA_DIR, 'all_removed_tickers_summary.csv')
+            summary.to_csv(csv_path, index=False)
+            
+            print(f"✅ Generado resumen de tickers removidos: {csv_path}")
+            print(f"📊 Total de tickers únicos removidos: {len(summary)}")
+            
+            return summary
+        else:
+            return pd.DataFrame()
+        
+    except Exception as e:
+        print(f"❌ Error generando resumen de removidos: {e}")
+        import traceback
+        traceback.print_exc()
+        return pd.DataFrame()
+
+def download_prices(tickers, start_date, end_date):
+    """
+    Carga precios desde archivos CSV en la carpeta data/
+    Formato esperado: data/AAPL.csv, data/MSFT.csv, etc.
+    """
+    prices_data = {}
+    
+    # Normalizar entrada de tickers
+    if isinstance(tickers, dict) and 'tickers' in tickers:
+        ticker_list = tickers['tickers']
+    elif isinstance(tickers, (list, tuple)):
+        ticker_list = list(tickers)
+    elif isinstance(tickers, str):
+        ticker_list = [tickers]
+    else:
+        ticker_list = []
+    
+    # Limpiar y normalizar tickers
+    ticker_list = [str(t).strip().upper().replace('.', '-') for t in ticker_list]
+    ticker_list = [t for t in ticker_list if t and not t.isdigit() and len(t) <= 6]
+    ticker_list = list(dict.fromkeys(ticker_list))  # Eliminar duplicados
+    
+    if not ticker_list:
+        return pd.DataFrame()
+    
+    print(f"Cargando {len(ticker_list)} tickers desde CSV...")
+    
+    for ticker in ticker_list:
+        csv_path = os.path.join(DATA_DIR, f"{ticker}.csv")
+        if os.path.exists(csv_path):
+            try:
+                # Leer CSV con Date como índice
+                df = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
+                
+                # Filtrar por rango de fechas
+                if isinstance(start_date, datetime):
+                    start_date = start_date.date()
+                if isinstance(end_date, datetime):
+                    end_date = end_date.date()
+                    
+                df = df[(df.index.date >= start_date) & (df.index.date <= end_date)]
+                
+                if not df.empty:
+                    # Prioridad: Adj Close → Close → primera columna numérica
+                    price_series = None
+                    for col in ["Adj Close", "Close"]:
+                        if col in df.columns:
+                            price_series = df[col]
+                            break
+                    
+                    if price_series is None:
+                        # Usar primera columna numérica si no hay Close/Adj Close
+                        numeric_cols = df.select_dtypes(include=[np.number]).columns
+                        if len(numeric_cols) > 0:
+                            price_series = df[numeric_cols[0]]
+                    
+                    if price_series is not None:
+                        price_series.name = ticker  # Nombrar la serie con el ticker
+                        prices_data[ticker] = price_series
+                else:
+                    print(f"  No hay datos para {ticker} en el rango de fechas")
+            except Exception as e:
+                print(f"  Error cargando {ticker}: {e}")
+        else:
+            print(f"  Archivo no encontrado: {csv_path}")
+    
+    # Combinar en DataFrame
+    if prices_data:
+        prices_df = pd.DataFrame(prices_data)
+        # Rellenar valores faltantes hacia adelante y hacia atrás
+        prices_df = prices_df.fillna(method='ffill').fillna(method='bfill')
+        return prices_df
+    else:
+        return pd.DataFrame()
