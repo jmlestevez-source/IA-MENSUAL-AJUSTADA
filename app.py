@@ -62,9 +62,9 @@ fixed_allocation = st.sidebar.checkbox(
 st.sidebar.subheader("🛡️ Filtros de Mercado")
 
 use_roc_filter = st.sidebar.checkbox(
-    "📉 ROC 10 meses del SPY < 0",
+    "📉 ROC 12 meses del SPY < 0",
     value=False,
-    help="No invierte cuando el ROC de 10 meses del SPY es negativo"
+    help="No invierte cuando el ROC de 12 meses del SPY es negativo"
 )
 
 use_sma_filter = st.sidebar.checkbox(
