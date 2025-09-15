@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from datetime import datetime, timedelta
 
 def calcular_atr_amibroker(high, low, close, periods=14):
     """
@@ -59,6 +60,71 @@ def convertir_a_mensual_con_ohlc(ohlc_data):
             continue
     
     return monthly_data
+
+def get_valid_tickers_for_date(target_date, historical_changes_data, current_tickers):
+    """
+    Retorna los tickers que estaban válidos en el índice en una fecha específica
+    
+    Args:
+        target_date: fecha objetivo
+        historical_changes_data: DataFrame con cambios históricos
+        current_tickers: lista de tickers actuales
+    """
+    if historical_changes_data is None or historical_changes_data.empty:
+        # Si no hay datos históricos, usar todos los tickers actuales
+        return set(current_tickers)
+    
+    # Convertir target_date a date si es datetime
+    if isinstance(target_date, pd.Timestamp):
+        target_date = target_date.date()
+    elif isinstance(target_date, datetime):
+        target_date = target_date.date()
+    
+    # Empezar con tickers actuales
+    valid_tickers = set(current_tickers)
+    
+    # Procesar cambios desde target_date hacia adelante (revertir cambios futuros)
+    future_changes = historical_changes_data[historical_changes_data['Date'] > target_date]
+    future_changes = future_changes.sort_values('Date', ascending=True)  # Más antiguos primero
+    
+    for _, change in future_changes.iterrows():
+        ticker = change['Ticker']
+        action = change['Action']
+        
+        # Revertir cambios futuros
+        if action == 'Added':
+            # Si fue agregado después de target_date, no debería estar en target_date
+            valid_tickers.discard(ticker)
+        elif action == 'Removed':
+            # Si fue removido después de target_date, debería estar en target_date
+            valid_tickers.add(ticker)
+    
+    return valid_tickers
+
+def inertia_score_with_historical_filter(monthly_prices_df, target_date, valid_tickers, corte=680, ohlc_data=None):
+    """
+    Calcula el score de inercia solo para tickers válidos en la fecha objetivo
+    """
+    if monthly_prices_df is None or monthly_prices_df.empty:
+        return pd.DataFrame()
+    
+    # Filtrar solo tickers válidos para la fecha
+    available_tickers = set(monthly_prices_df.columns)
+    tickers_to_use = list(available_tickers.intersection(valid_tickers))
+    
+    if not tickers_to_use:
+        return {}
+    
+    # Filtrar DataFrame
+    filtered_prices = monthly_prices_df[tickers_to_use]
+    
+    # Filtrar OHLC data también
+    filtered_ohlc = None
+    if ohlc_data:
+        filtered_ohlc = {ticker: data for ticker, data in ohlc_data.items() if ticker in tickers_to_use}
+    
+    # Usar la función original de cálculo de inercia
+    return inertia_score(filtered_prices, corte=corte, ohlc_data=filtered_ohlc)
 
 def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
     """
@@ -174,9 +240,15 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
         print(f"Error en cálculo de inercia: {e}")
         return {}
 
-def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_data=None):
+def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_data=None, historical_info=None):
+    """
+    Ejecuta backtest con verificación histórica de constituyentes
+    
+    Args:
+        historical_info: dict con información histórica de cambios en índices
+    """
     try:
-        print("Iniciando backtest...")
+        print("Iniciando backtest con verificación histórica...")
         
         # Validar entrada
         if prices is None or (hasattr(prices, 'empty') and prices.empty):
@@ -209,6 +281,16 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
             print("❌ No hay datos mensuales suficientes")
             raise ValueError("No hay datos mensuales suficientes para el backtest")
 
+        # Preparar datos históricos si están disponibles
+        historical_changes = None
+        current_tickers = list(prices_df_m.columns)
+        
+        if historical_info and 'changes_data' in historical_info:
+            historical_changes = historical_info['changes_data']
+            print(f"✅ Usando datos históricos para verificación de constituyentes")
+        else:
+            print("⚠️  No hay datos históricos, usando todos los tickers disponibles")
+
         equity = [10000]
         dates = [prices_df_m.index[0]] if len(prices_df_m.index) > 0 else []
         picks_list = []
@@ -220,24 +302,43 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                 prev_date = prices_df_m.index[i - 1]
                 date = prices_df_m.index[i]
 
+                # VERIFICACIÓN HISTÓRICA: Obtener tickers válidos para prev_date
+                if historical_changes is not None:
+                    valid_tickers_for_date = get_valid_tickers_for_date(
+                        prev_date, historical_changes, current_tickers
+                    )
+                    print(f"📅 {prev_date.strftime('%Y-%m-%d')}: {len(valid_tickers_for_date)} tickers válidos de {len(current_tickers)} disponibles")
+                else:
+                    valid_tickers_for_date = set(current_tickers)
+
                 # Calcular scores usando datos históricos hasta la fecha anterior
+                # SOLO para tickers que estaban en el índice en esa fecha
                 historical_data = prices_df_m.loc[:prev_date].copy()
                 if len(historical_data) < 15:
                     continue
 
-                # Pasar también los datos OHLC históricos
+                # Filtrar historical_data para incluir solo tickers válidos
+                available_valid_tickers = list(set(historical_data.columns).intersection(valid_tickers_for_date))
+                if not available_valid_tickers:
+                    print(f"⚠️  No hay tickers válidos disponibles para {prev_date}")
+                    continue
+                
+                historical_data_filtered = historical_data[available_valid_tickers]
+
+                # Pasar también los datos OHLC históricos filtrados
                 historical_ohlc = None
                 if ohlc_data:
                     historical_ohlc = {}
-                    for ticker, data in ohlc_data.items():
-                        if ticker in historical_data.columns:
+                    for ticker in available_valid_tickers:
+                        if ticker in ohlc_data:
                             historical_ohlc[ticker] = {
-                                'High': data['High'].loc[:prev_date],
-                                'Low': data['Low'].loc[:prev_date],
-                                'Close': data['Close'].loc[:prev_date]
+                                'High': ohlc_data[ticker]['High'].loc[:prev_date],
+                                'Low': ohlc_data[ticker]['Low'].loc[:prev_date],
+                                'Close': ohlc_data[ticker]['Close'].loc[:prev_date]
                             }
 
-                df_score = inertia_score(historical_data, corte=corte, ohlc_data=historical_ohlc)
+                # Calcular scores solo para tickers válidos
+                df_score = inertia_score(historical_data_filtered, corte=corte, ohlc_data=historical_ohlc)
                 if df_score is None or not df_score:
                     continue
 
@@ -316,7 +417,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                 equity.append(new_eq)
                 dates.append(date)
 
-                # Guardar picks
+                # Guardar picks con información de validez histórica
                 for rank, ticker in enumerate(valid_tickers[:top_n], 1):
                     try:
                         inercia_val = 0
@@ -338,7 +439,8 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                             "Rank": rank,
                             "Ticker": str(ticker),
                             "Inercia": float(inercia_val) if not pd.isna(inercia_val) else 0,
-                            "ScoreAdj": float(score_adj_val) if not pd.isna(score_adj_val) else 0
+                            "ScoreAdj": float(score_adj_val) if not pd.isna(score_adj_val) else 0,
+                            "HistoricallyValid": ticker in valid_tickers_for_date  # Nueva columna
                         })
                     except Exception as e:
                         print(f"Error procesando pick {ticker}: {e}")
@@ -363,7 +465,14 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
         })
         picks_df = pd.DataFrame(picks_list)
         
-        print(f"✅ Backtest completado. Equity final: {equity_series.iloc[-1]:.2f}")
+        print(f"✅ Backtest completado con verificación histórica. Equity final: {equity_series.iloc[-1]:.2f}")
+        
+        # Estadísticas adicionales
+        if not picks_df.empty and 'HistoricallyValid' in picks_df.columns:
+            total_picks = len(picks_df)
+            valid_picks = picks_df['HistoricallyValid'].sum()
+            print(f"📊 Picks históricamente válidos: {valid_picks}/{total_picks} ({valid_picks/total_picks*100:.1f}%)")
+        
         return bt, picks_df
 
     except Exception as e:
