@@ -260,17 +260,31 @@ def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
     # Calcular exceso de retornos
     excess_returns = returns - risk_free_rate_monthly
     
+    # Protección contra valores inválidos
+    excess_returns = excess_returns.dropna()
+    
+    if len(excess_returns) < 2:
+        return 0.0
+    
     # Calcular desviación estándar de exceso de retornos
     std_excess = excess_returns.std()
     
-    # Si no hay volatilidad, Sharpe = 0
-    if std_excess == 0 or np.isnan(std_excess):
+    # Si no hay volatilidad o std es cero/nan/inf, Sharpe = 0
+    if std_excess == 0 or np.isnan(std_excess) or np.isinf(std_excess):
         return 0.0
     
     # Calcular Sharpe Ratio anualizado
-    sharpe_ratio = (excess_returns.mean() * 12) / (std_excess * np.sqrt(12))
+    mean_excess = excess_returns.mean()
+    if np.isnan(mean_excess) or np.isinf(mean_excess):
+        return 0.0
+        
+    sharpe_ratio = (mean_excess * 12) / (std_excess * np.sqrt(12))
     
-    return sharpe_ratio if not np.isnan(sharpe_ratio) else 0.0
+    # Protección adicional
+    if np.isnan(sharpe_ratio) or np.isinf(sharpe_ratio):
+        return 0.0
+    
+    return sharpe_ratio
 
 def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_data=None, 
                  historical_info=None, fixed_allocation=False, use_roc_filter=False, 
