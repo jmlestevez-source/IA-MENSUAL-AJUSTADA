@@ -1,50 +1,68 @@
 import pandas as pd
 import numpy as np
 
-def calcular_atr_wilder(high, low, close, periods=14):
+def calcular_atr_amibroker(high, low, close, periods=14):
     """
-    Calcula el ATR exactamente como AmiBroker usando el método de Wilder
+    Calcula el ATR exactamente como AmiBroker - IDÉNTICO al código Python que funciona
     """
     prev_close = close.shift(1)
-    
+
     # True Range: máximo de tres valores
     hl = high - low  # High - Low
     hc = np.abs(high - prev_close)  # |High - PrevClose|
     lc = np.abs(low - prev_close)  # |Low - PrevClose|
-    
+
     # True Range es el máximo de los tres
-    tr = pd.DataFrame({'hl': hl, 'hc': hc, 'lc': lc}).max(axis=1)
-    
-    # ATR usando el método de Wilder
-    # Primer valor: media simple de los primeros 'periods' valores
-    atr = pd.Series(index=tr.index, dtype=float)
-    
-    # Calcular la media simple inicial
-    if len(tr) >= periods:
-        atr.iloc[periods-1] = tr.iloc[:periods].mean()
-        
-        # Aplicar la fórmula de Wilder para los siguientes valores
-        for i in range(periods, len(tr)):
-            atr.iloc[i] = (atr.iloc[i-1] * (periods - 1) + tr.iloc[i]) / periods
-    
+    tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
+
+    # ATR usando el método de Wilder - EXACTO como en el código Python
+    atr = tr.rolling(window=periods).mean()
+
+    # Aplicar la fórmula de Wilder para los siguientes valores
+    for i in range(periods, len(tr)):
+        if i == periods:
+            continue  # Ya tenemos el primer valor
+        atr.iloc[i] = (atr.iloc[i-1] * (periods - 1) + tr.iloc[i]) / periods
+
     return atr
 
-def monthly_true_range(high, low, close):
+def convertir_a_mensual_con_ohlc(ohlc_data):
     """
-    Calcula el True Range mensual - mantenido por compatibilidad
+    Convierte datos diarios OHLC a mensuales - EXACTO como en el código Python
     """
-    prev_close = close.shift(1)
-    tr = pd.DataFrame({
-        'hl': np.abs(high - low),
-        'hc': np.abs(high - prev_close),
-        'lc': np.abs(low - prev_close)
-    }).max(axis=1)
-    return tr
+    monthly_data = {}
+    
+    for ticker, data in ohlc_data.items():
+        try:
+            # Crear DataFrame con OHLC
+            df = pd.DataFrame({
+                'High': data['High'],
+                'Low': data['Low'],
+                'Close': data['Close']
+            })
+            
+            # Agregación mensual - EXACTA como en el código Python
+            df_monthly = df.resample('ME').agg({
+                'High': 'max',   # Máximo del mes
+                'Low': 'min',    # Mínimo del mes  
+                'Close': 'last'  # Cierre del último día del mes
+            })
+            
+            monthly_data[ticker] = {
+                'High': df_monthly['High'],
+                'Low': df_monthly['Low'],
+                'Close': df_monthly['Close']
+            }
+            
+        except Exception as e:
+            print(f"Error convirtiendo {ticker} a mensual: {e}")
+            continue
+    
+    return monthly_data
 
-def inertia_score(monthly_prices_df, corte=680):
+def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
     """
-    Calcula el score de inercia correctamente replicando el código AFL
-    con el método exacto de AmiBroker para el ATR
+    Calcula el score de inercia - IDÉNTICO al código Python que funciona
     """
     if monthly_prices_df is None or monthly_prices_df.empty:
         return pd.DataFrame()
@@ -52,83 +70,84 @@ def inertia_score(monthly_prices_df, corte=680):
     try:
         results = {}
         
+        # Si tenemos datos OHLC reales, usarlos
+        if ohlc_data:
+            monthly_ohlc = convertir_a_mensual_con_ohlc(ohlc_data)
+        else:
+            monthly_ohlc = None
+        
         for ticker in monthly_prices_df.columns:
             try:
-                # Obtener serie de precios para este ticker
-                close = monthly_prices_df[ticker].dropna()
-                
+                # Si tenemos datos OHLC reales, usarlos
+                if monthly_ohlc and ticker in monthly_ohlc:
+                    high = monthly_ohlc[ticker]['High']
+                    low = monthly_ohlc[ticker]['Low']
+                    close = monthly_ohlc[ticker]['Close']
+                else:
+                    # Fallback: usar solo Close (esto debería evitarse)
+                    close = monthly_prices_df[ticker].dropna()
+                    if len(close) < 15:
+                        continue
+                    
+                    # Mensualizar si es necesario
+                    if close.index.freq != 'ME' and close.index.freq != 'M':
+                        close = close.resample('ME').last()
+                    
+                    # Estimar High/Low (menos preciso)
+                    monthly_returns = close.pct_change().dropna()
+                    vol = monthly_returns.rolling(3).std().fillna(0.02)
+                    vol = vol.clip(0.005, 0.03)
+                    
+                    high = close * (1 + vol * 0.5)
+                    low = close * (1 - vol * 0.5)
+                    high = pd.Series(np.maximum(high, close), index=close.index)
+                    low = pd.Series(np.minimum(low, close), index=close.index)
+
                 if len(close) < 15:
                     continue
+
+                # CÁLCULOS EXACTOS COMO EN EL CÓDIGO PYTHON QUE FUNCIONA
                 
-                # Para datos CSV que ya están mensualizados, estimamos High y Low
-                # Calcular volatilidad mensual promedio
-                monthly_returns = close.pct_change()
-                monthly_vol = monthly_returns.rolling(3).std()
-                
-                # Estimar High y Low basándonos en la volatilidad
-                volatility_factor = monthly_vol.fillna(0.02)  # Default 2% si no hay datos
-                high = close * (1 + volatility_factor)
-                low = close * (1 - volatility_factor)
-                
-                # Asegurar que High >= Close >= Low
-                high = pd.Series(np.maximum(high, close), index=close.index)
-                low = pd.Series(np.minimum(low, close), index=close.index)
-                
-                # Calcular ROC como porcentaje (AmiBroker style)
-                roc_10_percent = ((close - close.shift(10)) / close.shift(10)) * 100
-                
-                # Aplicar los pesos según el código AFL
-                roc_10_w1 = roc_10_percent * 0.4
-                roc_10_w2 = roc_10_percent * 0.2
-                f1 = roc_10_w1 + roc_10_w2  # Total: ROC * 0.6
-                
-                # Calcular ATR(14) con el método de Wilder
-                atr14 = calcular_atr_wilder(high, low, close, periods=14)
-                
+                # Calcular ROC de 10 meses (en porcentaje)
+                roc_10 = ((close - close.shift(10)) / close.shift(10)) * 100
+
+                # F1 = ROC(10) * 0.6 (0.4 + 0.2)
+                f1 = roc_10 * 0.6
+
+                # Calcular ATR(14) exactamente como AmiBroker
+                atr_14 = calcular_atr_amibroker(high, low, close, periods=14)
+
                 # Calcular SMA(14)
-                sma14 = close.rolling(14).mean()
-                
-                # Calcular F2 = (ATR14/MA(C,14))*0.4
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    volatility_ratio = atr14 / sma14
-                    f2 = volatility_ratio * 0.4
-                    
-                    # Manejar valores problemáticos
-                    f2 = f2.replace([np.inf, -np.inf], np.nan)
-                    f2 = f2.fillna(0.01)
-                    f2 = f2.apply(lambda x: max(x, 0.0001) if not pd.isna(x) else 0.0001)
-                
-                # Calcular Inercia Alcista = F1 / F2
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    inercia_alcista = f1 / f2
-                    inercia_alcista = inercia_alcista.replace([np.inf, -np.inf], 0)
-                    inercia_alcista = inercia_alcista.fillna(0)
-                
-                # Aplicar corte
-                score = pd.Series(
-                    np.where(inercia_alcista < corte, 0, np.maximum(inercia_alcista, 0)),
-                    index=inercia_alcista.index
-                )
-                
-                # Score Ajustado = Score / ATR14
-                atr14_safe = atr14.copy()
-                atr14_safe = atr14_safe.fillna(1.0)
-                atr14_safe = atr14_safe.apply(lambda x: max(x, 0.01) if not pd.isna(x) else 0.01)
-                
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    score_adj = score / atr14_safe
-                    score_adj = score_adj.replace([np.inf, -np.inf], 0)
-                    score_adj = score_adj.fillna(0)
+                sma_14 = close.rolling(14).mean()
+
+                # F2 = (ATR14/SMA14) * 0.4
+                volatility_ratio = atr_14 / sma_14
+                f2 = volatility_ratio * 0.4
+
+                # Inercia Alcista = F1 / F2
+                inercia_alcista = f1 / f2
+
+                # Score = Inercia si >= corte, sino 0
+                score = np.where(inercia_alcista >= corte, inercia_alcista, 0)
+                score = pd.Series(score, index=inercia_alcista.index)
+
+                # Score Adjusted = Score / ATR14
+                score_adjusted = score / atr_14
+
+                # Limpiar valores infinitos y NaN
+                inercia_alcista = inercia_alcista.replace([np.inf, -np.inf], np.nan).fillna(0)
+                score = score.replace([np.inf, -np.inf], np.nan).fillna(0)
+                score_adjusted = score_adjusted.replace([np.inf, -np.inf], np.nan).fillna(0)
                 
                 # Almacenar resultados
                 results[ticker] = {
                     "InerciaAlcista": inercia_alcista,
-                    "ATR14": atr14,
+                    "ATR14": atr_14,
                     "Score": score,
-                    "ScoreAdjusted": score_adj,
+                    "ScoreAdjusted": score_adjusted,
                     "F1": f1,
                     "F2": f2,
-                    "ROC10": roc_10_percent,
+                    "ROC10": roc_10,
                     "VolatilityRatio": volatility_ratio
                 }
                 
@@ -155,11 +174,9 @@ def inertia_score(monthly_prices_df, corte=680):
         print(f"Error en cálculo de inercia: {e}")
         return {}
 
-def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
+def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_data=None):
     try:
         print("Iniciando backtest...")
-        print(f"Forma de prices: {prices.shape if hasattr(prices, 'shape') else 'No shape'}")
-        print(f"Tipo de prices: {type(prices)}")
         
         # Validar entrada
         if prices is None or (hasattr(prices, 'empty') and prices.empty):
@@ -168,7 +185,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
             empty_picks = pd.DataFrame(columns=["Date", "Rank", "Ticker", "Inercia", "ScoreAdj"])
             return empty_bt, empty_picks
 
-        # Mensualizar precios
+        # Mensualizar precios (solo para el backtest, los cálculos usan OHLC)
         if isinstance(prices, pd.Series):
             prices_m = prices.resample('ME').last()
             prices_df_m = pd.DataFrame({'Close': prices_m})
@@ -176,9 +193,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
             try:
                 prices_m = prices.resample('ME').last()
                 prices_df_m = prices_m.copy()
-            except Exception as e:
-                print(f"Error mensualizando precios: {e}")
-                prices_m = prices
+            except Exception:
                 prices_df_m = prices.copy()
 
         # Mensualizar benchmark
@@ -190,7 +205,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
         except:
             bench_m = benchmark
 
-        if prices_df_m.empty or (hasattr(bench_m, 'empty') and bench_m.empty):
+        if prices_df_m.empty:
             print("❌ No hay datos mensuales suficientes")
             raise ValueError("No hay datos mensuales suficientes para el backtest")
 
@@ -207,20 +222,31 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
 
                 # Calcular scores usando datos históricos hasta la fecha anterior
                 historical_data = prices_df_m.loc[:prev_date].copy()
-                if len(historical_data) < 15:  # Necesitamos suficientes datos
+                if len(historical_data) < 15:
                     continue
 
-                df_score = inertia_score(historical_data, corte=corte)
-                if df_score is None or not df_score or len(historical_data) < 14:
+                # Pasar también los datos OHLC históricos
+                historical_ohlc = None
+                if ohlc_data:
+                    historical_ohlc = {}
+                    for ticker, data in ohlc_data.items():
+                        if ticker in historical_data.columns:
+                            historical_ohlc[ticker] = {
+                                'High': data['High'].loc[:prev_date],
+                                'Low': data['Low'].loc[:prev_date],
+                                'Close': data['Close'].loc[:prev_date]
+                            }
+
+                df_score = inertia_score(historical_data, corte=corte, ohlc_data=historical_ohlc)
+                if df_score is None or not df_score:
                     continue
 
-                # Obtener el último score ajustado
+                # Resto del código del backtest igual...
                 try:
                     if "ScoreAdjusted" in df_score:
                         score_adjusted_df = df_score["ScoreAdjusted"]
                         if not score_adjusted_df.empty and len(score_adjusted_df) > 0:
                             last_scores = score_adjusted_df.iloc[-1]
-                            # Convertir a Series si es necesario
                             if not isinstance(last_scores, pd.Series):
                                 if hasattr(last_scores, 'items'):
                                     last_scores = pd.Series(last_scores)
@@ -234,7 +260,6 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                     print(f"Error obteniendo scores: {e}")
                     continue
 
-                # Asegurarse de que last_scores es una Series y eliminar NaN
                 if not isinstance(last_scores, pd.Series):
                     continue
                     
@@ -244,14 +269,11 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                     continue
 
                 selected = last_scores.head(top_n).index.tolist()
-
                 if not selected:
                     continue
 
-                # Calcular retorno mensual
                 weight = 1.0 / len(selected)
 
-                # Obtener precios disponibles
                 try:
                     available_prices = prices_df_m.loc[date]
                     prev_prices = prices_df_m.loc[prev_date]
@@ -259,11 +281,9 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                     print(f"Error obteniendo precios para {date}: {e}")
                     continue
 
-                # Filtrar tickers válidos
                 valid_tickers = []
                 for ticker in selected:
                     try:
-                        # Verificar que el ticker exista en ambos períodos y tenga valores válidos
                         if (ticker in available_prices.index and 
                             ticker in prev_prices.index and
                             not pd.isna(available_prices[ticker]) and 
@@ -276,7 +296,6 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
                 if len(valid_tickers) == 0:
                     continue
 
-                # Calcular retornos
                 rets = pd.Series(dtype=float)
                 for ticker in valid_tickers:
                     try:
@@ -354,3 +373,8 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680):
         empty_bt = pd.DataFrame(columns=["Equity", "Returns", "Drawdown"])
         empty_picks = pd.DataFrame(columns=["Date", "Rank", "Ticker", "Inercia", "ScoreAdj"])
         return empty_bt, empty_picks
+
+# Mantener para compatibilidad
+def monthly_true_range(high, low, close):
+    """Función mantenida para compatibilidad"""
+    return calcular_atr_amibroker(high, low, close, periods=1)
