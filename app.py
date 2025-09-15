@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import time
 import numpy as np
 import os
+import requests
 
 # Importar nuestros módulos
 from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes
@@ -79,6 +80,105 @@ if use_roc_filter or use_sma_filter:
 
 # Botón de ejecución
 run_button = st.sidebar.button("🏃 Ejecutar backtest")
+
+# -------------------------------------------------
+# Constantes para gestión de cambios históricos
+# -------------------------------------------------
+GITHUB_RAW_URL = "https://raw.githubusercontent.com/jmlestevez-source/IA-MENSUAL-AJUSTADA/main/"
+LOCAL_CHANGES_DIR = "data/historical_changes"
+SP500_CHANGES_FILE = "sp500_changes.csv"
+NDX_CHANGES_FILE = "ndx_changes.csv"
+
+# -------------------------------------------------
+# Funciones para gestión de cambios históricos
+# -------------------------------------------------
+def ensure_local_changes_dir():
+    """Asegura que exista el directorio para cambios históricos"""
+    if not os.path.exists(LOCAL_CHANGES_DIR):
+        os.makedirs(LOCAL_CHANGES_DIR)
+
+def download_csv_from_github(filename):
+    """Descarga un CSV desde el repositorio de GitHub"""
+    url = GITHUB_RAW_URL + filename
+    local_path = os.path.join(LOCAL_CHANGES_DIR, filename)
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        
+        # Guardar el archivo localmente
+        with open(local_path, 'wb') as f:
+            f.write(response.content)
+        
+        # Cargar en DataFrame
+        df = pd.read_csv(local_path, parse_dates=["Date"])
+        return df
+    except Exception as e:
+        st.warning(f"⚠️ No se pudo descargar {filename} desde GitHub: {e}")
+        # Si no se puede descargar, intentar cargar desde local si existe
+        if os.path.exists(local_path):
+            try:
+                df = pd.read_csv(local_path, parse_dates=["Date"])
+                return df
+            except:
+                pass
+        return pd.DataFrame()
+
+def get_local_changes_file(filename):
+    """Obtiene el archivo de cambios local si existe"""
+    local_path = os.path.join(LOCAL_CHANGES_DIR, filename)
+    if os.path.exists(local_path):
+        try:
+            df = pd.read_csv(local_path, parse_dates=["Date"])
+            return df
+        except:
+            pass
+    return pd.DataFrame()
+
+def update_changes_with_new_data(index_name, current_changes_df):
+    """
+    Verifica y actualiza los cambios históricos con nuevos datos
+    """
+    filename = f"{index_name}_changes.csv"
+    local_path = os.path.join(LOCAL_CHANGES_DIR, filename)
+    
+    # Obtener cambios locales actuales
+    local_changes = get_local_changes_file(filename)
+    
+    if local_changes.empty:
+        st.info(f"📥 Descargando {filename} desde GitHub...")
+        local_changes = download_csv_from_github(filename)
+    
+    if local_changes.empty:
+        st.warning(f"⚠️ No se encontraron datos históricos para {index_name}")
+        # Usar los cambios actuales si no hay datos locales
+        if not current_changes_df.empty:
+            current_changes_df.to_csv(local_path, index=False)
+            st.success(f"💾 Guardado {len(current_changes_df)} cambios iniciales para {index_name}")
+        return current_changes_df
+    
+    # Encontrar la última fecha registrada
+    last_date = local_changes["Date"].max() if not local_changes.empty else datetime(1900, 1, 1)
+    
+    # Filtrar cambios nuevos desde la última fecha
+    if not current_changes_df.empty:
+        new_changes = current_changes_df[current_changes_df["Date"] > last_date]
+        
+        if not new_changes.empty:
+            # Combinar y eliminar duplicados
+            updated_changes = pd.concat([local_changes, new_changes], ignore_index=True)
+            updated_changes = updated_changes.drop_duplicates(subset=["Date", "Ticker", "Action"])
+            
+            # Guardar actualización
+            updated_changes.to_csv(local_path, index=False)
+            st.success(f"✅ Actualizados {len(new_changes)} nuevos cambios en {filename}")
+            
+            return updated_changes
+        else:
+            st.info(f"🔍 No hay nuevos cambios en {index_name} desde {last_date.date()}")
+            return local_changes
+    else:
+        return local_changes
 
 # -------------------------------------------------
 # Función para cargar datos desde CSV
@@ -302,7 +402,7 @@ if run_button:
             else:
                 st.success(f"✅ Benchmark {benchmark_ticker} cargado correctamente desde CSV")
             
-                        # ✅ NUEVO: Cargar SPY para filtros si es necesario
+            # ✅ NUEVO: Cargar SPY para filtros si es necesario
             spy_df = None
             if (use_roc_filter or use_sma_filter) and benchmark_ticker != "SPY":
                 st.info("📊 Cargando datos del SPY para filtros de mercado...")
@@ -321,6 +421,9 @@ if run_button:
                     st.success("✅ SPY cargado para filtros de mercado")
 
         with st.spinner("Ejecutando backtest..."):
+            # Asegurar directorio para cambios históricos
+            ensure_local_changes_dir()
+            
             # Asegurar que tenemos datos válidos para el benchmark
             if benchmark_df is not None and not benchmark_df.empty:
                 benchmark_series = benchmark_df[benchmark_ticker] if benchmark_ticker in benchmark_df.columns else benchmark_df.iloc[:, 0]
@@ -341,25 +444,31 @@ if run_button:
                     changes_data = pd.DataFrame()
                     changes_loaded = []
                     
+                    # Cargar y actualizar cambios del S&P 500
                     if index_choice in ["SP500", "Ambos (SP500 + NDX)"]:
                         try:
-                            sp500_changes = get_sp500_historical_changes()
-                            if not sp500_changes.empty:
-                                changes_data = pd.concat([changes_data, sp500_changes], ignore_index=True)
-                                changes_loaded.append(f"S&P 500: {len(sp500_changes)} cambios")
-                                st.success(f"✅ Cargados {len(sp500_changes)} cambios del S&P 500")
+                            sp500_changes_current = get_sp500_historical_changes()
+                            sp500_changes_updated = update_changes_with_new_data("sp500", sp500_changes_current)
+                            
+                            if not sp500_changes_updated.empty:
+                                changes_data = pd.concat([changes_data, sp500_changes_updated], ignore_index=True)
+                                changes_loaded.append(f"S&P 500: {len(sp500_changes_updated)} cambios")
+                                st.success(f"✅ Cargados {len(sp500_changes_updated)} cambios del S&P 500 (actualizados)")
                             else:
                                 st.warning("⚠️  No se pudieron cargar cambios del S&P 500")
                         except Exception as e:
                             st.error(f"❌ Error cargando S&P 500: {e}")
                     
+                    # Cargar y actualizar cambios del NASDAQ-100
                     if index_choice in ["NDX", "Ambos (SP500 + NDX)"]:
                         try:
-                            ndx_changes = get_nasdaq100_historical_changes()
-                            if not ndx_changes.empty:
-                                changes_data = pd.concat([changes_data, ndx_changes], ignore_index=True)
-                                changes_loaded.append(f"NASDAQ-100: {len(ndx_changes)} cambios")
-                                st.success(f"✅ Cargados {len(ndx_changes)} cambios del NASDAQ-100")
+                            ndx_changes_current = get_nasdaq100_historical_changes()
+                            ndx_changes_updated = update_changes_with_new_data("ndx", ndx_changes_current)
+                            
+                            if not ndx_changes_updated.empty:
+                                changes_data = pd.concat([changes_data, ndx_changes_updated], ignore_index=True)
+                                changes_loaded.append(f"NASDAQ-100: {len(ndx_changes_updated)} cambios")
+                                st.success(f"✅ Cargados {len(ndx_changes_updated)} cambios del NASDAQ-100 (actualizados)")
                             else:
                                 st.warning("⚠️  No se pudieron cargar cambios del NASDAQ-100")
                         except Exception as e:
@@ -586,7 +695,7 @@ if run_button:
                 bench_initial = float(bench_equity.iloc[0])
                 bench_total_return = (bench_final / bench_initial) - 1 if bench_initial != 0 else 0
                 
-                                # CAGR del benchmark
+                # CAGR del benchmark
                 if years > 0:
                     bench_cagr = (bench_final / bench_initial) ** (1/years) - 1
                 else:
@@ -875,7 +984,7 @@ if run_button:
                                         max_score_current = current_picks_df['Score Ajustado'].max()
                                         st.metric("Score Adj Máximo", f"{max_score_current:.2f}")
                                     
-                                                                        # Comparación con último backtest
+                                    # Comparación con último backtest
                                     if 'picks_df' in locals() and picks_df is not None and not picks_df.empty:
                                         st.subheader("🔄 Comparación con Últimos Picks del Backtest")
                                         
