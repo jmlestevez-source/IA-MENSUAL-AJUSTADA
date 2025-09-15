@@ -63,7 +63,7 @@ def convertir_a_mensual_con_ohlc(ohlc_data):
 
 def get_valid_tickers_for_date(target_date, historical_changes_data, current_tickers):
     """
-    Retorna los tickers que estaban válidos en el índice en una fecha específica
+    Retorna los tickers que estaban válidos en el índice en una fecha específica 
     
     Args:
         target_date: fecha objetivo
@@ -240,6 +240,38 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
         print(f"Error en cálculo de inercia: {e}")
         return {}
 
+def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
+    """
+    Calcula el Sharpe Ratio anualizado con tasa libre de riesgo
+    
+    Args:
+        returns: serie de retornos mensuales
+        risk_free_rate: tasa libre de riesgo anual (por defecto 2%)
+    
+    Returns:
+        sharpe_ratio: Sharpe Ratio anualizado
+    """
+    if len(returns) < 2:
+        return 0.0
+    
+    # Convertir tasa anual a mensual
+    risk_free_rate_monthly = risk_free_rate / 12
+    
+    # Calcular exceso de retornos
+    excess_returns = returns - risk_free_rate_monthly
+    
+    # Calcular desviación estándar de exceso de retornos
+    std_excess = excess_returns.std()
+    
+    # Si no hay volatilidad, Sharpe = 0
+    if std_excess == 0 or np.isnan(std_excess):
+        return 0.0
+    
+    # Calcular Sharpe Ratio anualizado
+    sharpe_ratio = (excess_returns.mean() * 12) / (std_excess * np.sqrt(12))
+    
+    return sharpe_ratio if not np.isnan(sharpe_ratio) else 0.0
+
 def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_data=None, 
                  historical_info=None, fixed_allocation=False, use_roc_filter=False, 
                  use_sma_filter=False, spy_data=None):
@@ -400,7 +432,6 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                     historical_ohlc = {}
                     for ticker in available_valid_tickers:
                         if ticker in ohlc_data:
-                            
                             historical_ohlc[ticker] = {
                                 'High': ohlc_data[ticker]['High'].loc[:prev_date],
                                 'Low': ohlc_data[ticker]['Low'].loc[:prev_date],
@@ -617,15 +648,14 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
 
         equity_series = pd.Series(equity, index=dates)
         returns = equity_series.pct_change().fillna(0)
-        # ... código anterior ...
         drawdown = (equity_series / equity_series.cummax() - 1).fillna(0)
 
-        bt = pd.DataFrame({  # <-- 4 espacios de indentación
-            "Equity": equity_series,  # <-- 8 espacios (4 más que la línea anterior)
-            "Returns": returns,       # <-- 8 espacios
-            "Drawdown": drawdown      # <-- 8 espacios
-        })  # <-- 4 espacios
-        picks_df = pd.DataFrame(picks_list) # <-- 4 espacios
+        bt = pd.DataFrame({
+            "Equity": equity_series,
+            "Returns": returns,
+            "Drawdown": drawdown
+        })
+        picks_df = pd.DataFrame(picks_list)
         
         print(f"✅ Backtest completado con verificación histórica. Equity final: {equity_series.iloc[-1]:.2f}")
         
