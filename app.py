@@ -8,7 +8,7 @@ import numpy as np
 import os
 
 # Importar nuestros módulos
-from data_loader import get_constituents_at_date
+from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes
 from backtest import run_backtest, inertia_score, calcular_atr_amibroker
 
 # -------------------------------------------------
@@ -40,6 +40,13 @@ start_date = st.sidebar.date_input("Fecha inicial", end_date - timedelta(days=36
 top_n = st.sidebar.slider("Número de activos", 5, 30, 10)
 commission = st.sidebar.number_input("Comisión por operación (%)", 0.0, 1.0, 0.3) / 100
 corte = st.sidebar.number_input("Corte de score", 0, 1000, 680)
+
+# Nueva opción para verificación histórica
+use_historical_verification = st.sidebar.checkbox(
+    "🕐 Usar verificación histórica de constituyentes", 
+    value=True,
+    help="Verifica que los tickers estuvieran realmente en el índice en cada fecha histórica"
+)
 
 # Botón de ejecución
 run_button = st.sidebar.button("🏃 Ejecutar backtest")
@@ -86,7 +93,8 @@ def load_prices_from_csv(tickers, start_date, end_date, load_full_data=True):
                 st.warning(f"Error cargando datos de {ticker}: {e}")
                 continue
         else:
-            st.warning(f"Archivo no encontrado: {csv_path}")
+            # Silencioso para tickers que no existen (común en verificación histórica)
+            continue
     
     if prices_data:
         prices_df = pd.DataFrame(prices_data)
@@ -124,16 +132,30 @@ if run_button:
                     # Combinar tickers y datos
                     all_tickers_data['tickers'].extend(constituents_data.get('tickers', []))
                     all_tickers_data['data'].extend(constituents_data.get('data', []))
+                    # Preservar información histórica
+                    if 'historical_data_available' in constituents_data:
+                        all_tickers_data['historical_data_available'] = constituents_data['historical_data_available']
+                    if 'changes_processed' in constituents_data:
+                        all_tickers_data['changes_processed'] = constituents_data.get('changes_processed', 0)
             
-            # Verificar fechas de incorporación
+            # Verificar fechas de incorporación y datos históricos
             if all_tickers_data and 'data' in all_tickers_data:
-                st.info(f"📅 Verificando fechas de incorporación...")
-                # Mostrar algunos ejemplos de fechas
-                sample_data = all_tickers_data['data'][:5] if all_tickers_data['data'] else []
-                if sample_data:
-                    for item in sample_data:
-                        if isinstance(item, dict) and 'added' in item:
-                            st.text(f"  {item.get('ticker', 'N/A')}: agregado el {item.get('added', 'N/A')}")
+                if all_tickers_data.get('historical_data_available', False):
+                    st.success(f"✅ Datos históricos disponibles - Verificación de fechas activa")
+                    st.info(f"📅 Cambios procesados: {all_tickers_data.get('changes_processed', 0)}")
+                    # Mostrar algunos ejemplos de fechas
+                    sample_data = all_tickers_data['data'][:5] if all_tickers_data['data'] else []
+                    if sample_data:
+                        st.text("🔍 Ejemplos de fechas de incorporación:")
+                        for item in sample_data:
+                            if isinstance(item, dict):
+                                ticker = item.get('ticker', 'N/A')
+                                added = item.get('added', 'Unknown')
+                                status = item.get('status', 'N/A')
+                                st.text(f"  • {ticker}: agregado el {added} ({status})")
+                else:
+                    st.warning("⚠️  Datos históricos no disponibles - Usando constituyentes actuales")
+                    st.info("💡 El backtest usará todos los tickers disponibles sin verificación histórica")
             
             # Eliminar duplicados de tickers manteniendo el orden
             if all_tickers_data['tickers']:
@@ -176,11 +198,33 @@ if run_button:
                 st.info("2. Asegúrate de que los archivos tengan la columna 'Date' como índice")
                 st.info("3. Verifica que los archivos contengan columnas de precios (Close, Adj Close)")
                 st.info("4. Prueba con un rango de fechas más corto")
+                
+                # Información sobre tickers que no se pudieron cargar
+                missing_tickers = set(all_tickers_data['tickers']) - set(prices_df.columns if not prices_df.empty else [])
+                if missing_tickers:
+                    st.warning(f"🔍 Tickers sin datos CSV disponibles: {len(missing_tickers)}")
+                    if len(missing_tickers) <= 20:
+                        st.text(f"Faltantes: {', '.join(sorted(missing_tickers))}")
+                    else:
+                        st.text(f"Primeros 20 faltantes: {', '.join(sorted(list(missing_tickers))[:20])}")
+                
                 st.stop()
             
+            # Información sobre cobertura de datos
+            available_tickers = set(prices_df.columns)
+            requested_tickers = set(all_tickers_data['tickers'])
+            missing_tickers = requested_tickers - available_tickers
+            
+            coverage_pct = len(available_tickers) / len(requested_tickers) * 100 if requested_tickers else 0
+            
             st.success(f"✅ Cargados precios para {len(prices_df.columns)} tickers")
-            st.info(f"Rango de fechas: {prices_df.index.min().strftime('%Y-%m-%d')} a {prices_df.index.max().strftime('%Y-%m-%d')}")
-            st.info(f"Muestra de tickers: {', '.join(list(prices_df.columns)[:5])}")
+            st.info(f"📊 Cobertura de datos: {coverage_pct:.1f}% ({len(available_tickers)}/{len(requested_tickers)})")
+            st.info(f"📅 Rango de fechas: {prices_df.index.min().strftime('%Y-%m-%d')} a {prices_df.index.max().strftime('%Y-%m-%d')}")
+            
+            if missing_tickers and len(missing_tickers) <= 10:
+                st.warning(f"⚠️  Tickers sin datos: {', '.join(sorted(missing_tickers))}")
+            elif missing_tickers:
+                st.warning(f"⚠️  {len(missing_tickers)} tickers sin datos CSV disponibles")
 
             # Cargar benchmark desde CSV
             if index_choice == "SP500":
@@ -227,15 +271,60 @@ if run_button:
             if prices_df.empty or len(prices_df) < 20:
                 st.error("❌ No hay suficientes datos para ejecutar el backtest (se necesitan al menos 20 períodos)")
                 st.stop()
+            
+            # Preparar información histórica para el backtest si está habilitada
+            historical_info = None
+            if use_historical_verification and all_tickers_data.get('historical_data_available', False):
+                try:
+                    st.info("🔍 Preparando datos históricos para verificación de constituyentes...")
+                    
+                    changes_data = pd.DataFrame()
+                    if index_choice in ["SP500", "Ambos (SP500 + NDX)"]:
+                        sp500_changes = get_sp500_historical_changes()
+                        if not sp500_changes.empty:
+                            changes_data = pd.concat([changes_data, sp500_changes], ignore_index=True)
+                            st.success(f"✅ Cargados {len(sp500_changes)} cambios del S&P 500")
+                    
+                    if index_choice in ["NDX", "Ambos (SP500 + NDX)"]:
+                        ndx_changes = get_nasdaq100_historical_changes()
+                        if not ndx_changes.empty:
+                            changes_data = pd.concat([changes_data, ndx_changes], ignore_index=True)
+                            st.success(f"✅ Cargados {len(ndx_changes)} cambios del NASDAQ-100")
+                    
+                    if not changes_data.empty:
+                        # Eliminar duplicados y ordenar
+                        changes_data = changes_data.drop_duplicates(subset=['Date', 'Ticker', 'Action'])
+                        changes_data = changes_data.sort_values('Date', ascending=False)
+                        
+                        historical_info = {
+                            'changes_data': changes_data,
+                            'has_historical_data': True
+                        }
+                        st.success(f"✅ Verificación histórica activa con {len(changes_data)} cambios")
+                        
+                        # Mostrar estadísticas de cambios
+                        date_range = f"{changes_data['Date'].min()} a {changes_data['Date'].max()}"
+                        st.info(f"📊 Rango de cambios históricos: {date_range}")
+                        
+                    else:
+                        st.warning("⚠️  No se pudieron cargar datos históricos, continuando sin verificación")
+                        
+                except Exception as e:
+                    st.warning(f"⚠️  Error cargando datos históricos: {e}")
+                    st.info("Continuando backtest sin verificación histórica")
+            
+            elif use_historical_verification:
+                st.warning("⚠️  Verificación histórica solicitada pero no hay datos históricos disponibles")
                 
-            # Ejecutar backtest con datos OHLC
+            # Ejecutar backtest con datos OHLC e información histórica
             bt_results, picks_df = run_backtest(
                 prices=prices_df,
                 benchmark=benchmark_series,
                 commission=commission,
                 top_n=top_n,
                 corte=corte,
-                ohlc_data=ohlc_data  # Pasar los datos OHLC
+                ohlc_data=ohlc_data,  # Pasar los datos OHLC
+                historical_info=historical_info  # Nueva información histórica
             )
             
             if bt_results is None or bt_results.empty or len(bt_results) < 2:
@@ -302,6 +391,12 @@ if run_button:
             col3.metric("CAGR", f"{cagr:.2%}")
             col4.metric("Máximo Drawdown", f"{max_drawdown:.2%}")
             col5.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
+
+            # Información sobre verificación histórica
+            if historical_info and historical_info.get('has_historical_data', False):
+                st.info("✅ Este backtest incluye verificación histórica de constituyentes")
+            else:
+                st.warning("⚠️  Este backtest NO incluye verificación histórica (posible sesgo de supervivencia)")
 
             # Calcular y mostrar métricas del benchmark
             if bench_equity is not None and len(bench_equity) > 0:
@@ -431,12 +526,36 @@ if run_button:
                     latest_date = picks_df["Date"].max()
                     latest_picks = picks_df[picks_df["Date"] == latest_date]
                     if not latest_picks.empty:
-                        st.dataframe(latest_picks.round(2))
+                        # Mostrar información de validez histórica si está disponible
+                        if 'HistoricallyValid' in latest_picks.columns:
+                            valid_count = latest_picks['HistoricallyValid'].sum()
+                            total_count = len(latest_picks)
+                            st.info(f"📊 Picks históricamente válidos: {valid_count}/{total_count} ({valid_count/total_count*100:.1f}%)")
+                        
+                        display_picks = latest_picks.round(2)
+                        st.dataframe(display_picks)
                     else:
                         st.info("No hay picks recientes para mostrar")
                     
                     # Mostrar picks de todos los meses
                     st.subheader("Todos los picks por mes")
+                    
+                    # Estadísticas de validez histórica si están disponibles
+                    if 'HistoricallyValid' in picks_df.columns:
+                        total_picks = len(picks_df)
+                        valid_picks = picks_df['HistoricallyValid'].sum()
+                        validity_rate = valid_picks / total_picks * 100 if total_picks > 0 else 0
+                        
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Total de Picks", total_picks)
+                        col2.metric("Picks Válidos", valid_picks)
+                        col3.metric("% Validez Histórica", f"{validity_rate:.1f}%")
+                        
+                        if validity_rate < 90:
+                            st.warning(f"⚠️  Solo {validity_rate:.1f}% de los picks fueron históricamente válidos")
+                        else:
+                            st.success(f"✅ {validity_rate:.1f}% de los picks fueron históricamente válidos")
+                    
                     st.dataframe(picks_df.round(2))
                     
                     # Gráfico de picks por fecha
@@ -459,7 +578,7 @@ if run_button:
             else:
                 st.info("No se generaron picks en este backtest")
 
-                        # -------------------------------------------------
+            # -------------------------------------------------
             # Señales Actuales (Vela en Formación)
             # -------------------------------------------------
             with st.expander("🔮 Señales Actuales - Vela en Formación", expanded=True):
@@ -592,10 +711,6 @@ if run_button:
                                         textposition='auto'
                                     ))
                                     
-                                    # Línea de corte convertida a score ajustado (aproximada)
-                                    # fig_comparison.add_hline(y=50, line_dash="dash", line_color="red", 
-                                    #                         annotation_text="Referencia Score Adj")
-                                    
                                     fig_comparison.update_layout(
                                         title="Score Ajustado - Señales Actuales",
                                         xaxis_title="Ticker",
@@ -637,234 +752,63 @@ if run_button:
                     st.exception(e)
 
             # -------------------------------------------------
-            # Sección de Debug de Cálculos - MÉTODO AMIBROKER
+            # Información adicional sobre verificación histórica
             # -------------------------------------------------
-            with st.expander("🔍 Debug de Cálculos de Inercia (Método AmiBroker)", expanded=False):
-                if 'prices_df' in locals() and prices_df is not None and not prices_df.empty:
-                    st.subheader("Análisis detallado de cálculos - Réplica exacta de AmiBroker")
+            if historical_info and historical_info.get('has_historical_data', False):
+                with st.expander("🕐 Detalles de Verificación Histórica", expanded=False):
+                    st.subheader("Información sobre la verificación histórica")
                     
-                    # Crear una copia de los tickers disponibles
-                    available_tickers = sorted(list(prices_df.columns))
+                    changes_data = historical_info['changes_data']
                     
-                    # Usar session state para mantener el ticker seleccionado
-                    if 'debug_ticker' not in st.session_state:
-                        st.session_state.debug_ticker = available_tickers[0] if available_tickers else None
+                    st.info(f"""
+                    **Datos históricos procesados:**
+                    - Total de cambios: {len(changes_data)}
+                    - Rango temporal: {changes_data['Date'].min()} a {changes_data['Date'].max()}
+                    - Agregaciones: {len(changes_data[changes_data['Action'] == 'Added'])}
+                    - Remociones: {len(changes_data[changes_data['Action'] == 'Removed'])}
+                    """)
                     
-                    debug_ticker = st.selectbox(
-                        "Selecciona un ticker para analizar:",
-                        available_tickers,
-                        index=available_tickers.index(st.session_state.debug_ticker) if st.session_state.debug_ticker in available_tickers else 0,
-                        key="debug_ticker_select"
-                    )
+                    # Mostrar algunos cambios recientes
+                    st.subheader("Cambios recientes en los índices")
+                    recent_changes = changes_data.head(10)
+                    st.dataframe(recent_changes)
                     
-                    if st.button("Analizar Ticker", key="debug_analyze"):
-                        st.session_state.debug_ticker = debug_ticker
+                    # Gráfico de cambios por año
+                    try:
+                        changes_by_year = changes_data.copy()
+                        changes_by_year['Year'] = pd.to_datetime(changes_by_year['Date']).dt.year
+                        changes_summary = changes_by_year.groupby(['Year', 'Action']).size().unstack(fill_value=0)
                         
-                        # Usar datos OHLC si están disponibles
-                        if ohlc_data and debug_ticker in ohlc_data:
-                            st.success("✅ Usando datos OHLC reales del CSV")
+                        if not changes_summary.empty:
+                            fig_changes = go.Figure()
                             
-                            # Convertir a mensual
-                            high_daily = ohlc_data[debug_ticker]['High']
-                            low_daily = ohlc_data[debug_ticker]['Low']
-                            close_daily = ohlc_data[debug_ticker]['Close']
+                            if 'Added' in changes_summary.columns:
+                                fig_changes.add_trace(go.Bar(
+                                    x=changes_summary.index,
+                                    y=changes_summary['Added'],
+                                    name='Agregados',
+                                    marker_color='green'
+                                ))
                             
-                            # Crear DataFrame para resample
-                            ohlc_df = pd.DataFrame({
-                                'High': high_daily,
-                                'Low': low_daily,
-                                'Close': close_daily
-                            })
+                            if 'Removed' in changes_summary.columns:
+                                fig_changes.add_trace(go.Bar(
+                                    x=changes_summary.index,
+                                    y=changes_summary['Removed'],
+                                    name='Removidos',
+                                    marker_color='red'
+                                ))
                             
-                            # Convertir a mensual EXACTO como en el código Python
-                            monthly_ohlc = ohlc_df.resample('ME').agg({
-                                'High': 'max',   # Máximo del mes
-                                'Low': 'min',    # Mínimo del mes
-                                'Close': 'last'  # Cierre del último día del mes
-                            })
+                            fig_changes.update_layout(
+                                title="Cambios en Índices por Año",
+                                xaxis_title="Año",
+                                yaxis_title="Número de Cambios",
+                                barmode='group',
+                                height=400
+                            )
                             
-                            high = monthly_ohlc['High']
-                            low = monthly_ohlc['Low']
-                            close = monthly_ohlc['Close']
-                            
-                        else:
-                            st.warning("⚠️ No hay datos OHLC, usando estimación basada en Close")
-                            # Fallback a estimación
-                            ticker_data = prices_df[[debug_ticker]].dropna()
-                            ticker_monthly = ticker_data.resample('ME').last()
-                            close = ticker_monthly[debug_ticker]
-                            
-                            # Estimar High y Low
-                            monthly_returns = close.pct_change()
-                            monthly_vol = monthly_returns.rolling(3).std()
-                            volatility_factor = monthly_vol.fillna(0.02)
-                            high = close * (1 + volatility_factor)
-                            low = close * (1 - volatility_factor)
-                            high = pd.Series(np.maximum(high, close), index=close.index)
-                            low = pd.Series(np.minimum(low, close), index=close.index)
-                        
-                        if len(close) >= 15:
-                            # CÁLCULOS EXACTOS COMO EN EL CÓDIGO PYTHON QUE FUNCIONA
-                            
-                            # Calcular ROC de 10 meses (en porcentaje)
-                            roc_10 = ((close - close.shift(10)) / close.shift(10)) * 100
-                            
-                            # F1 = ROC(10) * 0.6 (0.4 + 0.2)
-                            f1 = roc_10 * 0.6
-                            
-                            # Calcular ATR(14) exactamente como AmiBroker
-                            atr_14 = calcular_atr_amibroker(high, low, close, periods=14)
-                            
-                            # Calcular SMA(14)
-                            sma_14 = close.rolling(14).mean()
-                            
-                            # F2 = (ATR14/SMA14) * 0.4
-                            volatility_ratio = atr_14 / sma_14
-                            f2 = volatility_ratio * 0.4
-                            
-                            # Inercia Alcista = F1 / F2
-                            inercia_alcista = f1 / f2
-                            
-                            # Score = Inercia si >= corte, sino 0
-                            score = np.where(inercia_alcista >= corte, inercia_alcista, 0)
-                            score = pd.Series(score, index=inercia_alcista.index)
-                            
-                            # Score Adjusted = Score / ATR14
-                            score_adjusted = score / atr_14
-                            
-                            # Limpiar valores infinitos y NaN
-                            inercia_alcista = inercia_alcista.replace([np.inf, -np.inf], np.nan).fillna(0)
-                            score = score.replace([np.inf, -np.inf], np.nan).fillna(0)
-                            score_adjusted = score_adjusted.replace([np.inf, -np.inf], np.nan).fillna(0)
-                            
-                            # Mostrar últimos valores
-                            st.subheader(f"📊 Últimos valores para {debug_ticker}")
-                            
-                            # Información del método
-                            st.info("""
-                            **Método AmiBroker:**
-                            - Datos mensuales: High=max(mes), Low=min(mes), Close=último día
-                            - ROC(10) en porcentaje = ((Close - Close_10) / Close_10) × 100
-                            - F1 = ROC(10) × 0.6
-                            - ATR(14) método Wilder: primer valor = media simple, luego ATR = ((ATR_prev × 13) + TR) / 14
-                            - F2 = (ATR14/SMA14) × 0.4
-                            - Inercia = F1/F2
-                            - Score Adjusted = Score/ATR14
-                            """)
-                            
-                            col1, col2, col3 = st.columns(3)
-                            
-                            with col1:
-                                st.metric("High del mes", f"${high.iloc[-1]:.2f}")
-                                st.metric("Low del mes", f"${low.iloc[-1]:.2f}")
-                                st.metric("Close del mes", f"${close.iloc[-1]:.2f}")
-                                if len(close) > 10:
-                                    st.metric("Close hace 10 meses", f"${close.iloc[-11]:.2f}")
-                                st.metric("ROC(10)", f"{roc_10.iloc[-1]:.2f}%")
-                                st.metric("F1 (ROC×0.6)", f"{f1.iloc[-1]:.2f}")
-                            
-                            with col2:
-                                # Calcular True Range del último mes para mostrar
-                                prev_close = close.shift(1)
-                                hl = high - low
-                                hc = np.abs(high - prev_close)
-                                lc = np.abs(low - prev_close)
-                                tr = pd.concat([hl, hc, lc], axis=1).max(axis=1)
-                                
-                                st.metric("True Range", f"${tr.iloc[-1]:.2f}")
-                                st.metric("ATR(14) AmiBroker", f"${atr_14.iloc[-1]:.2f}")
-                                st.metric("SMA(14)", f"${sma_14.iloc[-1]:.2f}")
-                                st.metric("Ratio ATR/SMA", f"{volatility_ratio.iloc[-1]:.4f}")
-                                st.metric("F2 (Ratio×0.4)", f"{f2.iloc[-1]:.4f}")
-                            
-                            with col3:
-                                st.metric("Inercia Alcista", f"{inercia_alcista.iloc[-1]:.2f}")
-                                st.metric("Score", f"{score.iloc[-1]:.2f}")
-                                st.metric("Score Ajustado", f"{score_adjusted.iloc[-1]:.2f}")
-                            
-                            # Mostrar cálculo detallado
-                            idx = -1
-                            st.subheader("📝 Verificación paso a paso")
-                            st.code(f"""
-CÁLCULOS PASO A PASO PARA {debug_ticker} (Método AmiBroker):
-
-1. Datos del mes:
-   High: ${high.iloc[idx]:.2f}, Low: ${low.iloc[idx]:.2f}, Close: ${close.iloc[idx]:.2f}
-
-2. ROC(10) = ((Close - Close_10) / Close_10) × 100
-   ROC(10) = (({close.iloc[idx]:.2f} - {close.iloc[idx-10]:.2f}) / {close.iloc[idx-10]:.2f}) × 100 = {roc_10.iloc[idx]:.2f}%
-
-3. F1 = ROC(10) × 0.6 = {roc_10.iloc[idx]:.2f} × 0.6 = {f1.iloc[idx]:.2f}
-
-4. True Range = max(H-L, |H-Cprev|, |L-Cprev|) = {tr.iloc[idx]:.2f}
-
-5. ATR(14) método Wilder = {atr_14.iloc[idx]:.2f}
-
-6. SMA(14) = {sma_14.iloc[idx]:.2f}
-
-7. F2 = (ATR14/SMA14) × 0.4 = ({atr_14.iloc[idx]:.2f}/{sma_14.iloc[idx]:.2f}) × 0.4 = {f2.iloc[idx]:.4f}
-
-8. Inercia Alcista = F1/F2 = {f1.iloc[idx]:.2f}/{f2.iloc[idx]:.4f} = {inercia_alcista.iloc[idx]:.2f}
-
-9. Score = {score.iloc[idx]:.2f} (Inercia si >= {corte}, sino 0)
-
-10. Score Ajustado = Score/ATR14 = {score.iloc[idx]:.2f}/{atr_14.iloc[idx]:.2f} = {score_adjusted.iloc[idx]:.2f}
-                            """)
-                            
-                            # Mostrar si pasa el corte
-                            if inercia_alcista.iloc[idx] >= corte:
-                                st.success(f"✅ Inercia ({inercia_alcista.iloc[idx]:.2f}) >= {corte} - PASA EL CORTE")
-                            else:
-                                st.warning(f"❌ Inercia ({inercia_alcista.iloc[idx]:.2f}) < {corte} - NO PASA EL CORTE")
-                                
-                        else:
-                            st.error(f"No hay suficientes datos para {debug_ticker} (se necesitan al menos 15 meses)")
-                else:
-                    st.info("Ejecuta primero el backtest para poder analizar los cálculos")
-
-            # -------------------------------------------------
-            # Comparación con últimos picks
-            # -------------------------------------------------
-            if 'picks_df' in locals() and picks_df is not None and not picks_df.empty:
-                with st.expander("📊 Análisis de Consistencia de Picks"):
-                    st.subheader("Comparación de valores calculados")
-                    
-                    # Obtener últimos picks
-                    latest_date = picks_df["Date"].max()
-                    latest_picks = picks_df[picks_df["Date"] == latest_date].head(10)
-                    
-                    if not latest_picks.empty:
-                        # Crear tabla de análisis
-                        analysis_data = []
-                        for _, pick in latest_picks.iterrows():
-                            analysis_data.append({
-                                'Rank': pick['Rank'],
-                                'Ticker': pick['Ticker'],
-                                'Inercia Alcista': f"{pick['Inercia']:.2f}",
-                                'Score Ajustado': f"{pick['ScoreAdj']:.2f}",
-                                'Pasa Corte': '✅' if pick['Inercia'] >= corte else '❌'
-                            })
-                        
-                        analysis_df = pd.DataFrame(analysis_data)
-                        st.dataframe(analysis_df, use_container_width=True)
-                        
-                        # Métricas de resumen
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            avg_inercia = latest_picks['Inercia'].mean()
-                            st.metric("Promedio Inercia", f"{avg_inercia:.2f}")
-                        with col2:
-                            avg_score = latest_picks['ScoreAdj'].mean()
-                            st.metric("Promedio Score Adj", f"{avg_score:.2f}")
-                        with col3:
-                            pass_count = (latest_picks['Inercia'] >= corte).sum()
-                            st.metric("Tickers que pasan corte", f"{pass_count}/{len(latest_picks)}")
-                        
-                        # Advertencia si hay inconsistencias
-                        if avg_score > 350:
-                            st.warning("⚠️ Los valores de Score Ajustado están altos. En AmiBroker suelen estar por debajo de 350.")
-                        else:
-                            st.success("✅ Los valores de Score Ajustado están en el rango esperado de AmiBroker.")
+                            st.plotly_chart(fig_changes, use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Error creando gráfico de cambios: {e}")
 
     except Exception as e:
         st.error(f"❌ Excepción no capturada: {str(e)}")
@@ -874,10 +818,44 @@ CÁLCULOS PASO A PASO PARA {debug_ticker} (Método AmiBroker):
         st.info("2. Asegúrate de que los archivos tengan el formato correcto")
         st.info("3. Prueba con un rango de fechas más corto")
         st.info("4. Verifica que los tickers sean válidos")
+        st.info("5. Desactiva la verificación histórica si hay problemas de conectividad")
 
 else:
     st.info("👈 Configura los parámetros en el panel lateral y haz clic en 'Ejecutar backtest'")
-    st.info("💡 Consejos para mejores resultados:")
-    st.info("• Usa un rango de fechas de al menos 2 años")
-    st.info("• Comienza con 10 activos y ajusta según los resultados")
-    st.info("• Considera usar ambos índices para mayor diversificación")
+    
+    # Información sobre el sistema
+    st.subheader("🔍 Información del Sistema")
+    st.info("""
+    **Características principales:**
+    - ✅ Verificación histórica de constituyentes de índices (opcional)
+    - ✅ Cálculos de inercia compatibles con AmiBroker  
+    - ✅ Datos OHLC reales para cálculos precisos
+    - ✅ Eliminación del sesgo de supervivencia
+    - ✅ Señales actuales en tiempo real
+    
+    **Datos requeridos:**
+    - Archivos CSV en carpeta 'data/' con formato: TICKER.csv
+    - Columnas: Date, High, Low, Close, Adj Close (recomendado)
+    - Benchmark: SPY.csv y/o QQQ.csv
+    """)
+    
+    st.subheader("💡 Consejos para mejores resultados")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.info("""
+        **Configuración recomendada:**
+        • Usa un rango de fechas de al menos 2 años
+        • Comienza con 10 activos y ajusta según resultados
+        • Activa verificación histórica para mayor realismo
+        • Considera usar ambos índices para diversificación
+        """)
+    
+    with col2:
+        st.info("""
+        **Interpretación de resultados:**
+        • Score Ajustado: valores típicos entre 50-300
+        • Inercia Alcista: debe superar el corte (680)
+        • Validez histórica: >90% indica datos confiables
+        • Rotación mensual: 20-40% es normal
+        """)
