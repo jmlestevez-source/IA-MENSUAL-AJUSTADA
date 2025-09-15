@@ -1,6 +1,3 @@
-El error indica que hay un problema de indentación en el archivo **backtest.py**. Mi respuesta anterior se cortó. Aquí tienes el archivo **backtest.py** completo y corregido:
-
-```python
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
