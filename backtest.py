@@ -1,3 +1,6 @@
+El error indica que hay un problema de indentación en el archivo **backtest.py**. Mi respuesta anterior se cortó. Aquí tienes el archivo **backtest.py** completo y corregido:
+
+```python
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -343,4 +346,238 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                 # Calcular scores solo para tickers válidos
                 df_score = inertia_score(historical_data_filtered, corte=corte, ohlc_data=historical_ohlc)
                 if df_score is None or not df_score:
+
+                                    # Mantener equity igual (efectivo)
+                    equity.append(equity[-1])
+                    dates.append(date)
+                    continue
+
+                # ✅ CORREGIDO: Filtrar por corte ANTES de seleccionar
+                try:
+                    if "ScoreAdjusted" in df_score:
+                        score_adjusted_df = df_score["ScoreAdjusted"]
+                        if not score_adjusted_df.empty and len(score_adjusted_df) > 0:
+                            last_scores = score_adjusted_df.iloc[-1]
+                            if not isinstance(last_scores, pd.Series):
+                                if hasattr(last_scores, 'items'):
+                                    last_scores = pd.Series(last_scores)
+                                else:
+                                    last_scores = pd.Series(dtype=float)
+                        else:
+                            # Mantener equity igual (efectivo)
+                            equity.append(equity[-1])
+                            dates.append(date)
+                            continue
+                    else:
+                        # Mantener equity igual (efectivo)
+                        equity.append(equity[-1])
+                        dates.append(date)
+                        continue
+                except Exception as e:
+                    print(f"Error obteniendo scores: {e}")
                     # Mantener equity igual (efectivo)
+                    equity.append(equity[-1])
+                    dates.append(date)
+                    continue
+
+                if not isinstance(last_scores, pd.Series):
+                    # Mantener equity igual (efectivo)
+                    equity.append(equity[-1])
+                    dates.append(date)
+                    continue
+                    
+                last_scores = last_scores.dropna()
+
+                if len(last_scores) == 0:
+                    # Mantener equity igual (efectivo)
+                    equity.append(equity[-1])
+                    dates.append(date)
+                    continue
+
+                # ✅ NUEVO: Filtrar PRIMERO por corte de inercia
+                inercia_data = df_score.get("InerciaAlcista")
+                if inercia_data is not None and not inercia_data.empty:
+                    last_inercia = inercia_data.iloc[-1]
+                    
+                    # Filtrar solo tickers que pasan el corte
+                    valid_tickers_scores = []
+                    for ticker in last_scores.index:
+                        if ticker in last_inercia.index:
+                            inercia_val = last_inercia[ticker]
+                            score_adj_val = last_scores[ticker]
+                            
+                            # Solo incluir si pasa el corte Y tiene score ajustado > 0
+                            if inercia_val >= corte and score_adj_val > 0:
+                                valid_tickers_scores.append({
+                                    'ticker': ticker,
+                                    'inercia': inercia_val,
+                                    'score_adj': score_adj_val
+                                })
+                    
+                    if not valid_tickers_scores:
+                        print(f"⚠️ No hay tickers que pasen el corte en {prev_date}")
+                        # Mantener equity igual (efectivo)
+                        equity.append(equity[-1])
+                        dates.append(date)
+                        continue
+                    
+                    # Ordenar por score ajustado y seleccionar top N
+                    valid_tickers_scores = sorted(valid_tickers_scores, key=lambda x: x['score_adj'], reverse=True)
+                    selected_picks = valid_tickers_scores[:min(top_n, len(valid_tickers_scores))]
+                    selected = [pick['ticker'] for pick in selected_picks]
+                    
+                    print(f"📊 {prev_date.strftime('%Y-%m-%d')}: {len(selected)} tickers válidos seleccionados de {len(last_scores)} disponibles")
+                    
+                else:
+                    # Fallback si no hay datos de inercia
+                    selected = last_scores.sort_values(ascending=False).head(top_n).index.tolist()
+                    print(f"⚠️ Sin datos de inercia para {prev_date}, usando fallback")
+
+                if not selected:
+                    # Mantener equity igual (efectivo)
+                    equity.append(equity[-1])
+                    dates.append(date)
+                    continue
+
+                # El peso se distribuye equitativamente entre los seleccionados VÁLIDOS
+                weight = 1.0 / len(selected)
+                print(f"💰 Distribuyendo capital: {len(selected)} posiciones, {weight*100:.1f}% cada una")
+
+                try:
+                    available_prices = prices_df_m.loc[date]
+                    prev_prices = prices_df_m.loc[prev_date]
+                except Exception as e:
+                    print(f"Error obteniendo precios para {date}: {e}")
+                    # Mantener equity igual (efectivo)
+                    equity.append(equity[-1])
+                    dates.append(date)
+                    continue
+
+                valid_tickers = []
+                for ticker in selected:
+                    try:
+                        if (ticker in available_prices.index and 
+                            ticker in prev_prices.index and
+                            not pd.isna(available_prices[ticker]) and 
+                            not pd.isna(prev_prices[ticker]) and
+                            prev_prices[ticker] != 0):
+                            valid_tickers.append(ticker)
+                    except:
+                        continue
+
+                if len(valid_tickers) == 0:
+                    print(f"⚠️ No hay precios válidos para {date}")
+                    # Mantener equity igual (efectivo)
+                    equity.append(equity[-1])
+                    dates.append(date)
+                    continue
+
+                # Recalcular peso con tickers que tienen precios válidos
+                weight = 1.0 / len(valid_tickers)
+
+                rets = pd.Series(dtype=float)
+                for ticker in valid_tickers:
+                    try:
+                        prev_price = prev_prices[ticker]
+                        curr_price = available_prices[ticker]
+                        if prev_price != 0 and not pd.isna(prev_price) and not pd.isna(curr_price):
+                            ret_value = (curr_price / prev_price) - 1
+                            rets[ticker] = ret_value if not np.isinf(ret_value) and not np.isnan(ret_value) else 0
+                        else:
+                            rets[ticker] = 0
+                    except:
+                        rets[ticker] = 0
+
+                rets = rets.fillna(0)
+                port_ret = (rets * weight).sum() - commission
+                new_eq = equity[-1] * (1 + port_ret) if not np.isnan(port_ret) and not np.isinf(port_ret) else equity[-1]
+
+                equity.append(new_eq)
+                dates.append(date)
+
+                # Guardar picks SOLO para tickers válidos que fueron seleccionados
+                for rank, ticker in enumerate(valid_tickers, 1):
+                    try:
+                        inercia_val = 0
+                        score_adj_val = 0
+                        
+                        if "InerciaAlcista" in df_score:
+                            try:
+                                inercia_data = df_score["InerciaAlcista"]
+                                if isinstance(inercia_data, pd.DataFrame) and len(inercia_data) > 0 and ticker in inercia_data.columns:
+                                    inercia_val = inercia_data.iloc[-1][ticker] if len(inercia_data) > 0 else 0
+                            except:
+                                inercia_val = 0
+                        
+                        if ticker in last_scores.index:
+                            score_adj_val = last_scores[ticker]
+
+                        # ✅ VALIDACIÓN: Solo guardar si realmente pasa el corte
+                        if inercia_val >= corte and score_adj_val > 0:
+                            picks_list.append({
+                                "Date": date.strftime("%Y-%m-%d"),
+                                "Rank": rank,
+                                "Ticker": str(ticker),
+                                "Inercia": float(inercia_val) if not pd.isna(inercia_val) else 0,
+                                "ScoreAdj": float(score_adj_val) if not pd.isna(score_adj_val) else 0,
+                                "HistoricallyValid": ticker in valid_tickers_for_date
+                            })
+                        else:
+                            print(f"⚠️ ADVERTENCIA: {ticker} no debería estar seleccionado (Inercia: {inercia_val:.2f})")
+                            
+                    except Exception as e:
+                        print(f"Error procesando pick {ticker}: {e}")
+                        continue
+
+            except Exception as e:
+                print(f"Error en iteración {i}: {e}")
+                # Mantener equity igual en caso de error
+                equity.append(equity[-1])
+                dates.append(date)
+                continue
+
+        if len(equity) <= 1:
+            print("❌ No se generaron resultados de backtest")
+            raise ValueError("No se generaron resultados de backtest")
+
+        equity_series = pd.Series(equity, index=dates)
+        returns = equity_series.pct_change().fillna(0)
+        drawdown = (equity_series / equity_series.cummax() - 1).fillna(0)
+
+        bt = pd.DataFrame({
+            "Equity": equity_series,
+            "Returns": returns,
+            "Drawdown": drawdown
+        })
+        picks_df = pd.DataFrame(picks_list)
+        
+        print(f"✅ Backtest completado con verificación histórica. Equity final: {equity_series.iloc[-1]:.2f}")
+        
+        # Estadísticas adicionales
+        if not picks_df.empty and 'HistoricallyValid' in picks_df.columns:
+            total_picks = len(picks_df)
+            valid_picks = picks_df['HistoricallyValid'].sum()
+            print(f"📊 Picks históricamente válidos: {valid_picks}/{total_picks} ({valid_picks/total_picks*100:.1f}%)")
+        
+        # Estadísticas de selección
+        if not picks_df.empty:
+            picks_by_month = picks_df.groupby('Date').size()
+            avg_picks_per_month = picks_by_month.mean()
+            min_picks = picks_by_month.min()
+            max_picks = picks_by_month.max()
+            print(f"📈 Picks por mes - Promedio: {avg_picks_per_month:.1f}, Min: {min_picks}, Max: {max_picks}")
+        
+        return bt, picks_df
+
+    except Exception as e:
+        print(f"❌ Error crítico en run_backtest: {e}")
+        import traceback
+        traceback.print_exc()
+        empty_bt = pd.DataFrame(columns=["Equity", "Returns", "Drawdown"])
+        empty_picks = pd.DataFrame(columns=["Date", "Rank", "Ticker", "Inercia", "ScoreAdj"])
+        return empty_bt, empty_picks
+
+# Mantener para compatibilidad
+def monthly_true_range(high, low, close):
+    """Función mantenida para compatibilidad"""
+    return calcular_atr_amibroker(high, low, close, periods=1)    
