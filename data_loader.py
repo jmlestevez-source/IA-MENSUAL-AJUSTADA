@@ -68,6 +68,7 @@ def parse_wikipedia_date(date_str):
         except:
             return None
 
+
 def get_sp500_historical_changes():
     """Obtiene los cambios históricos del S&P 500 desde Wikipedia"""
     print("Descargando cambios históricos del S&P 500...")
@@ -86,90 +87,106 @@ def get_sp500_historical_changes():
         # La tabla de cambios del S&P 500 normalmente es la segunda tabla (índice 1)
         changes_df = None
         
-        # Buscar tabla que contenga "Effective Date" o "Date" y "Added/Removed"
+        # Buscar tabla que contenga la estructura específica del S&P 500
         for i, table in enumerate(tables):
-            # Convertir columnas a string para buscar
-            col_text = ' '.join([str(col) for col in table.columns]).lower()
+            print(f"Analizando tabla {i} con shape: {table.shape}")
+            print(f"Columnas: {table.columns.tolist()}")
             
-            if ('effective' in col_text or 'date' in col_text) and ('added' in col_text or 'removed' in col_text):
-                changes_df = table
-                print(f"Encontrada tabla de cambios S&P 500 en posición {i}")
-                break
+            # Verificar si es tabla multi-nivel
+            if hasattr(table.columns, 'nlevels') and table.columns.nlevels > 1:
+                print(f"Tabla {i} tiene {table.columns.nlevels} niveles de columnas")
+                # Buscar la estructura específica: Date, Added, Removed
+                level_0 = [str(col[0]).lower() for col in table.columns]
+                if any('date' in col or 'effective' in col for col in level_0) and 'added' in level_0 and 'removed' in level_0:
+                    changes_df = table
+                    print(f"✅ Encontrada tabla de cambios S&P 500 en posición {i}")
+                    break
+            else:
+                # Tabla de nivel simple, verificar contenido
+                col_text = ' '.join([str(col) for col in table.columns]).lower()
+                if ('effective' in col_text or 'date' in col_text) and 'added' in col_text and 'removed' in col_text:
+                    changes_df = table
+                    print(f"✅ Encontrada tabla de cambios S&P 500 (nivel simple) en posición {i}")
+                    break
         
         if changes_df is None:
-            # Fallback: usar la segunda tabla que suele ser la de cambios
-            if len(tables) > 1:
-                changes_df = tables[1]
-                print("Usando tabla por defecto (posición 1) para cambios S&P 500")
-            else:
-                print("No se encontró tabla de cambios para S&P 500")
-                return pd.DataFrame()
+            print("❌ No se encontró tabla de cambios para S&P 500")
+            return pd.DataFrame()
         
-        # Manejar columnas multi-nivel si existen
-        if hasattr(changes_df.columns, 'levels') and len(changes_df.columns.levels) > 1:
-            # Columnas multi-nivel - aplanar
-            changes_df.columns = [' '.join(col).strip() for col in changes_df.columns.values]
+        print(f"Procesando tabla con columnas: {changes_df.columns.tolist()}")
         
-        # Buscar columnas relevantes con los patrones del S&P 500
-        date_col = None
-        added_ticker_col = None
-        removed_ticker_col = None
+        # Manejar estructura multi-nivel específica del S&P 500
+        if hasattr(changes_df.columns, 'nlevels') and changes_df.columns.nlevels > 1:
+            print("Procesando tabla multi-nivel...")
+            
+            # Identificar columnas por posición y estructura
+            # Estructura esperada:
+            # Columna 0: ("Effective Date", "")
+            # Columna 1: ("Added", "Ticker") 
+            # Columna 2: ("Added", "Security")
+            # Columna 3: ("Removed", "Ticker")
+            # Columna 4: ("Removed", "Security")
+            
+            date_col = None
+            added_ticker_col = None
+            removed_ticker_col = None
+            
+            for i, col in enumerate(changes_df.columns):
+                col_level_0 = str(col[0]).lower().strip()
+                col_level_1 = str(col[1]).lower().strip() if len(col) > 1 else ""
+                
+                print(f"Columna {i}: Level 0='{col_level_0}', Level 1='{col_level_1}'")
+                
+                # Buscar columna de fecha
+                if date_col is None and ('effective' in col_level_0 or 'date' in col_level_0):
+                    date_col = col
+                    print(f"✅ Columna de fecha: {col}")
+                
+                # Buscar columna de ticker agregado
+                elif added_ticker_col is None and 'added' in col_level_0 and 'ticker' in col_level_1:
+                    added_ticker_col = col
+                    print(f"✅ Columna de ticker agregado: {col}")
+                
+                # Buscar columna de ticker removido
+                elif removed_ticker_col is None and 'removed' in col_level_0 and 'ticker' in col_level_1:
+                    removed_ticker_col = col
+                    print(f"✅ Columna de ticker removido: {col}")
         
-        # Patrones de búsqueda para las columnas del S&P 500
-        for col in changes_df.columns:
-            col_lower = str(col).lower().strip()
-            
-            # Buscar columna de fecha
-            if date_col is None and ('effective' in col_lower or 'date' in col_lower):
-                date_col = col
-                print(f"Columna de fecha encontrada: {col}")
-            
-            # Buscar columna de ticker agregado
-            elif added_ticker_col is None and 'added' in col_lower and 'ticker' in col_lower:
-                added_ticker_col = col
-                print(f"Columna de ticker agregado encontrada: {col}")
-            
-            # Buscar columna de ticker removido  
-            elif removed_ticker_col is None and 'removed' in col_lower and 'ticker' in col_lower:
-                removed_ticker_col = col
-                print(f"Columna de ticker removido encontrada: {col}")
-        
-        # Si no encuentra columnas específicas, usar posiciones por defecto
-        if not all([date_col, added_ticker_col, removed_ticker_col]):
-            print("No se encontraron columnas específicas, usando posiciones por defecto")
-            print(f"Columnas disponibles: {list(changes_df.columns)}")
-            
-            # Para la tabla del S&P 500, las posiciones típicas son:
-            # 0: Effective Date
-            # 1: Added Ticker  
-            # 2: Added Security (ignoramos)
-            # 3: Removed Ticker
-            # 4: Removed Security (ignoramos)
-            # 5: Reason (ignoramos)
-            
+        else:
+            print("Procesando tabla de nivel simple...")
+            # Para tabla simple, usar posiciones por defecto
             if len(changes_df.columns) >= 4:
                 date_col = changes_df.columns[0]
-                added_ticker_col = changes_df.columns[1]
-                removed_ticker_col = changes_df.columns[3]
-                print(f"Usando columnas por posición: Date={date_col}, Added={added_ticker_col}, Removed={removed_ticker_col}")
-            else:
-                print("Tabla no tiene suficientes columnas")
-                return pd.DataFrame()
+                added_ticker_col = changes_df.columns[1]  # Asumiendo que es Added Ticker
+                removed_ticker_col = changes_df.columns[3]  # Asumiendo que es Removed Ticker
+                print(f"Usando columnas por posición: {date_col}, {added_ticker_col}, {removed_ticker_col}")
+        
+        # Verificar que encontramos las columnas necesarias
+        if not all([date_col is not None, added_ticker_col is not None, removed_ticker_col is not None]):
+            print(f"❌ No se encontraron todas las columnas necesarias:")
+            print(f"   Date: {date_col}")
+            print(f"   Added: {added_ticker_col}")
+            print(f"   Removed: {removed_ticker_col}")
+            return pd.DataFrame()
         
         # Procesar datos
         changes_clean = []
+        removed_tickers_info = []  # Para generar CSV
+        
         print(f"Procesando {len(changes_df)} filas de cambios...")
         
         for idx, row in changes_df.iterrows():
             try:
                 # Obtener y parsear fecha
-                date_str = str(row[date_col]).strip()
+                date_value = row[date_col]
+                date_str = str(date_value).strip()
+                
                 if not date_str or date_str.lower() in ['nan', 'none', '']:
                     continue
                 
                 date_parsed = parse_wikipedia_date(date_str)
                 if date_parsed is None:
-                    print(f"No se pudo parsear fecha: {date_str}")
+                    print(f"⚠️  No se pudo parsear fecha en fila {idx}: '{date_str}'")
                     continue
                 
                 # Obtener tickers agregados y removidos
@@ -179,29 +196,61 @@ def get_sp500_historical_changes():
                 # Procesar ticker agregado
                 if added_ticker and added_ticker not in ['NAN', 'NONE', '', 'N/A']:
                     # Limpiar ticker
-                    added_ticker = added_ticker.replace('.', '-').replace(' ', '')
-                    if len(added_ticker) <= 6 and not added_ticker.isdigit() and added_ticker.isalnum():
+                    clean_added = added_ticker.replace('.', '-').replace(' ', '').strip()
+                    if len(clean_added) <= 6 and clean_added and not clean_added.isdigit():
                         changes_clean.append({
                             'Date': date_parsed,
                             'Action': 'Added',
-                            'Ticker': added_ticker
+                            'Ticker': clean_added
                         })
+                        print(f"✅ Agregado: {clean_added} en {date_parsed}")
                 
                 # Procesar ticker removido
                 if removed_ticker and removed_ticker not in ['NAN', 'NONE', '', 'N/A']:
                     # Limpiar ticker
-                    removed_ticker = removed_ticker.replace('.', '-').replace(' ', '')
-                    if len(removed_ticker) <= 6 and not removed_ticker.isdigit() and removed_ticker.isalnum():
+                    clean_removed = removed_ticker.replace('.', '-').replace(' ', '').strip()
+                    if len(clean_removed) <= 6 and clean_removed and not clean_removed.isdigit():
                         changes_clean.append({
                             'Date': date_parsed,
                             'Action': 'Removed',
-                            'Ticker': removed_ticker
+                            'Ticker': clean_removed
                         })
                         
+                        # Agregar a lista de removidos para CSV
+                        removed_tickers_info.append({
+                            'Ticker': clean_removed,
+                            'Removed_Date': date_parsed.strftime('%Y-%m-%d'),
+                            'Year': date_parsed.year
+                        })
+                        print(f"✅ Removido: {clean_removed} en {date_parsed}")
+                        
             except Exception as e:
-                print(f"Error procesando fila {idx}: {e}")
+                print(f"⚠️  Error procesando fila {idx}: {e}")
                 continue
         
+        # Generar CSV con tickers removidos
+        if removed_tickers_info:
+            try:
+                removed_df = pd.DataFrame(removed_tickers_info)
+                
+                # Eliminar duplicados y ordenar
+                removed_df = removed_df.drop_duplicates(subset=['Ticker'])
+                removed_df = removed_df.sort_values('Removed_Date', ascending=False)
+                
+                # Guardar CSV
+                csv_path = os.path.join(DATA_DIR, 'sp500_removed_tickers.csv')
+                removed_df.to_csv(csv_path, index=False)
+                print(f"✅ Guardado CSV con {len(removed_df)} tickers removidos en: {csv_path}")
+                
+                # Mostrar algunos ejemplos
+                print("📋 Tickers removidos más recientes:")
+                for _, row in removed_df.head(10).iterrows():
+                    print(f"   {row['Ticker']} (removido el {row['Removed_Date']})")
+                    
+            except Exception as e:
+                print(f"⚠️  Error generando CSV de removidos: {e}")
+        
+        # Crear DataFrame final
         if changes_clean:
             result_df = pd.DataFrame(changes_clean)
             result_df = result_df.sort_values('Date', ascending=False)  # Más reciente primero
@@ -215,16 +264,22 @@ def get_sp500_historical_changes():
             if final_count != initial_count:
                 print(f"   Eliminados {initial_count - final_count} duplicados")
             
+            # Estadísticas
+            added_count = len(result_df[result_df['Action'] == 'Added'])
+            removed_count = len(result_df[result_df['Action'] == 'Removed'])
+            print(f"📊 Agregados: {added_count}, Removidos: {removed_count}")
+            
             return result_df
         else:
-            print("No se pudieron procesar cambios históricos del S&P 500")
+            print("❌ No se pudieron procesar cambios históricos del S&P 500")
             return pd.DataFrame()
             
     except Exception as e:
-        print(f"Error obteniendo cambios históricos S&P 500: {e}")
+        print(f"❌ Error obteniendo cambios históricos S&P 500: {e}")
         import traceback
         traceback.print_exc()
         return pd.DataFrame()
+
 def get_nasdaq100_historical_changes():
     """Obtiene los cambios históricos del NASDAQ-100 desde Wikipedia"""
     print("Descargando cambios históricos del NASDAQ-100...")
@@ -602,6 +657,54 @@ def get_constituents_at_date(index_name, start_date, end_date):
             return fallback_result, f"Warning: {error_msg}"
         except:
             return None, error_msg
+
+def generate_removed_tickers_summary():
+    """Genera resumen completo de tickers removidos de ambos índices"""
+    try:
+        all_removed = []
+        
+        # S&P 500
+        sp500_changes = get_sp500_historical_changes()
+        if not sp500_changes.empty:
+            sp500_removed = sp500_changes[sp500_changes['Action'] == 'Removed'].copy()
+            sp500_removed['Index'] = 'SP500'
+            all_removed.append(sp500_removed)
+        
+        # NASDAQ-100
+        ndx_changes = get_nasdaq100_historical_changes()
+        if not ndx_changes.empty:
+            ndx_removed = ndx_changes[ndx_changes['Action'] == 'Removed'].copy()
+            ndx_removed['Index'] = 'NDX'
+            all_removed.append(ndx_removed)
+        
+        if all_removed:
+            # Combinar todos los removidos
+            combined_removed = pd.concat(all_removed, ignore_index=True)
+            
+            # Crear resumen por ticker
+            summary = combined_removed.groupby('Ticker').agg({
+                'Date': ['min', 'max', 'count'],
+                'Index': lambda x: ', '.join(x.unique())
+            }).reset_index()
+            
+            # Aplanar columnas
+            summary.columns = ['Ticker', 'First_Removed', 'Last_Removed', 'Times_Removed', 'Indices']
+            
+            # Ordenar por fecha más reciente
+            summary = summary.sort_values('Last_Removed', ascending=False)
+            
+            # Guardar CSV
+            csv_path = os.path.join(DATA_DIR, 'all_removed_tickers_summary.csv')
+            summary.to_csv(csv_path, index=False)
+            
+            print(f"✅ Generado resumen de tickers removidos: {csv_path}")
+            print(f"📊 Total de tickers únicos removidos: {len(summary)}")
+            
+            return summary
+        
+    except Exception as e:
+        print(f"❌ Error generando resumen de removidos: {e}")
+        return pd.DataFrame()
 
 def download_prices(tickers, start_date, end_date):
     """
