@@ -400,7 +400,7 @@ def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_
                     historical_ohlc = {}
                     for ticker in available_valid_tickers:
                         if ticker in ohlc_data:
-                            ```python
+                            
                             historical_ohlc[ticker] = {
                                 'High': ohlc_data[ticker]['High'].loc[:prev_date],
                                 'Low': ohlc_data[ticker]['Low'].loc[:prev_date],
