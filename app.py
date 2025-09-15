@@ -1,8 +1,3 @@
-Aquí tienes los archivos completos con todas las modificaciones:
-
-## **1. app.py completo:**
-
-```python
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
