@@ -406,7 +406,8 @@ if run_button:
                     st.warning(f"Error generando información de removidos: {e}")
 
             # -------------------------------------------------
-            # Métricas principales
+                        # -------------------------------------------------
+            # Métricas principales CORREGIDAS
             # -------------------------------------------------
             # Calcular métricas de la estrategia
             if "Equity" in bt_results.columns and len(bt_results["Equity"]) > 0:
@@ -430,24 +431,52 @@ if run_button:
             else:
                 max_drawdown = 0
                 
+            # ✅ SHARPE RATIO CORREGIDO
             if "Returns" in bt_results.columns and len(bt_results["Returns"]) > 1:
-                volatility = float(bt_results["Returns"].std() * (12 ** 0.5)) if bt_results["Returns"].std() != 0 else 0
-                sharpe_ratio = (float(bt_results["Returns"].mean() * 12) / (volatility + 1e-8)) if volatility != 0 else 0
+                # Asumir tasa libre de riesgo del 2% anual (0.02/12 mensual)
+                risk_free_rate_monthly = 0.02 / 12
+                
+                monthly_returns = bt_results["Returns"]
+                excess_returns = monthly_returns - risk_free_rate_monthly
+                
+                # Calcular Sharpe ratio anualizado correctamente
+                if excess_returns.std() != 0:
+                    sharpe_ratio = (excess_returns.mean() * 12) / (excess_returns.std() * (12 ** 0.5))
+                else:
+                    sharpe_ratio = 0
+                    
+                # Volatilidad anualizada
+                volatility = float(monthly_returns.std() * (12 ** 0.5))
             else:
                 volatility = 0
                 sharpe_ratio = 0
 
-            # -------------------------------------------------
             # Preparar datos del benchmark ANTES de mostrar métricas
-            # -------------------------------------------------
             bench_equity = None
             bench_drawdown = None
+            bench_sharpe = 0
+            
             if benchmark_df is not None and not benchmark_df.empty:
                 try:
                     bench_data = benchmark_df[benchmark_ticker] if benchmark_ticker in benchmark_df.columns else benchmark_df.iloc[:, 0]
                     bench_returns = bench_data.pct_change().fillna(0)
                     bench_equity = 10000 * (1 + bench_returns).cumprod()
                     bench_drawdown = (bench_equity / bench_equity.cummax() - 1)
+                    
+                    # ✅ SHARPE DEL BENCHMARK CORREGIDO
+                    # Convertir a mensual si es necesario
+                    if len(bench_returns) > len(bt_results) * 15:  # Si son datos diarios
+                        bench_returns_monthly = bench_returns.resample('ME').apply(lambda x: (1 + x).prod() - 1)
+                    else:
+                        bench_returns_monthly = bench_returns
+                    
+                    bench_excess_returns = bench_returns_monthly - risk_free_rate_monthly
+                    
+                    if bench_excess_returns.std() != 0:
+                        bench_sharpe = (bench_excess_returns.mean() * 12) / (bench_excess_returns.std() * (12 ** 0.5))
+                    else:
+                        bench_sharpe = 0
+                        
                 except Exception as e:
                     st.warning(f"Error calculando benchmark: {e}")
 
@@ -466,7 +495,7 @@ if run_button:
             else:
                 st.warning("⚠️  Este backtest NO incluye verificación histórica (posible sesgo de supervivencia)")
 
-            # Calcular y mostrar métricas del benchmark
+            # Calcular y mostrar métricas del benchmark CORREGIDAS
             if bench_equity is not None and len(bench_equity) > 0:
                 bench_final = float(bench_equity.iloc[-1])
                 bench_initial = float(bench_equity.iloc[0])
@@ -484,11 +513,6 @@ if run_button:
                 else:
                     bench_max_dd = 0
                 
-                # Sharpe del benchmark
-                bench_returns = bench_equity.pct_change().fillna(0)
-                bench_volatility = float(bench_returns.std() * (12 ** 0.5)) if bench_returns.std() != 0 else 0
-                bench_sharpe = (float(bench_returns.mean() * 12) / (bench_volatility + 1e-8)) if bench_volatility != 0 else 0
-                
                 # Métricas del benchmark
                 st.subheader(f"📊 Métricas del Benchmark ({benchmark_ticker})")
                 col1b, col2b, col3b, col4b, col5b = st.columns(5)
@@ -496,7 +520,26 @@ if run_button:
                 col2b.metric("Retorno Total", f"{bench_total_return:.2%}")
                 col3b.metric("CAGR", f"{bench_cagr:.2%}")
                 col4b.metric("Máximo Drawdown", f"{bench_max_dd:.2%}")
-                col5b.metric("Sharpe Ratio", f"{bench_sharpe:.2f}")
+                col5b.metric("Sharpe Ratio", f"{bench_sharpe:.2f}")  # ✅ Corregido
+
+            # ✅ NUEVO: Comparación de métricas
+            st.subheader("⚖️ Comparación Estrategia vs Benchmark")
+            col1c, col2c, col3c = st.columns(3)
+            
+            with col1c:
+                alpha = cagr - bench_cagr if 'bench_cagr' in locals() else cagr
+                st.metric("Alpha (CAGR diff)", f"{alpha:.2%}", 
+                         delta=f"{alpha:.2%}" if alpha >= 0 else f"{alpha:.2%}")
+            
+            with col2c:
+                sharpe_diff = sharpe_ratio - bench_sharpe
+                st.metric("Sharpe Diff", f"{sharpe_diff:.2f}",
+                         delta=f"+{sharpe_diff:.2f}" if sharpe_diff >= 0 else f"{sharpe_diff:.2f}")
+            
+            with col3c:
+                dd_diff = max_drawdown - bench_max_dd if 'bench_max_dd' in locals() else max_drawdown
+                st.metric("DD Difference", f"{dd_diff:.2%}",
+                         delta=f"{dd_diff:.2%}" if dd_diff <= 0 else f"+{dd_diff:.2%}")
 
             # -------------------------------------------------
             # Gráficos mejorados
