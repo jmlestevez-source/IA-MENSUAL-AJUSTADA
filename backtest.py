@@ -104,6 +104,7 @@ def get_valid_tickers_for_date(target_date, historical_changes_data, current_tic
             valid_tickers.add(ticker)
     
     return valid_tickers
+
 def inertia_score_with_historical_filter(monthly_prices_df, target_date, valid_tickers, corte=680, ohlc_data=None):
     """
     Calcula el score de inercia solo para tickers válidos en la fecha objetivo
@@ -288,6 +289,79 @@ def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
         return 0.0
     
     return sharpe_ratio
+
+def calculate_monthly_returns_by_year(equity_series):
+    """
+    Calcula retornos mensuales distribuidos por año para tabla de dashboard
+    
+    Args:
+        equity_series: Serie de equity del backtest
+    
+    Returns:
+        DataFrame: Tabla con retornos mensuales por año
+    """
+    try:
+        if equity_series is None or len(equity_series) < 2:
+            return pd.DataFrame()
+        
+        # Calcular retornos mensuales
+        monthly_returns = equity_series.pct_change().fillna(0)
+        
+        # Agrupar por año y mes
+        monthly_returns.index = pd.to_datetime(monthly_returns.index)
+        monthly_by_year = monthly_returns.groupby([
+            monthly_returns.index.year, 
+            monthly_returns.index.month
+        ]).apply(lambda x: (1 + x).prod() - 1)
+        
+        # Crear DataFrame con estructura de tabla
+        years = sorted(monthly_by_year.index.get_level_values(0).unique())
+        
+        # Crear tabla con meses como columnas
+        months_es = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
+                     'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+        
+        table_data = []
+        
+        for year in years:
+            year_data = {'Año': year}
+            
+            # Obtener datos de este año
+            year_monthly = monthly_by_year[monthly_by_year.index.get_level_values(0) == year]
+            
+            # Llenar meses
+            for i, month_abbr in enumerate(months_es, 1):
+                if i in year_monthly.index.get_level_values(1):
+                    return_value = year_monthly[year_monthly.index.get_level_values(1) == i].iloc[0]
+                    year_data[month_abbr] = f"{return_value*100:.1f}%"
+                else:
+                    year_data[month_abbr] = "-"
+            
+            # Calcular YTD
+            year_equity = equity_series[equity_series.index.year == year]
+            if len(year_equity) > 1:
+                ytd_return = (year_equity.iloc[-1] / year_equity.iloc[0]) - 1
+                year_data['YTD'] = f"{ytd_return*100:.1f}%"
+            else:
+                year_data['YTD'] = "-"
+            
+            table_data.append(year_data)
+        
+        # Crear DataFrame final
+        if table_data:
+            result_df = pd.DataFrame(table_data)
+            
+            # Asegurar orden correcto de columnas
+            columns_order = ['Año'] + months_es + ['YTD']
+            result_df = result_df[columns_order]
+            
+            return result_df
+        else:
+            return pd.DataFrame()
+            
+    except Exception as e:
+        print(f"Error calculando tabla de retornos mensuales: {e}")
+        return pd.DataFrame()
 
 def run_backtest(prices, benchmark, commission=0.003, top_n=10, corte=680, ohlc_data=None, 
                  historical_info=None, fixed_allocation=False, use_roc_filter=False, 
