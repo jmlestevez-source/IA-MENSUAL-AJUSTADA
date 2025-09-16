@@ -147,6 +147,14 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
         
         for ticker in monthly_prices_df.columns:
             try:
+                # ✅ CORRECCIÓN: Verificar que el ticker tenga datos suficientes
+                if ticker not in monthly_prices_df.columns:
+                    continue
+                    
+                ticker_data = monthly_prices_df[ticker].dropna()
+                if len(ticker_data) < 15:
+                    continue
+                
                 # Si tenemos datos OHLC reales, usarlos
                 if monthly_ohlc and ticker in monthly_ohlc:
                     high = monthly_ohlc[ticker]['High']
@@ -154,7 +162,7 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
                     close = monthly_ohlc[ticker]['Close']
                 else:
                     # Fallback: usar solo Close (esto debería evitarse)
-                    close = monthly_prices_df[ticker].dropna()
+                    close = ticker_data
                     if len(close) < 15:
                         continue
                     
@@ -173,6 +181,15 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
                     low = pd.Series(np.minimum(low, close), index=close.index)
 
                 if len(close) < 15:
+                    continue
+
+                # ✅ CORRECCIÓN: Protección adicional contra valores inválidos
+                close = close.replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(method='bfill')
+                high = high.replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(method='bfill')
+                low = low.replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(method='bfill')
+                
+                # Verificar que no haya todos NaN
+                if close.isna().all() or high.isna().all() or low.isna().all():
                     continue
 
                 # CÁLCULOS EXACTOS COMO EN EL CÓDIGO PYTHON QUE FUNCIONA
@@ -203,10 +220,14 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
                 # Score Adjusted = Score / ATR14
                 score_adjusted = score / atr_14
 
-                # Limpiar valores infinitos y NaN
+                # ✅ CORRECCIÓN: Limpiar valores infinitos y NaN de manera más robusta
                 inercia_alcista = inercia_alcista.replace([np.inf, -np.inf], np.nan).fillna(0)
                 score = score.replace([np.inf, -np.inf], np.nan).fillna(0)
                 score_adjusted = score_adjusted.replace([np.inf, -np.inf], np.nan).fillna(0)
+                
+                # Verificar que no sean todos cero
+                if (inercia_alcista == 0).all() and (score == 0).all() and (score_adjusted == 0).all():
+                    continue
                 
                 # Almacenar resultados
                 results[ticker] = {
@@ -232,7 +253,7 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
         for metric in ["InerciaAlcista", "ATR14", "Score", "ScoreAdjusted", "F1", "F2", "ROC10", "VolatilityRatio"]:
             metric_data = {}
             for ticker in results.keys():
-                if metric in results[ticker]:
+                if metric in results[ticker] and results[ticker][metric] is not None:
                     metric_data[ticker] = results[ticker][metric]
             if metric_data:
                 combined_results[metric] = pd.DataFrame(metric_data)
