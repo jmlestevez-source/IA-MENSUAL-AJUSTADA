@@ -190,6 +190,132 @@ def precalculate_all_indicators(prices_df_m, ohlc_data, corte=680):
     print(f"✅ Indicadores precalculados para {len(all_indicators)} tickers")
     return all_indicators
 
+def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
+    """
+    Calcula el score de inercia - NECESARIA PARA PICKS DE VELA EN FORMACIÓN
+    """
+    if monthly_prices_df is None or monthly_prices_df.empty:
+        return {}
+
+    try:
+        results = {}
+        
+        # Si tenemos datos OHLC reales, convertir a mensual
+        if ohlc_data:
+            monthly_ohlc = convertir_a_mensual_con_ohlc(ohlc_data)
+        else:
+            monthly_ohlc = None
+        
+        for ticker in monthly_prices_df.columns:
+            try:
+                ticker_data = monthly_prices_df[ticker].dropna()
+                if len(ticker_data) < 15:
+                    continue
+                
+                # Si tenemos datos OHLC reales, usarlos
+                if monthly_ohlc and ticker in monthly_ohlc:
+                    high = monthly_ohlc[ticker]['High']
+                    low = monthly_ohlc[ticker]['Low']
+                    close = monthly_ohlc[ticker]['Close']
+                else:
+                    # Fallback: usar solo Close
+                    close = ticker_data
+                    if close.index.freq not in ['ME', 'M']:
+                        close = close.resample('ME').last()
+                    
+                    # Estimar High/Low
+                    monthly_returns = close.pct_change().dropna()
+                    vol = monthly_returns.rolling(3).std().fillna(0.02)
+                    vol = vol.clip(0.005, 0.03)
+                    
+                    high = close * (1 + vol * 0.5)
+                    low = close * (1 - vol * 0.5)
+                    high = pd.Series(np.maximum(high, close), index=close.index)
+                    low = pd.Series(np.minimum(low, close), index=close.index)
+
+                if len(close) < 15:
+                    continue
+
+                # Limpiar datos
+                close = close.replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(method='bfill')
+                high = high.replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(method='bfill')
+                low = low.replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(method='bfill')
+                
+                if close.isna().all() or high.isna().all() or low.isna().all():
+                    continue
+
+                # CÁLCULOS DE INDICADORES
+                
+                # ROC de 10 meses (en porcentaje)
+                roc_10 = ((close - close.shift(10)) / close.shift(10)) * 100
+
+                # F1 = ROC(10) * 0.6
+                f1 = roc_10 * 0.6
+
+                # ATR(14) optimizado
+                atr_14 = calcular_atr_optimizado(high, low, close, periods=14)
+
+                # SMA(14)
+                sma_14 = close.rolling(14).mean()
+
+                # F2 = (ATR14/SMA14) * 0.4
+                volatility_ratio = atr_14 / sma_14
+                f2 = volatility_ratio * 0.4
+
+                # Inercia Alcista = F1 / F2
+                inercia_alcista = f1 / f2
+
+                # Score = Inercia si >= corte, sino 0
+                score = np.where(inercia_alcista >= corte, inercia_alcista, 0)
+                score = pd.Series(score, index=inercia_alcista.index)
+
+                # Score Adjusted = Score / ATR14
+                score_adjusted = score / atr_14
+
+                # Limpiar valores infinitos y NaN
+                inercia_alcista = inercia_alcista.replace([np.inf, -np.inf], np.nan).fillna(0)
+                score = score.replace([np.inf, -np.inf], np.nan).fillna(0)
+                score_adjusted = score_adjusted.replace([np.inf, -np.inf], np.nan).fillna(0)
+                
+                # Verificar que no sean todos cero
+                if (inercia_alcista == 0).all() and (score == 0).all() and (score_adjusted == 0).all():
+                    continue
+                
+                # Almacenar resultados
+                results[ticker] = {
+                    "InerciaAlcista": inercia_alcista,
+                    "ATR14": atr_14,
+                    "Score": score,
+                    "ScoreAdjusted": score_adjusted,
+                    "F1": f1,
+                    "F2": f2,
+                    "ROC10": roc_10,
+                    "VolatilityRatio": volatility_ratio
+                }
+                
+            except Exception as e:
+                print(f"Error procesando ticker {ticker}: {e}")
+                continue
+        
+        if not results:
+            return {}
+        
+        # Combinar resultados en DataFrames
+        combined_results = {}
+        for metric in ["InerciaAlcista", "ATR14", "Score", "ScoreAdjusted", "F1", "F2", "ROC10", "VolatilityRatio"]:
+            metric_data = {}
+            for ticker in results.keys():
+                if metric in results[ticker] and results[ticker][metric] is not None:
+                    metric_data[ticker] = results[ticker][metric]
+            if metric_data:
+                combined_results[metric] = pd.DataFrame(metric_data)
+        
+        return combined_results
+        
+    except Exception as e:
+        print(f"Error en cálculo de inercia: {e}")
+        return {}
+
 def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=680, 
                           ohlc_data=None, historical_info=None, fixed_allocation=False,
                           use_roc_filter=False, use_sma_filter=False, spy_data=None,
@@ -394,6 +520,12 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
         
         print(f"✅ Backtest OPTIMIZADO completado. Equity final: ${equity_series.iloc[-1]:,.2f}")
         
+        # Mostrar información sobre verificación histórica
+        if historical_info and historical_info.get('has_historical_data', False):
+            print("✅ Backtest ejecutado con verificación histórica de constituyentes")
+        else:
+            print("⚠️ Backtest ejecutado SIN verificación histórica (posible sesgo de supervivencia)")
+        
         return bt_results, picks_df
         
     except Exception as e:
@@ -401,11 +533,6 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
         import traceback
         traceback.print_exc()
         return pd.DataFrame(), pd.DataFrame()
-
-# Mantener función original para compatibilidad
-def run_backtest(*args, **kwargs):
-    """Wrapper para compatibilidad"""
-    return run_backtest_optimized(*args, **kwargs)
 
 def calculate_monthly_returns_by_year(equity_series):
     """Calcula retornos mensuales por año"""
@@ -460,9 +587,36 @@ def calculate_monthly_returns_by_year(equity_series):
 
 # Funciones auxiliares para compatibilidad
 def calcular_atr_amibroker(*args, **kwargs):
-    """Wrapper para compatibilidad"""
+    """Wrapper para compatibilidad con código antiguo"""
     return calcular_atr_optimizado(*args, **kwargs)
 
-def inertia_score(*args, **kwargs):
-    """Esta función ya no se usa, se reemplaza por precalculate_all_indicators"""
-    return {}
+def run_backtest(*args, **kwargs):
+    """Wrapper para compatibilidad con código antiguo"""
+    return run_backtest_optimized(*args, **kwargs)
+
+def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
+    """Calcula el Sharpe Ratio anualizado"""
+    if len(returns) < 2:
+        return 0.0
+    
+    risk_free_rate_monthly = risk_free_rate / 12
+    excess_returns = returns - risk_free_rate_monthly
+    excess_returns = excess_returns.dropna()
+    
+    if len(excess_returns) < 2:
+        return 0.0
+    
+    std_excess = excess_returns.std()
+    if std_excess == 0 or np.isnan(std_excess) or np.isinf(std_excess):
+        return 0.0
+    
+    mean_excess = excess_returns.mean()
+    if np.isnan(mean_excess) or np.isinf(mean_excess):
+        return 0.0
+    
+    sharpe_ratio = (mean_excess * 12) / (std_excess * np.sqrt(12))
+    
+    if np.isnan(sharpe_ratio) or np.isinf(sharpe_ratio):
+        return 0.0
+    
+    return sharpe_ratio
