@@ -14,8 +14,8 @@ import hashlib
 import glob
 
 # Importar nuestros módulos
-from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes
-from backtest import run_backtest_optimized, precalculate_all_indicators, calculate_monthly_returns_by_year
+from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes, generate_removed_tickers_summary
+from backtest import run_backtest_optimized, precalculate_all_indicators, calculate_monthly_returns_by_year, inertia_score
 
 # -------------------------------------------------
 # Configuración de la app
@@ -29,7 +29,7 @@ st.set_page_config(
 # -------------------------------------------------
 # FUNCIONES DE CACHÉ OPTIMIZADAS
 # -------------------------------------------------
-@st.cache_data(ttl=3600)  # Cache por 1 hora
+@st.cache_data(ttl=3600)
 def load_historical_changes_cached(index_name):
     """Carga cambios históricos con caché"""
     if index_name == "SP500":
@@ -43,7 +43,7 @@ def load_historical_changes_cached(index_name):
             return pd.concat([sp500, ndx], ignore_index=True)
         return sp500 if not sp500.empty else ndx
 
-@st.cache_data(ttl=86400)  # Cache por 24 horas
+@st.cache_data(ttl=86400)
 def get_constituents_cached(index_name, start_date, end_date):
     """Obtiene constituyentes con caché"""
     return get_constituents_at_date(index_name, start_date, end_date)
@@ -53,14 +53,13 @@ def get_cache_key(params):
     param_str = str(sorted(params.items()))
     return hashlib.md5(param_str.encode()).hexdigest()
 
-@st.cache_data(ttl=3600*24*7)  # Cache por 1 semana
+@st.cache_data(ttl=3600*24*7)
 def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=True):
-    """Carga precios desde CSV en PARALELO - MUCHO MÁS RÁPIDO"""
+    """Carga precios desde CSV en PARALELO"""
     prices_data = {}
     ohlc_data = {}
     
     def load_single_ticker(ticker):
-        """Carga un ticker individual"""
         csv_path = f"data/{ticker}.csv"
         if not os.path.exists(csv_path):
             return ticker, None, None
@@ -71,22 +70,14 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
             if hasattr(df.index, 'tz') and df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
             
-            # Convertir fechas para comparación
-            if isinstance(start_date, datetime):
-                start_filter = start_date.date()
-            else:
-                start_filter = start_date
-            if isinstance(end_date, datetime):
-                end_filter = end_date.date()
-            else:
-                end_filter = end_date
+            start_filter = start_date.date() if isinstance(start_date, datetime) else start_date
+            end_filter = end_date.date() if isinstance(end_date, datetime) else end_date
             
             df = df[(df.index.date >= start_filter) & (df.index.date <= end_filter)]
             
             if df.empty:
                 return ticker, None, None
             
-            # Extraer precio
             if 'Adj Close' in df.columns:
                 price = df['Adj Close']
             elif 'Close' in df.columns:
@@ -94,7 +85,6 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
             else:
                 return ticker, None, None
             
-            # Extraer OHLC si está disponible
             ohlc = None
             if load_full_data and all(col in df.columns for col in ['High', 'Low', 'Close']):
                 ohlc = {
@@ -109,7 +99,6 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
         except Exception as e:
             return ticker, None, None
     
-    # Usar ThreadPoolExecutor para paralelizar
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(load_single_ticker, ticker) for ticker in tickers]
         
@@ -126,6 +115,17 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
         return prices_df, ohlc_data
     else:
         return pd.DataFrame(), {}
+
+def create_download_link(df, filename, link_text):
+    """Crea un enlace de descarga para un DataFrame"""
+    try:
+        csv = df.to_csv(index=False)
+        b64 = base64.b64encode(csv.encode()).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">{link_text}</a>'
+        return href
+    except Exception as e:
+        st.error(f"Error creando enlace de descarga: {e}")
+        return None
 
 # -------------------------------------------------
 # Título y configuración principal
@@ -163,13 +163,14 @@ top_n = st.sidebar.slider("Número de activos", 5, 30, 10)
 commission = st.sidebar.number_input("Comisión por operación (%)", 0.0, 1.0, 0.3) / 100
 corte = st.sidebar.number_input("Corte de score", 0, 1000, 680)
 use_historical_verification = st.sidebar.checkbox("🕐 Usar verificación histórica", value=True)
+
+st.sidebar.subheader("⚙️ Opciones de Estrategia")
 fixed_allocation = st.sidebar.checkbox("💰 Asignar 10% capital a cada acción", value=False)
 
 st.sidebar.subheader("🛡️ Filtros de Mercado")
 use_roc_filter = st.sidebar.checkbox("📉 ROC 12 meses del SPY < 0", value=False)
 use_sma_filter = st.sidebar.checkbox("📊 Precio SPY < SMA 10 meses", value=False)
 
-# Botón optimizado con progreso
 run_button = st.sidebar.button("🏃 Ejecutar backtest", type="primary")
 
 # -------------------------------------------------
@@ -182,11 +183,10 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(LOCAL_CHANGES_DIR, exist_ok=True)
 
 # -------------------------------------------------
-# Main content con optimizaciones
+# Main content
 # -------------------------------------------------
 if run_button:
     try:
-        # Crear clave de caché para estos parámetros
         cache_params = {
             'index': index_choice,
             'start': str(start_date),
@@ -202,7 +202,6 @@ if run_button:
         cache_key = get_cache_key(cache_params)
         cache_file = os.path.join(CACHE_DIR, f"backtest_{cache_key}.pkl")
         
-        # Intentar cargar de caché
         use_cache = False
         if os.path.exists(cache_file):
             try:
@@ -214,15 +213,18 @@ if run_button:
                         bt_results = cached_data['bt_results']
                         picks_df = cached_data['picks_df']
                         historical_info = cached_data.get('historical_info')
+                        prices_df = cached_data.get('prices_df')
+                        ohlc_data = cached_data.get('ohlc_data')
+                        benchmark_series = cached_data.get('benchmark_series')
+                        spy_df = cached_data.get('spy_df')
             except:
                 use_cache = False
         
         if not use_cache:
-            # EJECUTAR BACKTEST OPTIMIZADO
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            # Paso 1: Obtener constituyentes
+            # Obtener constituyentes
             status_text.text("📥 Obteniendo constituyentes...")
             progress_bar.progress(10)
             
@@ -234,10 +236,10 @@ if run_button:
                 st.error("No se encontraron tickers válidos")
                 st.stop()
             
-            tickers = list(dict.fromkeys(all_tickers_data['tickers']))  # Eliminar duplicados
+            tickers = list(dict.fromkeys(all_tickers_data['tickers']))
             st.success(f"✅ Obtenidos {len(tickers)} tickers únicos")
             
-            # Paso 2: Cargar precios en PARALELO
+            # Cargar precios
             status_text.text("📊 Cargando precios en paralelo...")
             progress_bar.progress(30)
             
@@ -249,7 +251,7 @@ if run_button:
             
             st.success(f"✅ Cargados {len(prices_df.columns)} tickers con datos")
             
-            # Paso 3: Cargar benchmark
+            # Cargar benchmark
             status_text.text("📈 Cargando benchmark...")
             progress_bar.progress(40)
             
@@ -262,13 +264,13 @@ if run_button:
             else:
                 benchmark_series = benchmark_df[benchmark_ticker]
             
-            # Paso 4: SPY para filtros
+            # SPY para filtros
             spy_df = None
             if use_roc_filter or use_sma_filter:
                 spy_result, _ = load_prices_from_csv_parallel(["SPY"], start_date, end_date, load_full_data=False)
                 spy_df = spy_result if not spy_result.empty else None
             
-            # Paso 5: Información histórica
+            # Información histórica
             historical_info = None
             if use_historical_verification:
                 status_text.text("🕐 Cargando datos históricos...")
@@ -279,11 +281,10 @@ if run_button:
                     historical_info = {'changes_data': changes_data, 'has_historical_data': True}
                     st.success(f"✅ Cargados {len(changes_data)} cambios históricos")
             
-            # Paso 6: EJECUTAR BACKTEST OPTIMIZADO
+            # Ejecutar backtest
             status_text.text("🚀 Ejecutando backtest optimizado...")
             progress_bar.progress(70)
             
-            # Usar versión optimizada del backtest
             bt_results, picks_df = run_backtest_optimized(
                 prices=prices_df,
                 benchmark=benchmark_series,
@@ -309,6 +310,10 @@ if run_button:
                         'bt_results': bt_results,
                         'picks_df': picks_df,
                         'historical_info': historical_info,
+                        'prices_df': prices_df,
+                        'ohlc_data': ohlc_data,
+                        'benchmark_series': benchmark_series,
+                        'spy_df': spy_df,
                         'timestamp': datetime.now()
                     }, f)
                 st.success("✅ Resultados guardados en caché")
@@ -318,11 +323,15 @@ if run_button:
             status_text.empty()
             progress_bar.empty()
         
-        # MOSTRAR RESULTADOS (igual que antes pero con métricas mejoradas)
+        # -------------------------------------------------
+        # MOSTRAR RESULTADOS COMPLETOS
+        # -------------------------------------------------
         if bt_results is not None and not bt_results.empty:
             st.success("✅ Backtest completado exitosamente")
             
-            # Calcular métricas
+            # -------------------------------------------------
+            # MÉTRICAS PRINCIPALES
+            # -------------------------------------------------
             final_equity = float(bt_results["Equity"].iloc[-1])
             initial_equity = float(bt_results["Equity"].iloc[0])
             total_return = (final_equity / initial_equity) - 1
@@ -330,13 +339,12 @@ if run_button:
             cagr = (final_equity / initial_equity) ** (1/years) - 1 if years > 0 else 0
             max_drawdown = float(bt_results["Drawdown"].min())
             
-            # Sharpe Ratio
             monthly_returns = bt_results["Returns"]
             risk_free_rate_monthly = 0.02 / 12
             excess_returns = monthly_returns - risk_free_rate_monthly
             sharpe_ratio = (excess_returns.mean() * 12) / (excess_returns.std() * np.sqrt(12)) if excess_returns.std() > 0 else 0
+            volatility = float(monthly_returns.std() * np.sqrt(12))
             
-            # Mostrar métricas
             st.subheader("📊 Métricas de la Estrategia")
             col1, col2, col3, col4, col5 = st.columns(5)
             col1.metric("Equity Final", f"${final_equity:,.0f}")
@@ -345,14 +353,461 @@ if run_button:
             col4.metric("Max Drawdown", f"{max_drawdown:.2%}")
             col5.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
             
-            # Información sobre tiempo de ejecución
-            if not use_cache:
-                st.info(f"⏱️ Backtest ejecutado en tiempo real para {years:.1f} años de datos")
-            else:
-                st.info("⚡ Resultados cargados desde caché (instantáneo)")
+            # -------------------------------------------------
+            # BENCHMARK Y COMPARACIÓN
+            # -------------------------------------------------
+            bench_equity = None
+            bench_drawdown = None
+            bench_sharpe = 0
+            bench_final = initial_equity
+            bench_total_return = 0
+            bench_cagr = 0
+            bench_max_dd = 0
             
-            # Gráficos y demás resultados...
-            # [El resto del código de visualización se mantiene igual]
+            if benchmark_series is not None and not benchmark_series.empty:
+                try:
+                    bench_returns = benchmark_series.pct_change().fillna(0)
+                    bench_equity = initial_equity * (1 + bench_returns).cumprod()
+                    bench_drawdown = (bench_equity / bench_equity.cummax() - 1)
+                    
+                    bench_final = float(bench_equity.iloc[-1])
+                    bench_initial = float(bench_equity.iloc[0]) if bench_equity.iloc[0] != 0 else initial_equity
+                    bench_total_return = (bench_final / bench_initial) - 1
+                    
+                    if years > 0:
+                        bench_cagr = (bench_final / bench_initial) ** (1/years) - 1
+                    
+                    bench_max_dd = float(bench_drawdown.min())
+                    
+                    # Sharpe del benchmark
+                    if len(bench_returns) > len(bt_results) * 15:
+                        bench_returns_monthly = bench_returns.resample('ME').apply(lambda x: (1 + x).prod() - 1)
+                    else:
+                        bench_returns_monthly = bench_returns
+                    
+                    bench_excess_returns = bench_returns_monthly - risk_free_rate_monthly
+                    if bench_excess_returns.std() != 0:
+                        bench_sharpe = (bench_excess_returns.mean() * 12) / (bench_excess_returns.std() * np.sqrt(12))
+                        
+                except Exception as e:
+                    st.warning(f"Error calculando benchmark: {e}")
+            
+            benchmark_name = "SPY" if index_choice != "NDX" else "QQQ"
+            
+            st.subheader(f"📊 Métricas del Benchmark ({benchmark_name})")
+            col1b, col2b, col3b, col4b, col5b = st.columns(5)
+            col1b.metric("Equity Final", f"${bench_final:,.0f}")
+            col2b.metric("Retorno Total", f"{bench_total_return:.2%}")
+            col3b.metric("CAGR", f"{bench_cagr:.2%}")
+            col4b.metric("Max Drawdown", f"{bench_max_dd:.2%}")
+            col5b.metric("Sharpe Ratio", f"{bench_sharpe:.2f}")
+            
+            # -------------------------------------------------
+            # COMPARACIÓN ESTRATEGIA VS BENCHMARK
+            # -------------------------------------------------
+            st.subheader("⚖️ Comparación Estrategia vs Benchmark")
+            col1c, col2c, col3c, col4c = st.columns(4)
+            
+            alpha = cagr - bench_cagr
+            col1c.metric("Alpha (CAGR diff)", f"{alpha:.2%}", delta=f"{alpha:.2%}")
+            
+            sharpe_diff = sharpe_ratio - bench_sharpe
+            col2c.metric("Sharpe Diff", f"{sharpe_diff:.2f}", delta=f"{sharpe_diff:.2f}")
+            
+            dd_diff = max_drawdown - bench_max_dd
+            col3c.metric("DD Difference", f"{dd_diff:.2%}", delta=f"{dd_diff:.2%}")
+            
+            return_diff = total_return - bench_total_return
+            col4c.metric("Return Diff", f"{return_diff:.2%}", delta=f"{return_diff:.2%}")
+            
+            # Información adicional
+            if historical_info and historical_info.get('has_historical_data', False):
+                st.info("✅ Este backtest incluye verificación histórica de constituyentes")
+            else:
+                st.warning("⚠️ Este backtest NO incluye verificación histórica (posible sesgo de supervivencia)")
+            
+            # -------------------------------------------------
+            # GRÁFICO DE EQUITY
+            # -------------------------------------------------
+            fig_equity = go.Figure()
+            fig_equity.add_trace(go.Scatter(
+                x=bt_results.index,
+                y=bt_results["Equity"],
+                mode='lines',
+                name='Estrategia',
+                line=dict(width=3, color='blue'),
+                hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
+            ))
+            
+            if bench_equity is not None:
+                common_index = bt_results.index.intersection(bench_equity.index)
+                if len(common_index) > 0:
+                    bench_aligned = bench_equity.loc[common_index]
+                    
+                    fig_equity.add_trace(go.Scatter(
+                        x=bench_aligned.index,
+                        y=bench_aligned.values,
+                        mode='lines',
+                        name=f'Benchmark ({benchmark_name})',
+                        line=dict(width=2, dash='dash', color='gray'),
+                        hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
+                    ))
+            
+            fig_equity.update_layout(
+                title="Evolución del Equity",
+                xaxis_title="Fecha",
+                yaxis_title="Equity ($)",
+                hovermode='x unified',
+                height=500,
+                showlegend=True,
+                yaxis_type="log"  # Escala logarítmica para mejor visualización
+            )
+            st.plotly_chart(fig_equity, use_container_width=True)
+            
+            # -------------------------------------------------
+            # GRÁFICO DE DRAWDOWN
+            # -------------------------------------------------
+            if "Drawdown" in bt_results.columns:
+                fig_dd = go.Figure()
+                
+                fig_dd.add_trace(go.Scatter(
+                    x=bt_results.index,
+                    y=bt_results["Drawdown"] * 100,
+                    mode='lines',
+                    name='Drawdown Estrategia',
+                    fill='tozeroy',
+                    line=dict(color='red', width=2),
+                    hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
+                ))
+                
+                if bench_drawdown is not None:
+                    common_index = bt_results.index.intersection(bench_drawdown.index)
+                    if len(common_index) > 0:
+                        bench_dd_aligned = bench_drawdown.loc[common_index]
+                        
+                        fig_dd.add_trace(go.Scatter(
+                            x=bench_dd_aligned.index,
+                            y=bench_dd_aligned.values * 100,
+                            mode='lines',
+                            name=f'Drawdown {benchmark_name}',
+                            line=dict(color='orange', width=2, dash='dash'),
+                            hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
+                        ))
+                
+                fig_dd.update_layout(
+                    title="Drawdown Comparativo",
+                    xaxis_title="Fecha",
+                    yaxis_title="Drawdown (%)",
+                    hovermode='x unified',
+                    height=400,
+                    showlegend=True
+                )
+                st.plotly_chart(fig_dd, use_container_width=True)
+            
+            # -------------------------------------------------
+            # TABLA DE RENDIMIENTOS MENSUALES POR AÑO
+            # -------------------------------------------------
+            st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
+            
+            monthly_table = calculate_monthly_returns_by_year(bt_results["Equity"])
+            
+            if not monthly_table.empty:
+                def style_returns(val):
+                    if val == "-" or val == "":
+                        return ""
+                    try:
+                        num = float(val.rstrip('%'))
+                        if num > 0:
+                            return "background-color: #d4edda; color: #155724; font-weight: bold"
+                        elif num < 0:
+                            return "background-color: #f8d7da; color: #721c24; font-weight: bold"
+                        else:
+                            return ""
+                    except:
+                        return ""
+                
+                styled_table = monthly_table.style.applymap(style_returns)
+                st.dataframe(styled_table, use_container_width=True)
+                
+                # Estadísticas adicionales
+                total_years = len(monthly_table)
+                if total_years > 0:
+                    positive_years = 0
+                    ytd_values = []
+                    
+                    for _, row in monthly_table.iterrows():
+                        if row['YTD'] != "-" and row['YTD'] != "":
+                            try:
+                                ytd_val = float(row['YTD'].rstrip('%'))
+                                ytd_values.append(ytd_val)
+                                if ytd_val > 0:
+                                    positive_years += 1
+                            except:
+                                continue
+                    
+                    if ytd_values:
+                        avg_annual_return = sum(ytd_values) / len(ytd_values)
+                        win_rate = (positive_years / len(ytd_values)) * 100
+                        
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Años Totales", total_years)
+                        col2.metric("Retorno Anual Promedio", f"{avg_annual_return:.1f}%")
+                        col3.metric("Tasa de Éxito Anual", f"{win_rate:.0f}%")
+            
+            # -------------------------------------------------
+            # PICKS HISTÓRICOS
+            # -------------------------------------------------
+            if picks_df is not None and not picks_df.empty:
+                st.subheader("📊 Picks Históricos")
+                
+                if 'HistoricallyValid' in picks_df.columns:
+                    total_picks = len(picks_df)
+                    valid_picks = picks_df['HistoricallyValid'].sum()
+                    validity_rate = valid_picks / total_picks * 100 if total_picks > 0 else 0
+                    
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total de Picks", total_picks)
+                    col2.metric("Picks Válidos", valid_picks)
+                    col3.metric("% Validez Histórica", f"{validity_rate:.1f}%")
+                
+                # Últimos picks
+                latest_date = picks_df["Date"].max()
+                latest_picks = picks_df[picks_df["Date"] == latest_date]
+                
+                st.subheader("🎯 Últimos Picks Seleccionados")
+                st.dataframe(latest_picks.round(2), use_container_width=True)
+                
+                # Gráfico de picks por fecha
+                picks_by_date = picks_df.groupby("Date").size()
+                if len(picks_by_date) > 0:
+                    fig_picks = px.bar(
+                        x=picks_by_date.index,
+                        y=picks_by_date.values,
+                        labels={'x': 'Fecha', 'y': 'Número de Picks'},
+                        title="Número de Picks por Fecha"
+                    )
+                    fig_picks.update_layout(height=400)
+                    st.plotly_chart(fig_picks, use_container_width=True)
+            
+            # -------------------------------------------------
+            # SEÑALES ACTUALES (VELA EN FORMACIÓN)
+            # -------------------------------------------------
+            with st.expander("🔮 Señales Actuales - Vela en Formación", expanded=True):
+                st.subheader("📊 Picks Prospectivos para el Próximo Mes")
+                st.warning("""
+                ⚠️ **IMPORTANTE**: Estas señales usan datos hasta HOY (vela en formación).
+                - Son **preliminares** y pueden cambiar hasta el cierre del mes
+                - En un sistema real, tomarías estas posiciones al inicio del próximo mes
+                """)
+                
+                try:
+                    if prices_df is not None and ohlc_data is not None:
+                        current_scores = inertia_score(prices_df, corte=corte, ohlc_data=ohlc_data)
+                        
+                        if current_scores and "ScoreAdjusted" in current_scores:
+                            score_df = current_scores["ScoreAdjusted"]
+                            inercia_df = current_scores.get("InerciaAlcista", pd.DataFrame())
+                            
+                            if not score_df.empty and len(score_df) > 0:
+                                last_scores = score_df.iloc[-1].dropna().sort_values(ascending=False)
+                                last_inercia = inercia_df.iloc[-1] if not inercia_df.empty else pd.Series()
+                                
+                                if len(last_scores) > 0:
+                                    valid_picks = []
+                                    for ticker in last_scores.index:
+                                        if ticker in prices_df.columns:
+                                            inercia_val = last_inercia.get(ticker, 0) if not last_inercia.empty else 0
+                                            score_adj = last_scores[ticker]
+                                            
+                                            if inercia_val >= corte and score_adj > 0:
+                                                valid_picks.append({
+                                                    'ticker': ticker,
+                                                    'inercia': inercia_val,
+                                                    'score_adj': score_adj
+                                                })
+                                    
+                                    valid_picks = sorted(valid_picks, key=lambda x: x['score_adj'], reverse=True)
+                                    final_picks = valid_picks[:min(top_n, len(valid_picks))]
+                                    
+                                    if final_picks:
+                                        current_picks = []
+                                        for rank, pick in enumerate(final_picks, 1):
+                                            ticker = pick['ticker']
+                                            current_picks.append({
+                                                'Rank': rank,
+                                                'Ticker': ticker,
+                                                'Inercia Alcista': pick['inercia'],
+                                                'Score Ajustado': pick['score_adj'],
+                                                'Precio Actual': prices_df[ticker].iloc[-1] if ticker in prices_df.columns else 0
+                                            })
+                                        
+                                        current_picks_df = pd.DataFrame(current_picks)
+                                        
+                                        data_date = prices_df.index[-1].strftime('%Y-%m-%d')
+                                        st.info(f"📅 **Datos hasta**: {data_date}")
+                                        
+                                        st.subheader(f"🔥 Top {len(current_picks_df)} Picks Actuales")
+                                        
+                                        display_df = current_picks_df.copy()
+                                        display_df['Precio Actual'] = display_df['Precio Actual'].apply(lambda x: f"${x:.2f}")
+                                        display_df['Inercia Alcista'] = display_df['Inercia Alcista'].round(2)
+                                        display_df['Score Ajustado'] = display_df['Score Ajustado'].round(2)
+                                        
+                                        st.dataframe(display_df, use_container_width=True)
+                                        
+                                        # Métricas actuales
+                                        col1, col2, col3 = st.columns(3)
+                                        col1.metric("Picks Actuales", len(current_picks_df))
+                                        col2.metric("Inercia Promedio", f"{current_picks_df['Inercia Alcista'].mean():.2f}")
+                                        col3.metric("Score Promedio", f"{current_picks_df['Score Ajustado'].mean():.2f}")
+                                        
+                                        # Comparación con últimos picks del backtest
+                                        if picks_df is not None and not picks_df.empty:
+                                            st.subheader("🔄 Comparación con Último Mes del Backtest")
+                                            
+                                            latest_bt_date = picks_df["Date"].max()
+                                            latest_bt_picks = picks_df[picks_df["Date"] == latest_bt_date]
+                                            
+                                            if not latest_bt_picks.empty:
+                                                current_tickers = set(current_picks_df['Ticker'].tolist())
+                                                bt_tickers = set(latest_bt_picks['Ticker'].tolist())
+                                                
+                                                mantienen = current_tickers.intersection(bt_tickers)
+                                                nuevos = current_tickers - bt_tickers
+                                                salen = bt_tickers - current_tickers
+                                                
+                                                col1, col2, col3 = st.columns(3)
+                                                
+                                                with col1:
+                                                    st.success(f"**Se Mantienen ({len(mantienen)})**")
+                                                    if mantienen:
+                                                        for ticker in sorted(mantienen):
+                                                            st.text(f"• {ticker}")
+                                                
+                                                with col2:
+                                                    st.info(f"**Nuevos ({len(nuevos)})**")
+                                                    if nuevos:
+                                                        for ticker in sorted(nuevos):
+                                                            st.text(f"• {ticker}")
+                                                
+                                                with col3:
+                                                    st.warning(f"**Salen ({len(salen)})**")
+                                                    if salen:
+                                                        for ticker in sorted(salen):
+                                                            st.text(f"• {ticker}")
+                                                
+                                                rotacion_pct = (len(nuevos) + len(salen)) / (2 * len(current_tickers)) * 100 if current_tickers else 0
+                                                st.metric("% Rotación vs Último Mes", f"{rotacion_pct:.1f}%")
+                                        
+                                        # Instrucciones
+                                        st.subheader("📋 Cómo Usar Estas Señales")
+                                        
+                                        if fixed_allocation:
+                                            capital_info = f"Cada posición: 10% del capital ({len(current_picks_df)} * 10% = {len(current_picks_df) * 10}% invertido)"
+                                        else:
+                                            capital_info = f"Distribución equitativa: {100/len(current_picks_df):.1f}% por posición"
+                                        
+                                        st.info(f"""
+                                        **Para Trading Real:**
+                                        1. 📅 Espera al cierre del mes para señales definitivas
+                                        2. 🔄 Recalcula el último día del mes
+                                        3. 📈 Toma posiciones el primer día del próximo mes
+                                        4. ⏰ Mantén posiciones todo el mes
+                                        5. 🔁 Repite mensualmente
+                                        
+                                        **{capital_info}**
+                                        """)
+                                    else:
+                                        st.warning("No hay picks que pasen el corte actualmente")
+                                
+                except Exception as e:
+                    st.error(f"Error calculando señales actuales: {e}")
+            
+            # -------------------------------------------------
+            # INFORMACIÓN DE VERIFICACIÓN HISTÓRICA
+            # -------------------------------------------------
+            if historical_info and historical_info.get('has_historical_data', False):
+                with st.expander("🕐 Detalles de Verificación Histórica", expanded=False):
+                    st.subheader("Información sobre la verificación histórica")
+                    
+                    changes_data = historical_info['changes_data']
+                    
+                    st.info(f"""
+                    **Datos históricos procesados:**
+                    - Total de cambios: {len(changes_data)}
+                    - Rango temporal: {changes_data['Date'].min()} a {changes_data['Date'].max()}
+                    - Agregaciones: {len(changes_data[changes_data['Action'] == 'Added'])}
+                    - Remociones: {len(changes_data[changes_data['Action'] == 'Removed'])}
+                    """)
+                    
+                    # Mostrar cambios recientes
+                    st.subheader("Cambios recientes en los índices")
+                    recent_changes = changes_data.head(10)
+                    st.dataframe(recent_changes)
+                    
+                    # Gráfico de cambios por año
+                    try:
+                        changes_by_year = changes_data.copy()
+                        changes_by_year['Year'] = pd.to_datetime(changes_by_year['Date']).dt.year
+                        changes_summary = changes_by_year.groupby(['Year', 'Action']).size().unstack(fill_value=0)
+                        
+                        if not changes_summary.empty:
+                            fig_changes = go.Figure()
+                            
+                            if 'Added' in changes_summary.columns:
+                                fig_changes.add_trace(go.Bar(
+                                    x=changes_summary.index,
+                                    y=changes_summary['Added'],
+                                    name='Agregados',
+                                    marker_color='green'
+                                ))
+                            
+                            if 'Removed' in changes_summary.columns:
+                                fig_changes.add_trace(go.Bar(
+                                    x=changes_summary.index,
+                                    y=changes_summary['Removed'],
+                                    name='Removidos',
+                                    marker_color='red'
+                                ))
+                            
+                            fig_changes.update_layout(
+                                title="Cambios en Índices por Año",
+                                xaxis_title="Año",
+                                yaxis_title="Número de Cambios",
+                                barmode='group',
+                                height=400
+                            )
+                            
+                            st.plotly_chart(fig_changes, use_container_width=True)
+                    except Exception as e:
+                        st.warning(f"Error creando gráfico de cambios: {e}")
+            
+            # -------------------------------------------------
+            # RESUMEN DE TICKERS REMOVIDOS
+            # -------------------------------------------------
+            try:
+                removed_summary = generate_removed_tickers_summary()
+                if not removed_summary.empty:
+                    with st.expander("📥 Tickers Removidos - Oportunidad de Datos", expanded=False):
+                        st.info(f"""
+                        💡 **Oportunidad**: Estos {len(removed_summary)} tickers fueron removidos pero 
+                        podrían ser útiles para el backtest en fechas cuando SÍ estaban incluidos.
+                        """)
+                        
+                        st.subheader("Tickers removidos más recientemente")
+                        st.dataframe(removed_summary.head(20), use_container_width=True)
+                        
+                        col1, col2, col3 = st.columns(3)
+                        sp500_count = len(removed_summary[removed_summary['Indices'].str.contains('SP500')])
+                        ndx_count = len(removed_summary[removed_summary['Indices'].str.contains('NDX')])
+                        both_count = len(removed_summary[removed_summary['Indices'].str.contains('SP500') & 
+                                                      removed_summary['Indices'].str.contains('NDX')])
+                        
+                        col1.metric("S&P 500 Removidos", sp500_count)
+                        col2.metric("NASDAQ-100 Removidos", ndx_count)
+                        col3.metric("Removidos de Ambos", both_count)
+            except:
+                pass
             
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
@@ -361,7 +816,25 @@ if run_button:
 else:
     st.info("👈 Configura los parámetros y haz clic en 'Ejecutar backtest'")
     
-    # Mostrar estado del caché
+    st.subheader("🔍 Información del Sistema")
+    st.info("""
+    **Características principales:**
+    - ✅ Verificación histórica de constituyentes
+    - ✅ Cálculos optimizados con precálculo y paralelización
+    - ✅ Caché multinivel para carga instantánea
+    - ✅ Comparación completa con benchmark
+    - ✅ Tabla de rendimientos mensuales
+    - ✅ Señales actuales con vela en formación
+    - ✅ Filtros de mercado configurables
+    
+    **Mejoras de rendimiento:**
+    - ⚡ ATR vectorizado con EWM
+    - ⚡ Carga paralela de CSVs
+    - ⚡ Precálculo de indicadores
+    - ⚡ Caché persistente de resultados
+    """)
+    
+    # Mostrar información de caché
     cache_files = glob.glob(os.path.join(CACHE_DIR, "backtest_*.pkl"))
     if cache_files:
         st.info(f"💾 {len(cache_files)} resultados en caché disponibles para carga instantánea")
