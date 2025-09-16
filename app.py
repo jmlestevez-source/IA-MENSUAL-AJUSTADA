@@ -307,8 +307,10 @@ def load_prices_from_csv(tickers, start_date, end_date, load_full_data=True):
 # Main content
 # -------------------------------------------------
 if run_button:
-    # Inicializar variable para evitar errores
+    # Inicializar variables
     historical_info = None
+    sp500_changes_df = pd.DataFrame()
+    ndx_changes_df = pd.DataFrame()
     
     try:
         with st.spinner("Cargando datos desde CSV..."):
@@ -459,7 +461,7 @@ if run_button:
             else:
                 st.success(f"✅ Benchmark {benchmark_ticker} cargado correctamente desde CSV")
             
-                        # ✅ NUEVO: Cargar SPY para filtros si es necesario
+            # ✅ NUEVO: Cargar SPY para filtros si es necesario
             spy_df = None
             if (use_roc_filter or use_sma_filter) and benchmark_ticker != "SPY":
                 st.info("📊 Cargando datos del SPY para filtros de mercado...")
@@ -501,25 +503,33 @@ if run_button:
                     changes_data = pd.DataFrame()
                     changes_loaded = []
                     
+                    # Cargar y actualizar cambios del S&P 500
                     if index_choice in ["SP500", "Ambos (SP500 + NDX)"]:
                         try:
-                            sp500_changes = get_sp500_historical_changes()
-                            if not sp500_changes.empty:
-                                changes_data = pd.concat([changes_data, sp500_changes], ignore_index=True)
-                                changes_loaded.append(f"S&P 500: {len(sp500_changes)} cambios")
-                                st.success(f"✅ Cargados {len(sp500_changes)} cambios del S&P 500")
+                            sp500_changes_current = get_sp500_historical_changes()
+                            sp500_changes_updated = update_changes_with_new_data("sp500", sp500_changes_current)
+                            sp500_changes_df = sp500_changes_updated  # Guardar para descarga
+                            
+                            if not sp500_changes_updated.empty:
+                                changes_data = pd.concat([changes_data, sp500_changes_updated], ignore_index=True)
+                                changes_loaded.append(f"S&P 500: {len(sp500_changes_updated)} cambios")
+                                st.success(f"✅ Cargados {len(sp500_changes_updated)} cambios del S&P 500 (actualizados)")
                             else:
                                 st.warning("⚠️  No se pudieron cargar cambios del S&P 500")
                         except Exception as e:
                             st.error(f"❌ Error cargando S&P 500: {e}")
                     
+                    # Cargar y actualizar cambios del NASDAQ-100
                     if index_choice in ["NDX", "Ambos (SP500 + NDX)"]:
                         try:
-                            ndx_changes = get_nasdaq100_historical_changes()
-                            if not ndx_changes.empty:
-                                changes_data = pd.concat([changes_data, ndx_changes], ignore_index=True)
-                                changes_loaded.append(f"NASDAQ-100: {len(ndx_changes)} cambios")
-                                st.success(f"✅ Cargados {len(ndx_changes)} cambios del NASDAQ-100")
+                            ndx_changes_current = get_nasdaq100_historical_changes()
+                            ndx_changes_updated = update_changes_with_new_data("ndx", ndx_changes_current)
+                            ndx_changes_df = ndx_changes_updated  # Guardar para descarga
+                            
+                            if not ndx_changes_updated.empty:
+                                changes_data = pd.concat([changes_data, ndx_changes_updated], ignore_index=True)
+                                changes_loaded.append(f"NASDAQ-100: {len(ndx_changes_updated)} cambios")
+                                st.success(f"✅ Cargados {len(ndx_changes_updated)} cambios del NASDAQ-100 (actualizados)")
                             else:
                                 st.warning("⚠️  No se pudieron cargar cambios del NASDAQ-100")
                         except Exception as e:
@@ -746,7 +756,7 @@ if run_button:
                 bench_initial = float(bench_equity.iloc[0])
                 bench_total_return = (bench_final / bench_initial) - 1 if bench_initial != 0 else 0
                 
-                                # CAGR del benchmark
+                # CAGR del benchmark
                 if years > 0:
                     bench_cagr = (bench_final / bench_initial) ** (1/years) - 1
                 else:
@@ -1035,7 +1045,7 @@ if run_button:
                                         max_score_current = current_picks_df['Score Ajustado'].max()
                                         st.metric("Score Adj Máximo", f"{max_score_current:.2f}")
                                     
-                                                                        # Comparación con último backtest
+                                    # Comparación con último backtest
                                     if 'picks_df' in locals() and picks_df is not None and not picks_df.empty:
                                         st.subheader("🔄 Comparación con Últimos Picks del Backtest")
                                         
@@ -1149,69 +1159,6 @@ if run_button:
                     st.exception(e)
 
             # -------------------------------------------------
-            # ✅ NUEVO: Tabla de Rendimientos Mensuales por Año
-            # -------------------------------------------------
-            if bt_results is not None and not bt_results.empty and "Equity" in bt_results.columns:
-                try:
-                    st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
-                    
-                    monthly_table = calculate_monthly_returns_by_year(bt_results["Equity"])
-                    
-                    if not monthly_table.empty:
-                        # Aplicar estilo condicional
-                        def style_returns(val):
-                            if val == "-" or val == "":
-                                return ""
-                            try:
-                                # Extraer número de porcentaje
-                                num = float(val.rstrip('%'))
-                                if num > 0:
-                                    return "background-color: #d4edda; color: #155724; font-weight: bold"  # Verde claro
-                                elif num < 0:
-                                    return "background-color: #f8d7da; color: #721c24; font-weight: bold"  # Rojo claro
-                                else:
-                                    return ""
-                            except:
-                                return ""
-                        
-                        # Mostrar tabla con estilo
-                        styled_table = monthly_table.style.applymap(style_returns)
-                        st.dataframe(styled_table, use_container_width=True)
-                        
-                        # Estadísticas adicionales
-                        total_years = len(monthly_table)
-                        if total_years > 0:
-                            # Calcular años con retornos positivos
-                            positive_years = 0
-                            avg_annual_return = 0
-                            
-                            ytd_values = []
-                            for _, row in monthly_table.iterrows():
-                                if row['YTD'] != "-" and row['YTD'] != "":
-                                    try:
-                                        ytd_val = float(row['YTD'].rstrip('%'))
-                                        ytd_values.append(ytd_val)
-                                        if ytd_val > 0:
-                                            positive_years += 1
-                                    except:
-                                        continue
-                            
-                            if ytd_values:
-                                avg_annual_return = sum(ytd_values) / len(ytd_values)
-                                win_rate = (positive_years / len(ytd_values)) * 100
-                                
-                                col1, col2, col3 = st.columns(3)
-                                col1.metric("Años Totales", total_years)
-                                col2.metric("Retorno Anual Promedio", f"{avg_annual_return:.1f}%")
-                                col3.metric("Tasa de Éxito Anual", f"{win_rate:.0f}%")
-                    
-                    else:
-                        st.info("No hay datos suficientes para mostrar la tabla de rendimientos mensuales")
-                        
-                except Exception as table_error:
-                    st.warning(f"No se pudo generar la tabla de rendimientos mensuales: {table_error}")
-
-            # -------------------------------------------------
             # Información adicional sobre verificación histórica
             # -------------------------------------------------
             if historical_info and historical_info.get('has_historical_data', False):
@@ -1288,6 +1235,75 @@ if run_button:
                             st.plotly_chart(fig_changes, use_container_width=True)
                     except Exception as e:
                         st.warning(f"Error creando gráfico de cambios: {e}")
+
+            # -------------------------------------------------
+            # ✅ NUEVO: Tabla de Rendimientos Mensuales por Año
+            # -------------------------------------------------
+            if bt_results is not None and not bt_results.empty and "Equity" in bt_results.columns:
+                try:
+                    st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
+                    
+                    monthly_table = calculate_monthly_returns_by_year(bt_results["Equity"])
+                    
+                    if not monthly_table.empty:
+                        # Aplicar estilo condicional
+                        def style_returns(val):
+                            if val == "-" or val == "":
+                                return ""
+                            try:
+                                # Extraer número de porcentaje
+                                num = float(val.rstrip('%'))
+                                if num > 0:
+                                    return "background-color: #d4edda; color: #155724; font-weight: bold"  # Verde claro
+                                elif num < 0:
+                                    return "background-color: #f8d7da; color: #721c24; font-weight: bold"  # Rojo claro
+                                else:
+                                    return ""
+                            except:
+                                return ""
+                        
+                        # Mostrar tabla con estilo
+                        styled_table = monthly_table.style.applymap(style_returns)
+                        st.dataframe(styled_table, use_container_width=True)
+                        
+                        # Estadísticas adicionales
+                        total_years = len(monthly_table)
+                        if total_years > 0:
+                            # Calcular años con retornos positivos
+                            positive_years = 0
+                            avg_annual_return = 0
+                            
+                            ytd_values = []
+                            for _, row in monthly_table.iterrows():
+                                if row['YTD'] != "-" and row['YTD'] != "":
+                                    try:
+                                        ytd_val = float(row['YTD'].rstrip('%'))
+                                        ytd_values.append(ytd_val)
+                                        if ytd_val > 0:
+                                            positive_years += 1
+                                    except:
+                                        continue
+                            
+                            if ytd_values:
+                                avg_annual_return = sum(ytd_values) / len(ytd_values)
+                                win_rate = (positive_years / len(ytd_values)) * 100
+                                
+                                col1, col2, col3 = st.columns(3)
+                                col1.metric("Años Totales", total_years)
+                                col2.metric("Retorno Anual Promedio", f"{avg_annual_return:.1f}%")
+                                col3.metric("Tasa de Éxito Anual", f"{win_rate:.0f}%")
+                    
+                    else:
+                        st.info("No hay datos suficientes para mostrar la tabla de rendimientos mensuales")
+                        
+                except Exception as table_error:
+                    st.warning(f"No se pudo generar la tabla de rendimientos mensuales: {table_error}")
+
+            # -------------------------------------------------
+            # ✅ NUEVO: Mostrar botones de descarga de CSV
+            # -------------------------------------------------
+            if use_historical_verification and (not sp500_changes_df.empty or not ndx_changes_df.empty):
+                show_download_buttons(sp500_changes_df, ndx_changes_df)
 
     except Exception as e:
         st.error(f"❌ Excepción no capturada: {str(e)}")
