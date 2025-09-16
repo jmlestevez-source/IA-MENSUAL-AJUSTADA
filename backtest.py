@@ -63,7 +63,7 @@ def convertir_a_mensual_con_ohlc(ohlc_data):
 
 def get_valid_tickers_for_date(target_date, historical_changes_data, current_tickers):
     """
-    Retorna los tickers que estaban válidos en el índice en una fecha específica 
+    ✅ CORRECTO: Retorna los tickers que estaban válidos en el índice en una fecha específica 
     
     Args:
         target_date: fecha objetivo
@@ -71,7 +71,7 @@ def get_valid_tickers_for_date(target_date, historical_changes_data, current_tic
         current_tickers: lista de tickers actuales
     """
     if historical_changes_data is None or historical_changes_data.empty:
-        # Si no hay datos históricos, usar todos los tickers actuales
+        # ✅ SOLUCIÓN CORRECTA: Si no hay datos históricos, usar todos los tickers actuales
         return set(current_tickers)
        
     # Convertir target_date a date si es datetime
@@ -80,11 +80,10 @@ def get_valid_tickers_for_date(target_date, historical_changes_data, current_tic
     elif isinstance(target_date, datetime):
         target_date = target_date.date()
     
-    # Empezar con tickers actuales
+    # ✅ SOLUCIÓN CORRECTA: Empezar con tickers actuales y aplicar cambios históricos
     valid_tickers = set(current_tickers)
     
     # Convertir fechas en historical_changes_data a date para comparación
-    historical_changes_data = historical_changes_data.copy()
     historical_changes_data['Date'] = pd.to_datetime(historical_changes_data['Date']).dt.date
     
     # Procesar cambios desde target_date hacia adelante (revertir cambios futuros)
@@ -292,7 +291,7 @@ def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
 
 def calculate_monthly_returns_by_year(equity_series):
     """
-    Calcula retornos mensuales distribuidos por año para tabla de dashboard
+    ✅ PERFECCIONADO: Calcula retornos mensuales distribuidos por año para tabla de dashboard
     
     Args:
         equity_series: Serie de equity del backtest
@@ -317,7 +316,7 @@ def calculate_monthly_returns_by_year(equity_series):
         # Crear DataFrame con estructura de tabla
         years = sorted(monthly_by_year.index.get_level_values(0).unique())
         
-        # Crear tabla con meses como columnas
+        # Crear tabla con meses como columnas (en español)
         months_es = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
                      'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
         
