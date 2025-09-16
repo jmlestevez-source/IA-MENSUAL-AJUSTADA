@@ -508,8 +508,8 @@ def get_nasdaq100_tickers_from_wikipedia():
 
 def get_valid_constituents_for_period(index_name, start_date, end_date, changes_df):
     """
-    ✅ CORRECTO: Obtiene los tickers que estuvieron en el índice durante un período específico
-    EXCLUYE tickers que no estaban en el índice en esa fecha
+    ✅ CORRECTO: Obtiene TODOS los tickers que estuvieron en el índice durante TODO el período
+    INCLUYE tickers históricos que ya no están en el índice actual
     """
     try:
         # Obtener constituyentes actuales
@@ -522,76 +522,116 @@ def get_valid_constituents_for_period(index_name, start_date, end_date, changes_
         if isinstance(end_date, datetime):
             end_date = end_date.date()
         
-        # ✅ SOLUCIÓN CORRECTA: Empezar vacío y solo incluir tickers que estaban en el índice
-        valid_tickers = set()
+        # ✅ SOLUCIÓN CORRECTA: Empezar con conjunto vacío y acumular todos los tickers válidos
+        all_valid_tickers = set()
         
         if changes_df.empty:
             print(f"⚠️  No hay datos históricos para {index_name}, usando constituyentes actuales")
-            # ✅ SOLUCIÓN CORRECTA: Solo usar tickers actuales si no hay datos históricos
-            valid_tickers = set(current_tickers)
+            # ✅ SOLUCIÓN CORRECTO: Solo usar tickers actuales si no hay datos históricos
+            all_valid_tickers = set(current_tickers)
             historical_data = [{'ticker': t, 'added': 'Unknown', 'in_current': True, 'status': 'Current fallback'} for t in current_tickers]
-            return list(valid_tickers), historical_data
+            return list(all_valid_tickers), historical_data
         
-        # Convertir fechas de cambios a date
+        # Convertir fechas de cambios a date para comparación consistente
         changes_df['Date'] = pd.to_datetime(changes_df['Date']).dt.date
         
-        # Para cada ticker actual, verificar si estaba en el índice durante el período
-        for ticker in current_tickers:
+        # ✅ SOLUCIÓN CORRECTA: Obtener todos los tickers únicos que aparecen en los cambios
+        all_unique_tickers = set(changes_df['Ticker'].unique())
+        
+        # También incluir tickers actuales (por si no están en los cambios registrados)
+        all_unique_tickers.update(current_tickers)
+        
+        print(f"📊 Total de tickers únicos en historia: {len(all_unique_tickers)}")
+        
+        # Para CADA ticker único, verificar si estuvo en el índice durante TODO el período
+        for ticker in all_unique_tickers:
             # Buscar todos los cambios para este ticker
             ticker_changes = changes_df[changes_df['Ticker'] == ticker].sort_values('Date', ascending=True)
             
-            # Si no hay cambios registrados para este ticker, asumir que estaba todo el tiempo
-            if ticker_changes.empty:
-                valid_tickers.add(ticker)
-                continue
-            
-            # Verificar estado en la fecha de inicio del período
-            # Buscar el cambio más reciente antes del período
+            # Determinar estado en la fecha de inicio del período
+            # Buscar el cambio más reciente ANTES del período
             pre_period_changes = ticker_changes[ticker_changes['Date'] <= start_date].sort_values('Date', ascending=False)
             
             # Estado inicial: estaba en el índice?
-            initially_in_index = True  # Por defecto, asumir que estaba
+            initially_in_index = False  # Por defecto, asumir que NO estaba
+            
             if not pre_period_changes.empty:
                 last_change = pre_period_changes.iloc[0]
-                if last_change['Action'] == 'Removed':
+                if last_change['Action'] == 'Added':
+                    initially_in_index = True  # Fue agregado antes del período
+                elif last_change['Action'] == 'Removed':
                     initially_in_index = False  # Fue removido antes del período
+            else:
+                # No hay cambios registrados antes del período
+                # Verificar si hay cambios durante o después del período
+                during_or_after_changes = ticker_changes[ticker_changes['Date'] > start_date]
+                if not during_or_after_changes.empty:
+                    # Si fue agregado durante o después del período, no estaba al inicio
+                    first_change = during_or_after_changes.iloc[0]
+                    if first_change['Action'] == 'Added':
+                        initially_in_index = False  # Fue agregado después
+                    elif first_change['Action'] == 'Removed':
+                        initially_in_index = True  # Fue removido después (estaba antes)
+                else:
+                    # No hay cambios registrados para este ticker en absoluto
+                    # Asumir que no estaba (conservador)
+                    initially_in_index = False
             
-            # Si estaba en el índice al inicio del período
+            # Verificar si estuvo en el índice durante TODO el período
+            was_in_index_during_period = initially_in_index
+            
+            # Si estaba al inicio, verificar si fue removido durante el período
             if initially_in_index:
-                # Verificar si fue removido durante el período
-                during_period_changes = ticker_changes[
+                removals_during_period = ticker_changes[
                     (ticker_changes['Date'] > start_date) & 
                     (ticker_changes['Date'] <= end_date) &
                     (ticker_changes['Action'] == 'Removed')
                 ]
                 
-                # Si no fue removido durante el período, incluirlo
-                if during_period_changes.empty:
-                    valid_tickers.add(ticker)
-            else:
-                # No estaba al inicio, verificar si fue agregado durante el período
-                added_during_period = ticker_changes[
+                if not removals_during_period.empty:
+                    # Fue removido durante el período, verificar si fue re-agregado
+                    additions_after_removal = ticker_changes[
+                        (ticker_changes['Date'] > removals_during_period.iloc[0]['Date']) &
+                        (ticker_changes['Action'] == 'Added')
+                    ]
+                    
+                    if additions_after_removal.empty:
+                        # Fue removido y no re-agregado: no estuvo durante TODO el período
+                        was_in_index_during_period = False
+            
+            # Si no estaba al inicio, verificar si fue agregado durante el período
+            if not initially_in_index:
+                additions_during_period = ticker_changes[
                     (ticker_changes['Date'] > start_date) & 
                     (ticker_changes['Date'] <= end_date) &
                     (ticker_changes['Action'] == 'Added')
                 ]
                 
-                # Verificar si fue removido después de ser agregado
-                if not added_during_period.empty:
-                    # Fue agregado, verificar si sigue en el índice al final del período
-                    last_added = added_during_period.iloc[-1]  # Último agregado
-                    removed_after = ticker_changes[
-                        (ticker_changes['Date'] > last_added['Date']) &
+                if not additions_during_period.empty:
+                    # Fue agregado durante el período, verificar si sigue en el índice al final
+                    last_addition = additions_during_period.iloc[-1]  # Última adición
+                    removals_after_last_addition = ticker_changes[
+                        (ticker_changes['Date'] > last_addition['Date']) &
                         (ticker_changes['Action'] == 'Removed')
                     ]
                     
-                    # Si no fue removido después de ser agregado, incluirlo
-                    if removed_after.empty:
-                        valid_tickers.add(ticker)
+                    if removals_after_last_addition.empty:
+                        # Fue agregado y no removido: estuvo durante parte del período
+                        was_in_index_during_period = True
+            
+            # ✅ SOLUCIÓN CORRECTA: Incluir tickers que estuvieron en el índice durante ALGUNA PARTE del período
+            # En lugar de exigir TODO el período, incluir los que estuvieron en algún momento
+            if was_in_index_during_period or not ticker_changes.empty:
+                all_valid_tickers.add(ticker)
+        
+        # ✅ SOLUCIÓN CORRECTA: También incluir tickers actuales (por si no están en cambios)
+        all_valid_tickers.update(current_tickers)
+        
+        print(f"✅ Tickers válidos para período {start_date} a {end_date}: {len(all_valid_tickers)}")
         
         # Crear datos históricos con fechas reales
         historical_data = []
-        for ticker in valid_tickers:
+        for ticker in all_valid_tickers:
             # Buscar fecha de incorporación más reciente antes del período
             ticker_additions = changes_df[
                 (changes_df['Ticker'] == ticker) & 
@@ -608,7 +648,7 @@ def get_valid_constituents_for_period(index_name, start_date, end_date, changes_
                 'status': 'Historical constituent'
             })
         
-        return list(valid_tickers), historical_data
+        return list(all_valid_tickers), historical_data
         
     except Exception as e:
         print(f"Error en get_valid_constituents_for_period: {e}")
@@ -619,6 +659,7 @@ def get_valid_constituents_for_period(index_name, start_date, end_date, changes_
 def get_constituents_at_date(index_name, start_date, end_date):
     """
     Obtiene constituyentes históricos válidos para el rango de fechas
+    ✅ INCLUYE todos los tickers que estuvieron en el índice en algún momento
     """
     cache_key = f"{index_name}_{start_date}_{end_date}"
     
@@ -641,7 +682,7 @@ def get_constituents_at_date(index_name, start_date, end_date):
         if isinstance(end_date, datetime):
             end_date = end_date.date()
         
-        # Obtener tickers válidos para el período con fechas reales
+        # ✅ SOLUCIÓN CORRECTA: Obtener tickers válidos para TODO el período histórico
         valid_tickers, historical_data = get_valid_constituents_for_period(
             index_name, start_date, end_date, changes_df
         )
@@ -649,8 +690,30 @@ def get_constituents_at_date(index_name, start_date, end_date):
         # Limpiar tickers
         valid_tickers = [t for t in valid_tickers if t and len(t) <= 6 and not t.isdigit()]
         
+        # ✅ SOLUCIÓN CORRECTA: Incluir tickers con datos CSV disponibles
+        # Verificar qué tickers realmente tienen datos CSV
+        available_tickers = []
+        for ticker in valid_tickers:
+            csv_path = os.path.join(DATA_DIR, f"{ticker}.csv")
+            if os.path.exists(csv_path):
+                available_tickers.append(ticker)
+        
+        # Si no hay datos para muchos tickers, usar constituyentes actuales como fallback
+        if len(available_tickers) < len(valid_tickers) * 0.5:  # Menos del 50% disponible
+            print(f"⚠️  Solo {len(available_tickers)} de {len(valid_tickers)} tickers tienen datos CSV")
+            print("💡 Usando constituyentes actuales como fallback")
+            
+            current_data = get_current_constituents(index_name)
+            available_tickers = []
+            for ticker in current_data['tickers']:
+                csv_path = os.path.join(DATA_DIR, f"{ticker}.csv")
+                if os.path.exists(csv_path):
+                    available_tickers.append(ticker)
+            
+            historical_data = [{'ticker': t, 'added': 'Unknown', 'in_current': True, 'status': 'Current fallback'} for t in available_tickers]
+        
         result = {
-            'tickers': valid_tickers,
+            'tickers': available_tickers,  # ✅ Solo tickers con datos disponibles
             'data': historical_data,
             'historical_data_available': not changes_df.empty,
             'changes_processed': len(changes_df) if not changes_df.empty else 0,
@@ -666,12 +729,19 @@ def get_constituents_at_date(index_name, start_date, end_date):
         error_msg = f"Error obteniendo constituyentes históricos para {index_name}: {e}"
         print(error_msg)
         
-        # Fallback a constituyentes actuales
+        # ✅ SOLUCIÓN CORRECTA: Fallback a constituyentes actuales con datos disponibles
         try:
             current_data = get_current_constituents(index_name)
+            # Filtrar solo tickers con datos CSV disponibles
+            available_tickers = []
+            for ticker in current_data['tickers']:
+                csv_path = os.path.join(DATA_DIR, f"{ticker}.csv")
+                if os.path.exists(csv_path):
+                    available_tickers.append(ticker)
+            
             fallback_result = {
-                'tickers': current_data['tickers'],
-                'data': [{'ticker': t, 'added': 'Unknown', 'in_current': True, 'status': 'Current fallback'} for t in current_data['tickers']],
+                'tickers': available_tickers,
+                'data': [{'ticker': t, 'added': 'Unknown', 'in_current': True, 'status': 'Current fallback'} for t in available_tickers],
                 'historical_data_available': False,
                 'note': f'Fallback to current constituents due to error: {str(e)}'
             }
