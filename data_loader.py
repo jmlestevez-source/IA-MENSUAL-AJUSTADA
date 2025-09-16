@@ -16,6 +16,29 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # Cache para datos históricos
 _historical_cache = {}
 
+def validate_and_adjust_date(date_obj, min_date=datetime(1950, 1, 1), max_date=datetime(2030, 12, 31)):
+    """
+    ✅ Valida y ajusta fechas fuera de rango permitido
+    """
+    try:
+        if isinstance(date_obj, datetime):
+            date_to_check = date_obj
+        elif isinstance(date_obj, pd.Timestamp):
+            date_to_check = date_obj.to_pydatetime()
+        else:
+            date_to_check = pd.to_datetime(date_obj).to_pydatetime()
+        
+        # Ajustar fechas fuera de rango
+        if date_to_check < min_date:
+            return min_date.date() if hasattr(min_date, 'date') else min_date
+        elif date_to_check > max_date:
+            return max_date.date() if hasattr(max_date, 'date') else max_date
+        else:
+            return date_to_check.date() if hasattr(date_to_check, 'date') else date_to_check
+    except:
+        # Fallback seguro
+        return datetime(2010, 1, 1).date()
+
 def parse_wikipedia_date(date_str):
     """Parsea fechas de Wikipedia en diferentes formatos"""
     if pd.isna(date_str) or not date_str or str(date_str).lower() in ['nan', 'none', '']:
@@ -618,7 +641,7 @@ def get_constituents_at_date(index_name, start_date, end_date):
         if isinstance(end_date, datetime):
             end_date = end_date.date()
         
-        # ✅ SOLUCIÓN CORRECTA: Obtener tickers válidos para el período
+        # Obtener tickers válidos para el período con fechas reales
         valid_tickers, historical_data = get_valid_constituents_for_period(
             index_name, start_date, end_date, changes_df
         )
@@ -643,7 +666,7 @@ def get_constituents_at_date(index_name, start_date, end_date):
         error_msg = f"Error obteniendo constituyentes históricos para {index_name}: {e}"
         print(error_msg)
         
-        # ✅ SOLUCIÓN CORRECTA: Fallback a constituyentes actuales
+        # Fallback a constituyentes actuales
         try:
             current_data = get_current_constituents(index_name)
             fallback_result = {
@@ -708,43 +731,12 @@ def generate_removed_tickers_summary():
         traceback.print_exc()
         return pd.DataFrame()
 
-# Añade esta función para validar fechas de manera flexible:
-
-def validate_and_adjust_date(date_obj, min_date=datetime(1950, 1, 1), max_date=datetime(2030, 12, 31)):
-    """
-    ✅ Valida y ajusta fechas fuera de rango permitido
-    """
-    if isinstance(date_obj, datetime):
-        date_to_check = date_obj
-    elif isinstance(date_obj, pd.Timestamp):
-        date_to_check = date_obj.to_pydatetime()
-    else:
-        date_to_check = pd.to_datetime(date_obj).to_pydatetime()
-    
-    # Ajustar fechas fuera de rango
-    if date_to_check < min_date:
-        return min_date.date() if hasattr(min_date, 'date') else min_date
-    elif date_to_check > max_date:
-        return max_date.date() if hasattr(max_date, 'date') else max_date
-    else:
-        return date_to_check.date() if hasattr(date_to_check, 'date') else date_to_check
-
-# En la función download_prices, añade esta validación:
-
 def download_prices(tickers, start_date, end_date):
     """
-    ✅ Carga precios desde archivos CSV con validación flexible de fechas
+    Carga precios desde archivos CSV en la carpeta data/
+    Formato esperado: data/AAPL.csv, data/MSFT.csv, etc.
     """
-    # ✅ CORRECCIÓN: Validar y ajustar fechas
-    try:
-        adjusted_start = validate_and_adjust_date(start_date, datetime(1950, 1, 1), datetime(2030, 12, 31))
-        adjusted_end = validate_and_adjust_date(end_date, datetime(1950, 1, 1), datetime(2030, 12, 31))
-        
-        st.info(f"📅 Fechas ajustadas: {adjusted_start} a {adjusted_end}")
-        
-        # Resto del código existente...
-    
-        prices_data = {}
+    prices_data = {}
     
     # Normalizar entrada de tickers
     if isinstance(tickers, dict) and 'tickers' in tickers:
@@ -755,14 +747,6 @@ def download_prices(tickers, start_date, end_date):
         ticker_list = [tickers]
     else:
         ticker_list = []
-        
-    except Exception as e:
-        st.warning(f"⚠️ Error validando fechas: {e}")
-        # Usar fechas por defecto seguras
-        adjusted_start = datetime(2010, 1, 1).date()
-        adjusted_end = datetime(2025, 12, 31).date()
-        st.info(f"🔧 Usando fechas seguras: {adjusted_start} a {adjusted_end}")
-
     
     # Limpiar y normalizar tickers
     ticker_list = [str(t).strip().upper().replace('.', '-') for t in ticker_list]
@@ -774,6 +758,12 @@ def download_prices(tickers, start_date, end_date):
     
     print(f"Cargando {len(ticker_list)} tickers desde CSV...")
     
+    # ✅ CORRECCIÓN: Validar y ajustar fechas
+    adjusted_start = validate_and_adjust_date(start_date, datetime(1950, 1, 1), datetime(2030, 12, 31))
+    adjusted_end = validate_and_adjust_date(end_date, datetime(1950, 1, 1), datetime(2030, 12, 31))
+    
+    print(f"📅 Fechas ajustadas: {adjusted_start} a {adjusted_end}")
+    
     for ticker in ticker_list:
         csv_path = os.path.join(DATA_DIR, f"{ticker}.csv")
         if os.path.exists(csv_path):
@@ -781,13 +771,13 @@ def download_prices(tickers, start_date, end_date):
                 # Leer CSV con Date como índice
                 df = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
                 
-                # Filtrar por rango de fechas
-                if isinstance(start_date, datetime):
-                    start_date = start_date.date()
-                if isinstance(end_date, datetime):
-                    end_date = end_date.date()
-                    
-                df = df[(df.index.date >= start_date) & (df.index.date <= end_date)]
+                # ✅ CORRECCIÓN: Manejar fechas con timezone
+                if hasattr(df.index, 'tz') and df.index.tz is not None:
+                    # Convertir a timezone-naive (remover timezone)
+                    df.index = df.index.tz_localize(None)
+                
+                # Filtrar por rango de fechas ajustado
+                df = df[(df.index.date >= adjusted_start) & (df.index.date <= adjusted_end)]
                 
                 if not df.empty:
                     # Prioridad: Adj Close → Close → primera columna numérica
