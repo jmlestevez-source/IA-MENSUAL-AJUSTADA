@@ -9,29 +9,23 @@ import numpy as np
 import re
 from dateutil import parser
 import glob
+from concurrent.futures import ThreadPoolExecutor
+import warnings
+warnings.filterwarnings('ignore')
 
-# Directorio para datos
 DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
-
-# Cache para datos históricos
 _historical_cache = {}
 
 def parse_wikipedia_date(date_str):
-    """Parsea fechas de Wikipedia en diferentes formatos"""
     if pd.isna(date_str) or not date_str or str(date_str).lower() in ['nan', 'none', '']:
         return None
-    
     date_str = str(date_str).strip()
-    
     try:
-        # Intentar parsing directo con dateutil
         parsed_date = parser.parse(date_str, fuzzy=True)
         return parsed_date.date()
     except:
         try:
-            # Patrones específicos para fechas del S&P 500
-            # Ejemplo: "September 22, 2025"
             month_map = {
                 'january': 1, 'february': 2, 'march': 3, 'april': 4,
                 'may': 5, 'june': 6, 'july': 7, 'august': 8,
@@ -40,31 +34,21 @@ def parse_wikipedia_date(date_str):
                 'jun': 6, 'jul': 7, 'aug': 8, 'sep': 9,
                 'oct': 10, 'nov': 11, 'dec': 12
             }
-            
-            # Limpiar y dividir
             clean_date = re.sub(r'[^\w\s,]', ' ', date_str.lower())
             parts = clean_date.split()
-            
             if len(parts) >= 3:
-                # Buscar mes
                 month = None
                 for part in parts:
                     if part.replace(',', '') in month_map:
                         month = month_map[part.replace(',', '')]
                         break
-                
-                # Buscar día y año
                 numbers = [int(re.findall(r'\d+', part)[0]) for part in parts if re.findall(r'\d+', part)]
-                
                 if month and len(numbers) >= 2:
-                    # Determinar cuál es día y cuál es año
-                    day = min(numbers)  # El número menor suele ser el día
-                    year = max(numbers)  # El número mayor suele ser el año
-                    
+                    day = min(numbers)
+                    year = max(numbers)
                     if day <= 31 and year >= 1900:
                         from datetime import date
                         return date(year, month, day)
-            
             return None
         except:
             return None
