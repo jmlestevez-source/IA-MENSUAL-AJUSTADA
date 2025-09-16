@@ -35,94 +35,93 @@ jobs:
           import yfinance as yf
           import pandas as pd
           import os
+          import glob
           from datetime import datetime, timedelta
-          import requests
-          from io import StringIO
           
-          def get_sp500_tickers():
-              """Obtiene tickers actuales del S&P 500"""
-              try:
-                  url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-                  tables = pd.read_html(url)
-                  df = tables[0]
-                  tickers = df.iloc[:, 0].str.replace('.', '-').tolist()
-                  return [t for t in tickers if t and len(t) <= 6]
-              except:
-                  return []
-          
-          def get_nasdaq100_tickers():
-              """Obtiene tickers actuales del Nasdaq-100"""
-              try:
-                  url = "https://en.wikipedia.org/wiki/NASDAQ-100"
-                  tables = pd.read_html(url)
-                  # Intentar encontrar la tabla correcta
-                  for table in tables:
-                      if len(table.columns) >= 2:
-                          for col in table.columns:
-                              if 'Ticker' in str(col) or 'Symbol' in str(col):
-                                  tickers = table[col].str.replace('.', '-').tolist()
-                                  return [t for t in tickers if t and len(t) <= 6]
-                  # Fallback
-                  if len(tables) >= 3:
-                      tickers = tables[2].iloc[:, 1].str.replace('.', '-').tolist()
-                      return [t for t in tickers if t and len(t) <= 6]
-                  return []
-              except:
-                  return []
+          def get_existing_tickers():
+              """Obtiene solo los tickers que existen en la carpeta data/"""
+              csv_files = glob.glob("data/*.csv")
+              tickers = []
+              for file_path in csv_files:
+                  filename = os.path.basename(file_path)
+                  if filename.endswith('.csv'):
+                      ticker = filename.replace('.csv', '')
+                      tickers.append(ticker)
+              return sorted(list(set(tickers)))
           
           def update_ticker_data(ticker):
               """Actualiza datos de un ticker específico"""
               try:
                   filename = f"data/{ticker}.csv"
                   
-                  # Si no existe el archivo, descargar todo el historial
+                  # Verificar que el archivo existe
                   if not os.path.exists(filename):
-                      print(f"Descargando historial para {ticker}...")
-                      data = yf.download(ticker, period="max")
-                      if not data.empty:
-                          data.to_csv(filename)
-                          print(f"Guardado {ticker}")
-                          return True
+                      print(f"❌ {ticker}: Archivo no encontrado")
                       return False
                   
-                  # Si existe, solo actualizar datos recientes
+                  # Leer el archivo existente
                   df = pd.read_csv(filename, index_col="Date", parse_dates=True)
+                  
+                  # Si el DataFrame no está vacío
                   if len(df) > 0:
                       last_date = df.index[-1]
-                      # Si ya está actualizado (últimos 2 días), no hacer nada
-                      if last_date.date() >= (datetime.now().date() - timedelta(days=2)):
-                          print(f"{ticker} ya está actualizado")
+                      today = datetime.now().date()
+                      
+                      # Si ya está actualizado (últimos 3 días), no hacer nada
+                      if last_date.date() >= (today - timedelta(days=3)):
+                          print(f"✅ {ticker}: Ya actualizado hasta {last_date.date()}")
                           return True
                       
                       # Descargar datos desde la última fecha
-                      start_date = last_date - timedelta(days=5)
-                      new_data = yf.download(ticker, start=start_date)
-                      if not new_data.empty:
+                      start_date = last_date - timedelta(days=7)  # Margen de seguridad
+                      end_date = today + timedelta(days=1)
+                      
+                      new_data = yf.download(ticker, start=start_date, end=end_date)
+                      if not new_data.empty and len(new_data) > 0:
+                          # Asegurar formato de índice
+                          new_data.index = pd.to_datetime(new_data.index)
+                          
+                          # Combinar datos
                           combined = pd.concat([df, new_data])
                           combined = combined[~combined.index.duplicated(keep='last')].sort_index()
                           combined.to_csv(filename)
-                          print(f"Actualizado {ticker}")
+                          print(f"🔄 {ticker}: Actualizado hasta {combined.index[-1].date()}")
+                          return True
+                      else:
+                          print(f"⚠️ {ticker}: No hay nuevos datos disponibles")
                           return True
                   else:
                       # Archivo vacío, descargar historial
+                      print(f"📥 {ticker}: Archivo vacío, descargando historial...")
                       data = yf.download(ticker, period="max")
                       if not data.empty:
                           data.to_csv(filename)
-                          print(f"Guardado {ticker} (archivo vacío)")
+                          print(f"💾 {ticker}: Historial guardado")
                           return True
+                      else:
+                          print(f"❌ {ticker}: No se pudo descargar historial")
+                          return False
                           
               except Exception as e:
-                  print(f"Error con {ticker}: {e}")
+                  print(f"❌ {ticker}: Error - {e}")
                   return False
               return False
           
           if __name__ == "__main__":
-              print("Obteniendo tickers actuales...")
-              sp500 = get_sp500_tickers()
-              nasdaq = get_nasdaq100_tickers()
-              tickers = list(set(sp500 + nasdaq + ['SPY', 'QQQ']))  # Incluir benchmarks
+              print("=== Actualización de Datos Diaria ===")
               
-              print(f"Actualizando {len(tickers)} tickers...")
+              # Solo actualizar los tickers que existen en la carpeta data/
+              tickers = get_existing_tickers()
+              print(f"Encontrados {len(tickers)} archivos CSV para actualizar")
+              print(f"Tickers: {', '.join(tickers[:10])}{'...' if len(tickers) > 10 else ''}")
+              
+              # Asegurar que SPY y QQQ estén incluidos si existen
+              important_tickers = ['SPY', 'QQQ']
+              for important in important_tickers:
+                  if important in tickers:
+                      print(f"🎯 Prioritario: {important}")
+              
+              print(f"\nActualizando {len(tickers)} tickers...")
               updated = 0
               errors = 0
               
@@ -133,7 +132,10 @@ jobs:
                   else:
                       errors += 1
               
-              print(f"Completado: {updated} actualizados, {errors} errores")
+              print(f"\n=== Resumen ===")
+              print(f"✅ Actualizados: {updated}")
+              print(f"❌ Errores: {errors}")
+              print(f"📊 Total procesados: {len(tickers)}")
           EOF
 
       - name: Run update script
