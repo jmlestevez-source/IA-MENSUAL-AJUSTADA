@@ -34,9 +34,28 @@ index_choice = st.sidebar.selectbox(
     ["SP500", "NDX", "Ambos (SP500 + NDX)"]
 )
 
-# Fechas
-end_date = st.sidebar.date_input("Fecha final", datetime.today())
-start_date = st.sidebar.date_input("Fecha inicial", end_date - timedelta(days=365*5))
+# Reemplaza la sección de fechas en el sidebar con esta versión mejorada:
+
+# Fechas - CON VALIDACIÓN FLEXIBLE
+default_end = min(datetime.today(), datetime(2025, 12, 31))  # Limitar a 2025 como máximo
+default_start = default_end - timedelta(days=365*5)
+
+# ✅ CORRECCIÓN: Validación flexible de fechas sin restricciones artificiales
+try:
+    end_date = st.sidebar.date_input("Fecha final", default_end)
+    start_date = st.sidebar.date_input("Fecha inicial", default_start)
+    
+    # Validar rango de fechas
+    if start_date >= end_date:
+        st.sidebar.warning("⚠️ La fecha inicial debe ser anterior a la fecha final")
+        start_date = end_date - timedelta(days=365)  # Ajustar automáticamente
+        
+except Exception as date_error:
+    st.sidebar.warning(f"⚠️ Error en fechas, usando valores por defecto: {date_error}")
+    end_date = default_end
+    start_date = default_start
+
+st.sidebar.info(f"📅 Rango seleccionado: {start_date} a {end_date}")
 
 # Parámetros del backtest
 top_n = st.sidebar.slider("Número de activos", 5, 30, 10)
