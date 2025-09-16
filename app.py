@@ -163,6 +163,7 @@ def get_available_periods():
     }
 
 
+# Solo para testing local
 if __name__ == "__main__":
     try:
         data = load_stock_data("AAPL", "1y")
