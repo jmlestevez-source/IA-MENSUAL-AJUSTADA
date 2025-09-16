@@ -1024,6 +1024,7 @@ if run_button:
                 st.info("No se generaron picks en este backtest")
 
             # -------------------------------------------------
+                        # -------------------------------------------------
             # Señales Actuales (Vela en Formación) - CORREGIDO
             # -------------------------------------------------
             with st.expander("🔮 Señales Actuales - Vela en Formación", expanded=True):
@@ -1034,9 +1035,10 @@ if run_button:
                 - En un sistema real, tomarías estas posiciones al inicio del próximo mes
                 - Úsalas solo como referencia, NO como señales definitivas
                 """)
-                
+
                 try:
-                    # Usar TODOS los datos disponibles (incluyendo vela en formación)
+                    # ✅ CORRECCIÓN: Usar TODOS los datos disponibles (incluyendo vela en formación)
+                    # No depender del resultado del backtest, sino calcular con datos frescos
                     current_scores = inertia_score(prices_df, corte=corte, ohlc_data=ohlc_data)
                     
                     if current_scores and "ScoreAdjusted" in current_scores:
@@ -1049,21 +1051,23 @@ if run_button:
                             last_inercia = inercia_df.iloc[-1] if not inercia_df.empty else pd.Series()
                             
                             if len(last_scores) > 0:
-                                # ✅ CORREGIDO: Filtrar PRIMERO los que pasan el corte
+                                # ✅ CORRECCIÓN: Filtrar PRIMERO los que pasan el corte de manera consistente
                                 valid_picks = []
                                 for ticker in last_scores.index:
-                                    inercia_val = last_inercia.get(ticker, 0) if not last_inercia.empty else 0
-                                    score_adj = last_scores[ticker]
-                                    
-                                    # Solo incluir si pasa el corte Y tiene score > 0
-                                    if inercia_val >= corte and score_adj > 0:
-                                        valid_picks.append({
-                                            'ticker': ticker,
-                                            'inercia': inercia_val,
-                                            'score_adj': score_adj
-                                        })
+                                    # Verificar que el ticker tenga datos válidos
+                                    if ticker in prices_df.columns and len(prices_df[ticker].dropna()) > 0:
+                                        inercia_val = last_inercia.get(ticker, 0) if not last_inercia.empty else 0
+                                        score_adj = last_scores[ticker]
+                                        
+                                        # Solo incluir si pasa el corte Y tiene score > 0
+                                        if inercia_val >= corte and score_adj > 0 and not np.isnan(inercia_val) and not np.isnan(score_adj):
+                                            valid_picks.append({
+                                                'ticker': ticker,
+                                                'inercia': inercia_val,
+                                                'score_adj': score_adj
+                                            })
                                 
-                                # Ordenar por score ajustado y tomar top N válidos
+                                # ✅ CORRECCIÓN: Ordenar por score ajustado y tomar top N válidos de manera consistente
                                 valid_picks = sorted(valid_picks, key=lambda x: x['score_adj'], reverse=True)
                                 
                                 # Tomar solo hasta top_n O todos los válidos si son menos
@@ -1082,7 +1086,7 @@ if run_button:
                                             'Inercia Alcista': pick['inercia'],
                                             'Score Ajustado': pick['score_adj'],
                                             'Pasa Corte': '✅',  # Todos pasan porque ya filtramos
-                                            'Precio Actual': prices_df[ticker].iloc[-1] if ticker in prices_df.columns else 0
+                                            'Precio Actual': prices_df[ticker].iloc[-1] if ticker in prices_df.columns and len(prices_df[ticker]) > 0 else 0
                                         })
                                     
                                     current_picks_df = pd.DataFrame(current_picks)
@@ -1101,9 +1105,9 @@ if run_button:
                                     
                                     # Formatear tabla para mostrar
                                     display_df = current_picks_df.copy()
-                                    display_df['Precio Actual'] = display_df['Precio Actual'].apply(lambda x: f"${x:.2f}")
-                                    display_df['Inercia Alcista'] = display_df['Inercia Alcista'].apply(lambda x: f"{x:.2f}")
-                                    display_df['Score Ajustado'] = display_df['Score Ajustado'].apply(lambda x: f"{x:.2f}")
+                                    display_df['Precio Actual'] = display_df['Precio Actual'].apply(lambda x: f"${x:.2f}" if not pd.isna(x) else "$0.00")
+                                    display_df['Inercia Alcista'] = display_df['Inercia Alcista'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "0.00")
+                                    display_df['Score Ajustado'] = display_df['Score Ajustado'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "0.00")
                                     
                                     st.dataframe(display_df, use_container_width=True)
                                     
