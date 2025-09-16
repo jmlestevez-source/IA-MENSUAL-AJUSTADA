@@ -485,7 +485,8 @@ def get_nasdaq100_tickers_from_wikipedia():
 
 def get_valid_constituents_for_period(index_name, start_date, end_date, changes_df):
     """
-    Obtiene los tickers que estuvieron en el índice durante un período específico
+    ✅ CORRECTO: Obtiene los tickers que estuvieron en el índice durante un período específico
+    EXCLUYE tickers que no estaban en el índice en esa fecha
     """
     try:
         # Obtener constituyentes actuales
@@ -498,50 +499,88 @@ def get_valid_constituents_for_period(index_name, start_date, end_date, changes_
         if isinstance(end_date, datetime):
             end_date = end_date.date()
         
-        # Empezar con tickers actuales
-        valid_tickers = set(current_tickers)
+        # ✅ SOLUCIÓN CORRECTA: Empezar vacío y solo incluir tickers que estaban en el índice
+        valid_tickers = set()
         
-        # Diccionario para almacenar fechas de incorporación
-        ticker_added_dates = {}
+        if changes_df.empty:
+            print(f"⚠️  No hay datos históricos para {index_name}, usando constituyentes actuales")
+            # ✅ SOLUCIÓN CORRECTA: Solo usar tickers actuales si no hay datos históricos
+            valid_tickers = set(current_tickers)
+            historical_data = [{'ticker': t, 'added': 'Unknown', 'in_current': True, 'status': 'Current fallback'} for t in current_tickers]
+            return list(valid_tickers), historical_data
         
-        if not changes_df.empty:
-            # Convertir fechas de cambios a datetime para comparación consistente
-            changes_df_copy = changes_df.copy()
-            changes_df_copy['Date'] = pd.to_datetime(changes_df_copy['Date']).dt.date
+        # Convertir fechas de cambios a date
+        changes_df['Date'] = pd.to_datetime(changes_df['Date']).dt.date
+        
+        # Para cada ticker actual, verificar si estaba en el índice durante el período
+        for ticker in current_tickers:
+            # Buscar todos los cambios para este ticker
+            ticker_changes = changes_df[changes_df['Ticker'] == ticker].sort_values('Date', ascending=True)
             
-            # Para cada ticker actual, encontrar su fecha de incorporación más reciente
-            for ticker in current_tickers:
-                # Buscar todas las adiciones de este ticker
-                ticker_additions = changes_df_copy[
-                    (changes_df_copy['Ticker'] == ticker) & 
-                    (changes_df_copy['Action'] == 'Added')
-                ].sort_values('Date', ascending=False)
+            # Si no hay cambios registrados para este ticker, asumir que estaba todo el tiempo
+            if ticker_changes.empty:
+                valid_tickers.add(ticker)
+                continue
+            
+            # Verificar estado en la fecha de inicio del período
+            # Buscar el cambio más reciente antes del período
+            pre_period_changes = ticker_changes[ticker_changes['Date'] <= start_date].sort_values('Date', ascending=False)
+            
+            # Estado inicial: estaba en el índice?
+            initially_in_index = True  # Por defecto, asumir que estaba
+            if not pre_period_changes.empty:
+                last_change = pre_period_changes.iloc[0]
+                if last_change['Action'] == 'Removed':
+                    initially_in_index = False  # Fue removido antes del período
+            
+            # Si estaba en el índice al inicio del período
+            if initially_in_index:
+                # Verificar si fue removido durante el período
+                during_period_changes = ticker_changes[
+                    (ticker_changes['Date'] > start_date) & 
+                    (ticker_changes['Date'] <= end_date) &
+                    (ticker_changes['Action'] == 'Removed')
+                ]
                 
-                if not ticker_additions.empty:
-                    # Tomar la fecha de adición más reciente antes o durante el período
-                    relevant_additions = ticker_additions[ticker_additions['Date'] <= end_date]
-                    if not relevant_additions.empty:
-                        ticker_added_dates[ticker] = relevant_additions.iloc[0]['Date']
-                    else:
-                        ticker_added_dates[ticker] = 'Unknown'
-                else:
-                    ticker_added_dates[ticker] = 'Unknown'
+                # Si no fue removido durante el período, incluirlo
+                if during_period_changes.empty:
+                    valid_tickers.add(ticker)
+            else:
+                # No estaba al inicio, verificar si fue agregado durante el período
+                added_during_period = ticker_changes[
+                    (ticker_changes['Date'] > start_date) & 
+                    (ticker_changes['Date'] <= end_date) &
+                    (ticker_changes['Action'] == 'Added')
+                ]
+                
+                # Verificar si fue removido después de ser agregado
+                if not added_during_period.empty:
+                    # Fue agregado, verificar si sigue en el índice al final del período
+                    last_added = added_during_period.iloc[-1]  # Último agregado
+                    removed_after = ticker_changes[
+                        (ticker_changes['Date'] > last_added['Date']) &
+                        (ticker_changes['Action'] == 'Removed')
+                    ]
+                    
+                    # Si no fue removido después de ser agregado, incluirlo
+                    if removed_after.empty:
+                        valid_tickers.add(ticker)
         
         # Crear datos históricos con fechas reales
         historical_data = []
         for ticker in valid_tickers:
-            added_date = ticker_added_dates.get(ticker, 'Unknown')
-            if added_date != 'Unknown' and added_date is not None:
-                if hasattr(added_date, 'strftime'):
-                    added_date_str = added_date.strftime('%Y-%m-%d')
-                else:
-                    added_date_str = str(added_date)
-            else:
-                added_date_str = 'Unknown'
-                
+            # Buscar fecha de incorporación más reciente antes del período
+            ticker_additions = changes_df[
+                (changes_df['Ticker'] == ticker) & 
+                (changes_df['Action'] == 'Added') &
+                (changes_df['Date'] <= start_date)
+            ].sort_values('Date', ascending=False)
+            
+            added_date = ticker_additions['Date'].iloc[0] if not ticker_additions.empty else 'Unknown'
+            
             historical_data.append({
                 'ticker': ticker,
-                'added': added_date_str,
+                'added': added_date.strftime('%Y-%m-%d') if added_date != 'Unknown' else 'Unknown',
                 'in_current': ticker in current_tickers,
                 'status': 'Historical constituent'
             })
@@ -550,10 +589,10 @@ def get_valid_constituents_for_period(index_name, start_date, end_date, changes_
         
     except Exception as e:
         print(f"Error en get_valid_constituents_for_period: {e}")
-        # Fallback
+        # ✅ SOLUCIÓN CORRECTA: Fallback a constituyentes actuales
         current_data = get_current_constituents(index_name)
         return current_data['tickers'], [{'ticker': t, 'added': 'Unknown', 'in_current': True, 'status': 'Current fallback'} for t in current_data['tickers']]
-        
+
 def get_constituents_at_date(index_name, start_date, end_date):
     """
     Obtiene constituyentes históricos válidos para el rango de fechas
@@ -579,7 +618,7 @@ def get_constituents_at_date(index_name, start_date, end_date):
         if isinstance(end_date, datetime):
             end_date = end_date.date()
         
-        # Obtener tickers válidos para el período con fechas reales
+        # ✅ SOLUCIÓN CORRECTA: Obtener tickers válidos para el período
         valid_tickers, historical_data = get_valid_constituents_for_period(
             index_name, start_date, end_date, changes_df
         )
@@ -604,7 +643,7 @@ def get_constituents_at_date(index_name, start_date, end_date):
         error_msg = f"Error obteniendo constituyentes históricos para {index_name}: {e}"
         print(error_msg)
         
-        # Fallback a constituyentes actuales
+        # ✅ SOLUCIÓN CORRECTA: Fallback a constituyentes actuales
         try:
             current_data = get_current_constituents(index_name)
             fallback_result = {
