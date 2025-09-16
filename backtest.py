@@ -281,7 +281,7 @@ def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
     if np.isnan(mean_excess) or np.isinf(mean_excess):
         return 0.0
         
-    sharpe_ratio = (mean_excess * 12) / (std_excess * np.sqrt(12))
+    sharpe_ratio = (mean_excess * 12) / (std_excess * (12 ** 0.5))
     
     # Protección adicional
     if np.isnan(sharpe_ratio) or np.isinf(sharpe_ratio):
