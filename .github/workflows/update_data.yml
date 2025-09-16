@@ -27,7 +27,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance pandas requests lxml html5lib
+          pip install yfinance pandas requests lxml html5lib pytz
 
       - name: Create update script
         run: |
@@ -37,6 +37,52 @@ jobs:
           import os
           import glob
           from datetime import datetime, timedelta
+          import pytz
+          import warnings
+          warnings.filterwarnings('ignore')
+          
+          def normalize_adjusted_dataframe(df):
+              """
+              Normaliza el DataFrame con datos ajustados (auto_adjust=True)
+              Cuando auto_adjust=True, yfinance devuelve: Open, High, Low, Close, Volume
+              (NO incluye 'Adj Close' porque todos los valores YA están ajustados)
+              """
+              # Columnas esperadas cuando auto_adjust=True
+              expected_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+              
+              # Si hay columnas numéricas o desordenadas, mapearlas
+              if any(isinstance(col, int) for col in df.columns) or len(df.columns) > 5:
+                  # Intentar identificar columnas por posición
+                  new_columns = {}
+                  col_list = list(df.columns)
+                  
+                  for i, col in enumerate(col_list):
+                      if i < len(expected_columns):
+                          new_columns[col] = expected_columns[i]
+                  
+                  if new_columns:
+                      df = df.rename(columns=new_columns)
+              
+              # Asegurar que solo tenemos las columnas esperadas
+              valid_cols = [col for col in expected_columns if col in df.columns]
+              df = df[valid_cols]
+              
+              # Agregar columnas faltantes con NaN
+              for col in expected_columns:
+                  if col not in df.columns:
+                      df[col] = pd.NA
+              
+              # Reordenar columnas
+              df = df[expected_columns]
+              
+              # Eliminar filas completamente vacías
+              df = df.dropna(how='all')
+              
+              # Eliminar filas donde todos los precios son NaN
+              price_cols = ['Open', 'High', 'Low', 'Close']
+              df = df.dropna(subset=price_cols, how='all')
+              
+              return df
           
           def get_existing_tickers():
               """Obtiene solo los tickers que existen en la carpeta data/"""
@@ -49,179 +95,330 @@ jobs:
                       tickers.append(ticker)
               return sorted(list(set(tickers)))
           
-          def update_ticker_data(ticker):
-              """Actualiza datos de un ticker específico"""
+          def regenerate_full_history(ticker):
+              """
+              Regenera el historial completo de un ticker con auto_adjust=True
+              """
+              try:
+                  print(f"  🔄 Regenerando historial completo para {ticker}...")
+                  
+                  yticker = yf.Ticker(ticker)
+                  # Descargar TODO el historial con auto_adjust=True
+                  data = yticker.history(period="max", auto_adjust=True)
+                  
+                  if data.empty:
+                      print(f"    ❌ No se pudo obtener datos")
+                      return None
+                  
+                  # Normalizar DataFrame
+                  data = normalize_adjusted_dataframe(data)
+                  
+                  print(f"    ✅ Descargados {len(data)} días de historial ajustado")
+                  return data
+                  
+              except Exception as e:
+                  print(f"    ❌ Error: {str(e)[:100]}")
+                  return None
+          
+          def update_ticker_data(ticker, force_regenerate=False):
+              """
+              Actualiza datos de un ticker específico
+              """
               try:
                   filename = f"data/{ticker}.csv"
                   
-                  # Verificar que el archivo existe
-                  if not os.path.exists(filename):
+                  if not os.path.exists(filename) and not force_regenerate:
                       print(f"❌ {ticker}: Archivo no encontrado")
                       return False
                   
-                  # Leer el archivo existente
-                  df = pd.read_csv(filename, index_col="Date", parse_dates=True)
+                  # Verificar si necesitamos regenerar todo el historial
+                  needs_full_regeneration = force_regenerate
                   
-                  # Si el DataFrame no está vacío
-                  if len(df) > 0:
-                      last_date = df.index[-1]
+                  if not needs_full_regeneration and os.path.exists(filename):
+                      # Leer archivo existente
+                      try:
+                          df_existing = pd.read_csv(filename, index_col="Date", parse_dates=True)
+                          
+                          # Verificar si tiene Adj Close (datos viejos sin ajustar)
+                          if 'Adj Close' in df_existing.columns:
+                              print(f"⚠️ {ticker}: Detectados datos sin ajustar (tiene 'Adj Close')")
+                              needs_full_regeneration = True
+                          # Verificar si tiene más de 5 columnas principales
+                          elif len([c for c in df_existing.columns if c in ['Open','High','Low','Close','Volume']]) != 5:
+                              print(f"⚠️ {ticker}: Estructura de columnas incorrecta")
+                              needs_full_regeneration = True
+                          
+                      except Exception as e:
+                          print(f"⚠️ {ticker}: Error leyendo archivo: {e}")
+                          needs_full_regeneration = True
+                  
+                  # Si necesita regeneración completa
+                  if needs_full_regeneration:
+                      data = regenerate_full_history(ticker)
+                      if data is not None:
+                          data.to_csv(filename)
+                          print(f"✅ {ticker}: Historial regenerado y guardado con datos ajustados")
+                          return True
+                      else:
+                          return False
+                  
+                  # Si no necesita regeneración, solo actualizar datos nuevos
+                  df_existing = pd.read_csv(filename, index_col="Date", parse_dates=True)
+                  df_existing = normalize_adjusted_dataframe(df_existing)
+                  
+                  if len(df_existing) > 0:
+                      last_date = df_existing.index[-1]
                       today = datetime.now()
                       
-                      # ✅ CORRECCIÓN: Actualizar si no es del día de hoy
-                      # Considerando que el mercado cierra a las 4PM EST
+                      # Verificar si es fin de semana
+                      if today.weekday() >= 5:
+                          print(f"📅 {ticker}: Fin de semana, sin actualizaciones")
+                          return True
+                      
+                      # Si los datos son de hoy, está actualizado
                       if last_date.date() >= today.date():
                           print(f"✅ {ticker}: Ya actualizado para hoy {last_date.date()}")
                           return True
                       
-                      # ✅ MEJORA: Si es antes de las 4PM EST, verificar si ya tiene datos de ayer
-                      from datetime import time
-                      import pytz
-                      
+                      # Verificar horario del mercado
                       est = pytz.timezone('US/Eastern')
                       now_est = datetime.now(est)
-                      market_close = time(16, 0)  # 4:00 PM EST
                       
-                      # Si es antes del cierre del mercado y tiene datos de ayer, esperar
-                      if now_est.time() < market_close:
-                          yesterday = (today - timedelta(days=1)).date()
-                          # Si es fin de semana, buscar el último día hábil
-                          while yesterday.weekday() > 4:  # 5=Sábado, 6=Domingo
+                      if now_est.hour < 17:  # Antes de 5PM EST
+                          yesterday = today - timedelta(days=1)
+                          while yesterday.weekday() > 4:
                               yesterday = yesterday - timedelta(days=1)
                           
-                          if last_date.date() >= yesterday:
-                              print(f"⏰ {ticker}: Mercado aún abierto, datos de {last_date.date()} son los más recientes")
+                          if last_date.date() >= yesterday.date():
+                              print(f"⏰ {ticker}: Datos de {last_date.date()} son los más recientes")
                               return True
                       
-                      # Descargar datos desde la última fecha
+                      # Descargar datos nuevos con auto_adjust=True
                       print(f"📥 {ticker}: Actualizando desde {last_date.date()}...")
-                      start_date = last_date - timedelta(days=7)  # Margen de seguridad
-                      end_date = today + timedelta(days=1)
                       
-                      new_data = yf.download(ticker, start=start_date, end=end_date, progress=False)
-                      if not new_data.empty and len(new_data) > 0:
-                          # Asegurar formato de índice
+                      yticker = yf.Ticker(ticker)
+                      # Usar período corto para actualizaciones, con auto_adjust=True
+                      new_data = yticker.history(period="1mo", auto_adjust=True)
+                      
+                      if not new_data.empty:
+                          new_data = normalize_adjusted_dataframe(new_data)
                           new_data.index = pd.to_datetime(new_data.index)
                           
-                          # Combinar datos eliminando duplicados
-                          combined = pd.concat([df, new_data])
-                          combined = combined[~combined.index.duplicated(keep='last')].sort_index()
+                          # Filtrar solo datos nuevos
+                          new_data = new_data[new_data.index > last_date]
                           
-                          # Solo guardar si hay datos nuevos
-                          if len(combined) > len(df):
+                          if len(new_data) > 0:
+                              # Combinar con datos existentes
+                              combined = pd.concat([df_existing, new_data])
+                              combined = combined[~combined.index.duplicated(keep='last')]
+                              combined = combined.sort_index()
+                              
+                              # Guardar
                               combined.to_csv(filename)
-                              print(f"✅ {ticker}: Actualizado hasta {combined.index[-1].date()} (+{len(combined)-len(df)} días)")
+                              print(f"✅ {ticker}: +{len(new_data)} días nuevos (hasta {combined.index[-1].date()})")
                               return True
                           else:
                               print(f"ℹ️ {ticker}: Sin datos nuevos")
                               return True
                       else:
-                          print(f"⚠️ {ticker}: No hay nuevos datos en Yahoo Finance")
+                          print(f"⚠️ {ticker}: Yahoo no devolvió datos")
                           return True
                   else:
-                      # Archivo vacío, descargar historial completo
-                      print(f"📥 {ticker}: Archivo vacío, descargando historial completo...")
-                      data = yf.download(ticker, period="max", progress=False)
-                      if not data.empty:
+                      # Archivo vacío, descargar todo
+                      data = regenerate_full_history(ticker)
+                      if data is not None:
                           data.to_csv(filename)
-                          print(f"💾 {ticker}: Historial guardado ({len(data)} días)")
                           return True
-                      else:
-                          print(f"❌ {ticker}: No se pudo descargar historial")
-                          return False
-                          
+                      return False
+                      
               except Exception as e:
-                  print(f"❌ {ticker}: Error - {str(e)[:100]}")
+                  print(f"❌ {ticker}: Error - {str(e)[:200]}")
                   return False
           
+          def check_and_fix_all_csvs():
+              """
+              Verifica todos los CSVs y marca los que necesitan regeneración
+              """
+              print("\n🔍 VERIFICANDO ESTRUCTURA DE CSVs")
+              print("=" * 50)
+              
+              csv_files = glob.glob("data/*.csv")
+              need_fix = []
+              ok_files = []
+              
+              for file_path in csv_files:
+                  ticker = os.path.basename(file_path).replace('.csv', '')
+                  try:
+                      df = pd.read_csv(file_path, index_col="Date", parse_dates=True)
+                      
+                      # Verificar si tiene Adj Close (indica datos NO ajustados)
+                      if 'Adj Close' in df.columns:
+                          need_fix.append(ticker)
+                          print(f"  ⚠️ {ticker}: Tiene 'Adj Close' - necesita regeneración")
+                      # Verificar columnas numéricas o estructura incorrecta
+                      elif any(isinstance(col, int) for col in df.columns):
+                          need_fix.append(ticker)
+                          print(f"  ⚠️ {ticker}: Columnas numéricas - necesita regeneración")
+                      elif len(df.columns) > 5:
+                          need_fix.append(ticker)
+                          print(f"  ⚠️ {ticker}: Demasiadas columnas ({len(df.columns)}) - necesita regeneración")
+                      else:
+                          ok_files.append(ticker)
+                      
+                  except Exception as e:
+                      need_fix.append(ticker)
+                      print(f"  ❌ {ticker}: Error leyendo - necesita regeneración")
+              
+              print(f"\n📊 Resumen:")
+              print(f"  ✅ Archivos OK: {len(ok_files)}")
+              print(f"  ⚠️ Necesitan regeneración: {len(need_fix)}")
+              
+              return need_fix
+          
           if __name__ == "__main__":
-              print("=" * 50)
-              print("🚀 ACTUALIZACIÓN DIARIA DE DATOS")
-              print("=" * 50)
+              print("=" * 60)
+              print("🚀 ACTUALIZACIÓN DIARIA CON DATOS AJUSTADOS")
+              print("=" * 60)
               print(f"📅 Fecha/Hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+              print("ℹ️ Modo: auto_adjust=True (datos ajustados por dividendos y splits)")
               
-              # Solo actualizar los tickers que existen en la carpeta data/
-              tickers = get_existing_tickers()
-              print(f"📊 Encontrados {len(tickers)} archivos CSV para actualizar")
+              # Verificar qué CSVs necesitan regeneración
+              tickers_to_regenerate = check_and_fix_all_csvs()
               
-              if len(tickers) > 20:
-                  print(f"📝 Primeros 20: {', '.join(tickers[:20])}...")
-              else:
-                  print(f"📝 Tickers: {', '.join(tickers)}")
+              if tickers_to_regenerate:
+                  print(f"\n🔧 REGENERANDO {len(tickers_to_regenerate)} ARCHIVOS")
+                  print("=" * 60)
+                  
+                  regenerated = 0
+                  failed = 0
+                  
+                  # Priorizar tickers importantes
+                  priority = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL']
+                  priority_regen = [t for t in priority if t in tickers_to_regenerate]
+                  other_regen = [t for t in tickers_to_regenerate if t not in priority]
+                  
+                  for i, ticker in enumerate(priority_regen + other_regen, 1):
+                      print(f"\n[{i}/{len(tickers_to_regenerate)}] Regenerando {ticker}...")
+                      if update_ticker_data(ticker, force_regenerate=True):
+                          regenerated += 1
+                      else:
+                          failed += 1
+                      
+                      # Pausa cada 20 tickers
+                      if i % 20 == 0:
+                          import time
+                          time.sleep(1)
+                  
+                  print(f"\n✅ Regenerados: {regenerated}")
+                  print(f"❌ Fallidos: {failed}")
               
-              # Asegurar que SPY y QQQ estén incluidos si existen
-              important_tickers = ['SPY', 'QQQ']
-              for important in important_tickers:
-                  if important in tickers:
-                      print(f"⭐ Ticker prioritario encontrado: {important}")
+              print("\n" + "=" * 60)
+              print("📊 ACTUALIZANDO DATOS RECIENTES")
+              print("=" * 60)
               
-              print("\n" + "=" * 50)
-              print("INICIANDO ACTUALIZACIÓN")
-              print("=" * 50 + "\n")
+              # Ahora actualizar todos los tickers
+              all_tickers = get_existing_tickers()
+              print(f"\n📁 Total de tickers a verificar: {len(all_tickers)}")
+              
+              # Priorizar tickers importantes
+              priority_tickers = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA']
+              priority_found = [t for t in priority_tickers if t in all_tickers]
+              other_tickers = [t for t in all_tickers if t not in priority_tickers]
+              
+              tickers_ordered = priority_found + other_tickers
               
               updated = 0
               no_changes = 0
               errors = 0
               
-              for i, ticker in enumerate(tickers, 1):
-                  print(f"\n[{i}/{len(tickers)}] Procesando {ticker}...")
-                  result = update_ticker_data(ticker)
-                  if result:
-                      if "Sin datos nuevos" in str(result) or "Ya actualizado" in str(result):
-                          no_changes += 1
-                      else:
-                          updated += 1
-                  else:
-                      errors += 1
+              for i, ticker in enumerate(tickers_ordered, 1):
+                  if i % 10 == 1:  # Cada 10 tickers
+                      print(f"\n--- Procesando tickers {i} a {min(i+9, len(tickers_ordered))} de {len(tickers_ordered)} ---")
                   
-                  # Pequeña pausa cada 50 tickers para no sobrecargar
+                  # No regenerar si ya lo hicimos arriba
+                  if ticker not in tickers_to_regenerate:
+                      result = update_ticker_data(ticker, force_regenerate=False)
+                      if result:
+                          updated += 1
+                      else:
+                          errors += 1
+                  
+                  # Pausa cada 50 tickers
                   if i % 50 == 0:
                       import time
-                      time.sleep(1)
+                      time.sleep(2)
               
-              print("\n" + "=" * 50)
-              print("📊 RESUMEN DE ACTUALIZACIÓN")
-              print("=" * 50)
-              print(f"✅ Actualizados con nuevos datos: {updated}")
-              print(f"ℹ️ Sin cambios necesarios: {no_changes}")
-              print(f"❌ Errores: {errors}")
-              print(f"📊 Total procesados: {len(tickers)}")
-              print("=" * 50)
+              # Resumen final
+              print("\n" + "=" * 60)
+              print("📊 RESUMEN FINAL")
+              print("=" * 60)
+              print(f"✅ Actualizados/Verificados: {updated + regenerated}")
+              print(f"❌ Errores: {errors + failed}")
+              print(f"📊 Total procesados: {len(tickers_ordered)}")
               
-              # Verificar algunos archivos para confirmar fechas
-              print("\n🔍 Verificación de últimas fechas:")
-              sample_tickers = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL']
-              for ticker in sample_tickers:
-                  if ticker in tickers:
-                      try:
-                          df = pd.read_csv(f"data/{ticker}.csv", index_col="Date", parse_dates=True)
-                          if len(df) > 0:
-                              print(f"  {ticker}: Último dato = {df.index[-1].date()}")
-                      except:
-                          pass
+              # Verificación final
+              print("\n🔍 Verificación final (primeros 5 tickers):")
+              for ticker in priority_found[:5]:
+                  try:
+                      df = pd.read_csv(f"data/{ticker}.csv", index_col="Date", parse_dates=True)
+                      has_adj = 'Adj Close' in df.columns
+                      status = "⚠️ TIENE ADJ CLOSE" if has_adj else "✅ OK (ajustado)"
+                      print(f"  {ticker}: {len(df)} registros, último: {df.index[-1].date()} - {status}")
+                  except Exception as e:
+                      print(f"  {ticker}: Error - {e}")
+              
+              print("\n✅ Proceso completado")
+              print("=" * 60)
           EOF
-
-      - name: Install pytz for timezone handling
-        run: pip install pytz
 
       - name: Run update script
         run: python update_csv.py
+
+      - name: Final verification
+        run: |
+          python -c "
+          import pandas as pd
+          import glob
+          
+          print('🔍 Verificación final de estructura...')
+          
+          samples = glob.glob('data/*.csv')[:10]
+          issues = []
+          
+          for file in samples:
+              try:
+                  df = pd.read_csv(file, index_col='Date', parse_dates=True)
+                  ticker = file.split('/')[-1].replace('.csv', '')
+                  
+                  if 'Adj Close' in df.columns:
+                      issues.append(f'{ticker}: TIENE Adj Close (no ajustado)')
+                  elif len(df.columns) != 5:
+                      issues.append(f'{ticker}: {len(df.columns)} columnas (esperadas 5)')
+                  else:
+                      print(f'  ✅ {ticker}: Estructura correcta (sin Adj Close)')
+              except Exception as e:
+                  issues.append(f'{file}: {e}')
+          
+          if issues:
+              print('\\n⚠️ Problemas detectados:')
+              for issue in issues:
+                  print(f'  - {issue}')
+          else:
+              print('\\n✅ Todos los archivos verificados tienen estructura correcta')
+          "
 
       - name: Commit and push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Ver qué archivos han cambiado
-          git status
-          
-          # Agregar todos los CSVs modificados
           git add data/*.csv
           
-          # Hacer commit solo si hay cambios
           if git diff --staged --quiet; then
             echo "📊 No hay cambios para commitear"
           else
-            git commit -m "📊 Auto-update CSVs - $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+            COMMIT_MSG="📊 Update CSVs $(date -u +'%Y-%m-%d') - All data adjusted (auto_adjust=True)"
+            git commit -m "$COMMIT_MSG"
             git push
             echo "✅ Cambios pusheados exitosamente"
           fi
