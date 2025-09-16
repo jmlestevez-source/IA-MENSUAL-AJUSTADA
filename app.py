@@ -11,6 +11,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor
 import pickle
 import hashlib
+import glob
 
 # Importar nuestros módulos
 from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes
