@@ -271,15 +271,24 @@ if run_button:
                 spy_df = spy_result if not spy_result.empty else None
             
             # Información histórica
-            historical_info = None
-            if use_historical_verification:
-                status_text.text("🕐 Cargando datos históricos...")
-                progress_bar.progress(50)
-                
-                changes_data = load_historical_changes_cached(index_choice)
-                if not changes_data.empty:
-                    historical_info = {'changes_data': changes_data, 'has_historical_data': True}
-                    st.success(f"✅ Cargados {len(changes_data)} cambios históricos")
+            # Donde se ejecuta el backtest (alrededor de la línea donde dice "Ejecutar backtest"):
+
+# Información histórica
+historical_info = None
+if use_historical_verification:
+    status_text.text("🕐 Cargando datos históricos...")
+    progress_bar.progress(50)
+    
+    changes_data = load_historical_changes_cached(index_choice)
+    if not changes_data.empty:
+        historical_info = {
+            'changes_data': changes_data, 
+            'has_historical_data': True  # ← IMPORTANTE: Este flag debe estar presente
+        }
+        st.success(f"✅ Cargados {len(changes_data)} cambios históricos")
+    else:
+        st.warning("⚠️ No se encontraron datos históricos, continuando sin verificación")
+        historical_info = None  # Si no hay datos, debe ser None
             
             # Ejecutar backtest
             status_text.text("🚀 Ejecutando backtest optimizado...")
