@@ -24,8 +24,7 @@ st.set_page_config(
 st.title("📈 Estrategia mensual sobre los componentes del S&P 500 y/o Nasdaq-100")
 
 # -------------------------------------------------
-# -------------------------------------------------
-# Sidebar - Parámetros CORREGIDOS
+# Sidebar - Parámetros
 # -------------------------------------------------
 st.sidebar.header("Parámetros de backtest")
 
@@ -38,8 +37,8 @@ index_choice = st.sidebar.selectbox(
 # ✅ CORRECCIÓN: Fechas flexibles SIN restricciones artificiales
 try:
     # Fechas con valores por defecto razonables
-    default_end = datetime.today().date()
-    default_start = default_end - timedelta(days=365*10)  # 10 años por defecto
+    default_end = min(datetime.today().date(), datetime(2030, 12, 31).date())
+    default_start = default_end - timedelta(days=365*5)
     
     # Permitir fechas extremas con validación posterior
     end_date = st.sidebar.date_input(
@@ -277,6 +276,33 @@ def load_prices_from_csv(tickers, start_date, end_date, load_full_data=True):
     prices_data = {}
     ohlc_data = {}
     
+    # ✅ CORRECCIÓN: Validar y ajustar fechas
+    def validate_and_adjust_date(date_obj):
+        try:
+            if isinstance(date_obj, datetime):
+                date_to_check = date_obj.date()
+            elif isinstance(date_obj, pd.Timestamp):
+                date_to_check = date_obj.date()
+            else:
+                date_to_check = pd.to_datetime(date_obj).date()
+            
+            # Ajustar fechas fuera de rango razonable
+            min_date = datetime(1950, 1, 1).date()
+            max_date = datetime(2030, 12, 31).date()
+            
+            if date_to_check < min_date:
+                return min_date
+            elif date_to_check > max_date:
+                return max_date
+            else:
+                return date_to_check
+        except:
+            return datetime(2010, 1, 1).date()
+    
+    # Ajustar fechas de entrada
+    adjusted_start = validate_and_adjust_date(start_date)
+    adjusted_end = validate_and_adjust_date(end_date)
+    
     for ticker in tickers:
         csv_path = f"data/{ticker}.csv"
         if os.path.exists(csv_path):
@@ -290,13 +316,13 @@ def load_prices_from_csv(tickers, start_date, end_date, load_full_data=True):
                     df.index = df.index.tz_localize(None)
                 
                 # Asegurar que start_date y end_date sean objetos date
-                if isinstance(start_date, datetime):
-                    start_date = start_date.date()
-                if isinstance(end_date, datetime):
-                    end_date = end_date.date()
+                if isinstance(adjusted_start, datetime):
+                    adjusted_start = adjusted_start
+                if isinstance(adjusted_end, datetime):
+                    adjusted_end = adjusted_end
                 
-                # Filtrar por rango de fechas
-                df = df[(df.index.date >= start_date) & (df.index.date <= end_date)]
+                # Filtrar por rango de fechas ajustado
+                df = df[(df.index.date >= adjusted_start) & (df.index.date <= adjusted_end)]
                 
                 if not df.empty:
                     # Para el precio de cierre (para compatibilidad)
@@ -346,6 +372,9 @@ if run_button:
     
     try:
         with st.spinner("Cargando datos desde CSV..."):
+            # ✅ CORRECCIÓN: Validar rango de fechas disponible en datos
+            st.info(f"📅 Rango de fechas solicitado: {start_date} a {end_date}")
+            
             # Lógica para obtener tickers de uno o ambos índices
             all_tickers_data = {'tickers': [], 'data': []}
             
@@ -423,6 +452,24 @@ if run_button:
                 prices_df = result
                 ohlc_data = None
                 st.warning("⚠️ Solo se cargaron precios de cierre. OHLC no disponible.")
+            
+            # ✅ CORRECCIÓN: Validar rango de datos realmente disponibles
+            if not prices_df.empty:
+                data_start = prices_df.index.min().date()
+                data_end = prices_df.index.max().date()
+                st.info(f"📊 Datos disponibles en CSV: {data_start} a {data_end}")
+                
+                # Ajustar fechas si es necesario
+                actual_start = max(start_date, data_start)
+                actual_end = min(end_date, data_end)
+                
+                if actual_start != start_date or actual_end != end_date:
+                    st.warning(f"⚠️ Fechas ajustadas al rango de datos: {actual_start} a {actual_end}")
+                    start_date = actual_start
+                    end_date = actual_end
+                    
+                    # Filtrar datos al rango ajustado
+                    prices_df = prices_df[(prices_df.index.date >= start_date) & (prices_df.index.date <= end_date)]
             
             # Validación adicional de precios
             if prices_df is None or prices_df.empty or len(prices_df.columns) == 0:
