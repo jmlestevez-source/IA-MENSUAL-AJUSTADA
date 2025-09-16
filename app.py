@@ -8,10 +8,12 @@ import numpy as np
 import os
 import requests
 import base64
+import warnings
+warnings.filterwarnings('ignore')
 
 # Importar nuestros módulos
 from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes
-from backtest import run_backtest, inertia_score, calcular_atr_amibroker, calculate_monthly_returns_by_year
+from backtest import run_optimized_backtest, optimized_inertia_score, calcular_atr_amibroker, calculate_monthly_returns_by_year
 
 # -------------------------------------------------
 # Configuración de la app
@@ -34,40 +36,9 @@ index_choice = st.sidebar.selectbox(
     ["SP500", "NDX", "Ambos (SP500 + NDX)"]
 )
 
-# ✅ CORRECCIÓN: Fechas flexibles SIN restricciones artificiales
-try:
-    # Fechas con valores por defecto razonables
-    default_end = min(datetime.today().date(), datetime(2030, 12, 31).date())
-    default_start = default_end - timedelta(days=365*5)
-    
-    # Permitir fechas extremas con validación posterior
-    end_date = st.sidebar.date_input(
-        "Fecha final", 
-        value=default_end,
-        min_value=datetime(1950, 1, 1).date(),  # Fecha mínima razonable
-        max_value=datetime(2030, 12, 31).date()   # Fecha máxima razonable
-    )
-    
-    start_date = st.sidebar.date_input(
-        "Fecha inicial",
-        value=default_start, 
-        min_value=datetime(1950, 1, 1).date(),    # Fecha mínima razonable
-        max_value=datetime(2030, 12, 31).date()    # Fecha máxima razonable
-    )
-    
-    # Validación adicional
-    if start_date >= end_date:
-        st.sidebar.warning("⚠️ Fecha inicial ajustada - debe ser anterior a la fecha final")
-        start_date = end_date - timedelta(days=365*2)  # Ajustar a 2 años antes
-        
-    st.sidebar.info(f"📅 Rango seleccionado: {start_date} a {end_date}")
-    
-except Exception as date_setup_error:
-    st.sidebar.error(f"❌ Error configurando fechas: {date_setup_error}")
-    # Fallback a fechas seguras
-    end_date = datetime.today().date()
-    start_date = end_date - timedelta(days=365*5)
-    st.sidebar.info("🔧 Usando fechas por defecto seguras")
+# Fechas
+end_date = st.sidebar.date_input("Fecha final", datetime.today())
+start_date = st.sidebar.date_input("Fecha inicial", end_date - timedelta(days=365*5))
 
 # Parámetros del backtest
 top_n = st.sidebar.slider("Número de activos", 5, 30, 10)
@@ -182,7 +153,7 @@ def update_changes_with_new_data(index_name, current_changes_df):
         local_changes = download_csv_from_github(filename)
     
     if local_changes.empty:
-        st.warning(f"⚠️ No se encontraron datos históricos para {index_name}")
+        st.warning(f"⚠️  No se encontraron datos históricos para {index_name}")
         # Usar los cambios actuales si no hay datos locales
         if not current_changes_df.empty:
             current_changes_df.to_csv(local_path, index=False)
@@ -276,33 +247,6 @@ def load_prices_from_csv(tickers, start_date, end_date, load_full_data=True):
     prices_data = {}
     ohlc_data = {}
     
-    # ✅ CORRECCIÓN: Validar y ajustar fechas
-    def validate_and_adjust_date(date_obj):
-        try:
-            if isinstance(date_obj, datetime):
-                date_to_check = date_obj.date()
-            elif isinstance(date_obj, pd.Timestamp):
-                date_to_check = date_obj.date()
-            else:
-                date_to_check = pd.to_datetime(date_obj).date()
-            
-            # Ajustar fechas fuera de rango razonable
-            min_date = datetime(1950, 1, 1).date()
-            max_date = datetime(2030, 12, 31).date()
-            
-            if date_to_check < min_date:
-                return min_date
-            elif date_to_check > max_date:
-                return max_date
-            else:
-                return date_to_check
-        except:
-            return datetime(2010, 1, 1).date()
-    
-    # Ajustar fechas de entrada
-    adjusted_start = validate_and_adjust_date(start_date)
-    adjusted_end = validate_and_adjust_date(end_date)
-    
     for ticker in tickers:
         csv_path = f"data/{ticker}.csv"
         if os.path.exists(csv_path):
@@ -316,13 +260,13 @@ def load_prices_from_csv(tickers, start_date, end_date, load_full_data=True):
                     df.index = df.index.tz_localize(None)
                 
                 # Asegurar que start_date y end_date sean objetos date
-                if isinstance(adjusted_start, datetime):
-                    adjusted_start = adjusted_start
-                if isinstance(adjusted_end, datetime):
-                    adjusted_end = adjusted_end
+                if isinstance(start_date, datetime):
+                    start_date = start_date.date()
+                if isinstance(end_date, datetime):
+                    end_date = end_date.date()
                 
-                # Filtrar por rango de fechas ajustado
-                df = df[(df.index.date >= adjusted_start) & (df.index.date <= adjusted_end)]
+                # Filtrar por rango de fechas
+                df = df[(df.index.date >= start_date) & (df.index.date <= end_date)]
                 
                 if not df.empty:
                     # Para el precio de cierre (para compatibilidad)
@@ -362,19 +306,98 @@ def load_prices_from_csv(tickers, start_date, end_date, load_full_data=True):
         return pd.DataFrame()
 
 # -------------------------------------------------
+# Función para calcular tabla de rendimientos mensuales por año - CORREGIDA
+# -------------------------------------------------
+def calculate_monthly_returns_by_year(equity_series):
+    """
+    ✅ CORREGIDA: Calcula tabla de rendimientos mensuales por año con formato consistente
+    """
+    try:
+        if equity_series is None or len(equity_series) < 2:
+            return pd.DataFrame()
+        
+        # Calcular retornos mensuales
+        monthly_returns = equity_series.pct_change().fillna(0)
+        
+        # Agrupar por año y mes
+        monthly_returns.index = pd.to_datetime(monthly_returns.index)
+        monthly_by_year = monthly_returns.groupby([
+            monthly_returns.index.year, 
+            monthly_returns.index.month
+        ]).apply(lambda x: (1 + x).prod() - 1)
+        
+        # Crear DataFrame con estructura de tabla
+        years = sorted(monthly_by_year.index.get_level_values(0).unique())
+        
+        # Crear tabla con meses como columnas (en español)
+        months_es = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
+                     'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+        
+        table_data = []
+        
+        for year in years:
+            year_data = {'Año': year}
+            
+            # Obtener datos de este año
+            year_monthly = monthly_by_year[monthly_by_year.index.get_level_values(0) == year]
+            
+            # Llenar meses con formato consistente
+            for i, month_abbr in enumerate(months_es, 1):
+                if i in year_monthly.index.get_level_values(1):
+                    return_value = year_monthly[year_monthly.index.get_level_values(1) == i].iloc[0]
+                    
+                    # ✅ CORREGIDO: Formato consistente para valores cercanos a cero
+                    if np.isnan(return_value) or np.isinf(return_value):
+                        year_data[month_abbr] = "-"
+                    elif abs(return_value) < 0.0001:  # Menos de 0.01%
+                        year_data[month_abbr] = "0.00%"
+                    else:
+                        year_data[month_abbr] = f"{return_value*100:.2f}%"
+                else:
+                    year_data[month_abbr] = "-"
+            
+            # Calcular YTD
+            year_equity = equity_series[equity_series.index.year == year]
+            if len(year_equity) > 1:
+                ytd_return = (year_equity.iloc[-1] / year_equity.iloc[0]) - 1
+                
+                # ✅ CORREGIDO: Formato consistente para YTD
+                if np.isnan(ytd_return) or np.isinf(ytd_return):
+                    year_data['YTD'] = "-"
+                elif abs(ytd_return) < 0.0001:  # Menos de 0.01%
+                    year_data['YTD'] = "0.00%"
+                else:
+                    year_data['YTD'] = f"{ytd_return*100:.2f}%"
+            else:
+                year_data['YTD'] = "-"
+            
+            table_data.append(year_data)
+        
+        # Crear DataFrame final
+        if table_data:
+            result_df = pd.DataFrame(table_data)
+            
+            # Asegurar orden correcto de columnas
+            columns_order = ['Año'] + months_es + ['YTD']
+            result_df = result_df[columns_order]
+            
+            return result_df
+        else:
+            return pd.DataFrame()
+            
+    except Exception as e:
+        print(f"Error calculando tabla de rendimientos mensuales: {e}")
+        return pd.DataFrame()
+
+# -------------------------------------------------
 # Main content
 # -------------------------------------------------
 if run_button:
-    # Inicializar variables
+    # Inicializar variable para evitar errores
     historical_info = None
-    sp500_changes_df = pd.DataFrame()
-    ndx_changes_df = pd.DataFrame()
     
     try:
         with st.spinner("Cargando datos desde CSV..."):
-            # ✅ CORRECCIÓN: Validar rango de fechas disponible en datos
-            st.info(f"📅 Rango de fechas solicitado: {start_date} a {end_date}")
-            
             # Lógica para obtener tickers de uno o ambos índices
             all_tickers_data = {'tickers': [], 'data': []}
             
@@ -453,24 +476,6 @@ if run_button:
                 ohlc_data = None
                 st.warning("⚠️ Solo se cargaron precios de cierre. OHLC no disponible.")
             
-            # ✅ CORRECCIÓN: Validar rango de datos realmente disponibles
-            if not prices_df.empty:
-                data_start = prices_df.index.min().date()
-                data_end = prices_df.index.max().date()
-                st.info(f"📊 Datos disponibles en CSV: {data_start} a {data_end}")
-                
-                # Ajustar fechas si es necesario
-                actual_start = max(start_date, data_start)
-                actual_end = min(end_date, data_end)
-                
-                if actual_start != start_date or actual_end != end_date:
-                    st.warning(f"⚠️ Fechas ajustadas al rango de datos: {actual_start} a {actual_end}")
-                    start_date = actual_start
-                    end_date = actual_end
-                    
-                    # Filtrar datos al rango ajustado
-                    prices_df = prices_df[(prices_df.index.date >= start_date) & (prices_df.index.date <= end_date)]
-            
             # Validación adicional de precios
             if prices_df is None or prices_df.empty or len(prices_df.columns) == 0:
                 st.error("❌ No se pudieron cargar los precios históricos desde los CSV")
@@ -540,7 +545,7 @@ if run_button:
             else:
                 st.success(f"✅ Benchmark {benchmark_ticker} cargado correctamente desde CSV")
             
-            # ✅ NUEVO: Cargar SPY para filtros si es necesario
+                        # ✅ NUEVO: Cargar SPY para filtros si es necesario
             spy_df = None
             if (use_roc_filter or use_sma_filter) and benchmark_ticker != "SPY":
                 st.info("📊 Cargando datos del SPY para filtros de mercado...")
@@ -558,10 +563,7 @@ if run_button:
                 else:
                     st.success("✅ SPY cargado para filtros de mercado")
 
-        with st.spinner("Ejecutando backtest..."):
-            # Asegurar directorio para cambios históricos
-            ensure_local_changes_dir()
-            
+        with st.spinner("Ejecutando backtest optimizado..."):
             # Asegurar que tenemos datos válidos para el benchmark
             if benchmark_df is not None and not benchmark_df.empty:
                 benchmark_series = benchmark_df[benchmark_ticker] if benchmark_ticker in benchmark_df.columns else benchmark_df.iloc[:, 0]
@@ -582,33 +584,25 @@ if run_button:
                     changes_data = pd.DataFrame()
                     changes_loaded = []
                     
-                    # Cargar y actualizar cambios del S&P 500
                     if index_choice in ["SP500", "Ambos (SP500 + NDX)"]:
                         try:
-                            sp500_changes_current = get_sp500_historical_changes()
-                            sp500_changes_updated = update_changes_with_new_data("sp500", sp500_changes_current)
-                            sp500_changes_df = sp500_changes_updated  # Guardar para descarga
-                            
-                            if not sp500_changes_updated.empty:
-                                changes_data = pd.concat([changes_data, sp500_changes_updated], ignore_index=True)
-                                changes_loaded.append(f"S&P 500: {len(sp500_changes_updated)} cambios")
-                                st.success(f"✅ Cargados {len(sp500_changes_updated)} cambios del S&P 500 (actualizados)")
+                            sp500_changes = get_sp500_historical_changes()
+                            if not sp500_changes.empty:
+                                changes_data = pd.concat([changes_data, sp500_changes], ignore_index=True)
+                                changes_loaded.append(f"S&P 500: {len(sp500_changes)} cambios")
+                                st.success(f"✅ Cargados {len(sp500_changes)} cambios del S&P 500")
                             else:
                                 st.warning("⚠️  No se pudieron cargar cambios del S&P 500")
                         except Exception as e:
                             st.error(f"❌ Error cargando S&P 500: {e}")
                     
-                    # Cargar y actualizar cambios del NASDAQ-100
                     if index_choice in ["NDX", "Ambos (SP500 + NDX)"]:
                         try:
-                            ndx_changes_current = get_nasdaq100_historical_changes()
-                            ndx_changes_updated = update_changes_with_new_data("ndx", ndx_changes_current)
-                            ndx_changes_df = ndx_changes_updated  # Guardar para descarga
-                            
-                            if not ndx_changes_updated.empty:
-                                changes_data = pd.concat([changes_data, ndx_changes_updated], ignore_index=True)
-                                changes_loaded.append(f"NASDAQ-100: {len(ndx_changes_updated)} cambios")
-                                st.success(f"✅ Cargados {len(ndx_changes_updated)} cambios del NASDAQ-100 (actualizados)")
+                            ndx_changes = get_nasdaq100_historical_changes()
+                            if not ndx_changes.empty:
+                                changes_data = pd.concat([changes_data, ndx_changes], ignore_index=True)
+                                changes_loaded.append(f"NASDAQ-100: {len(ndx_changes)} cambios")
+                                st.success(f"✅ Cargados {len(ndx_changes)} cambios del NASDAQ-100")
                             else:
                                 st.warning("⚠️  No se pudieron cargar cambios del NASDAQ-100")
                         except Exception as e:
@@ -715,8 +709,8 @@ if run_button:
                 except Exception as e:
                     st.warning(f"Error generando información de removidos: {e}")
             
-            # Ejecutar backtest con datos OHLC e información histórica
-            bt_results, picks_df = run_backtest(
+            # ✅ EJECUTAR BACKTEST OPTIMIZADO
+            bt_results, picks_df = run_optimized_backtest(
                 prices=prices_df,
                 benchmark=benchmark_series,
                 commission=commission,
@@ -835,7 +829,7 @@ if run_button:
                 bench_initial = float(bench_equity.iloc[0])
                 bench_total_return = (bench_final / bench_initial) - 1 if bench_initial != 0 else 0
                 
-                # CAGR del benchmark
+                                # CAGR del benchmark
                 if years > 0:
                     bench_cagr = (bench_final / bench_initial) ** (1/years) - 1
                 else:
@@ -1016,426 +1010,4 @@ if run_button:
                             fig_picks.update_layout(height=400)
                             st.plotly_chart(fig_picks, use_container_width=True)
                     except Exception as picks_fig_error:
-                        st.warning(f"Error al crear gráfico de picks: {picks_fig_error}")
-                        
-                except Exception as picks_error:
-                    st.warning(f"Error al procesar picks: {picks_error}")
-            else:
-                st.info("No se generaron picks en este backtest")
-
-            # -------------------------------------------------
-                        # -------------------------------------------------
-            # Señales Actuales (Vela en Formación) - CORREGIDO
-            # -------------------------------------------------
-            with st.expander("🔮 Señales Actuales - Vela en Formación", expanded=True):
-                st.subheader("📊 Picks Prospectivos para el Próximo Mes")
-                st.warning("""
-                ⚠️ **IMPORTANTE**: Estas señales usan datos hasta HOY (vela en formación).
-                - Son **preliminares** y pueden cambiar hasta el cierre del mes
-                - En un sistema real, tomarías estas posiciones al inicio del próximo mes
-                - Úsalas solo como referencia, NO como señales definitivas
-                """)
-
-                try:
-                    # ✅ CORRECCIÓN: Usar TODOS los datos disponibles (incluyendo vela en formación)
-                    # No depender del resultado del backtest, sino calcular con datos frescos
-                    current_scores = inertia_score(prices_df, corte=corte, ohlc_data=ohlc_data)
-                    
-                    if current_scores and "ScoreAdjusted" in current_scores:
-                        score_df = current_scores["ScoreAdjusted"]
-                        inercia_df = current_scores["InerciaAlcista"]
-                        
-                        if not score_df.empty and len(score_df) > 0:
-                            # Obtener últimos scores
-                            last_scores = score_df.iloc[-1].dropna().sort_values(ascending=False)
-                            last_inercia = inercia_df.iloc[-1] if not inercia_df.empty else pd.Series()
-                            
-                            if len(last_scores) > 0:
-                                # ✅ CORRECCIÓN: Filtrar PRIMERO los que pasan el corte de manera consistente
-                                valid_picks = []
-                                for ticker in last_scores.index:
-                                    # Verificar que el ticker tenga datos válidos
-                                    if ticker in prices_df.columns and len(prices_df[ticker].dropna()) > 0:
-                                        inercia_val = last_inercia.get(ticker, 0) if not last_inercia.empty else 0
-                                        score_adj = last_scores[ticker]
-                                        
-                                        # Solo incluir si pasa el corte Y tiene score > 0
-                                        if inercia_val >= corte and score_adj > 0 and not np.isnan(inercia_val) and not np.isnan(score_adj):
-                                            valid_picks.append({
-                                                'ticker': ticker,
-                                                'inercia': inercia_val,
-                                                'score_adj': score_adj
-                                            })
-                                
-                                # ✅ CORRECCIÓN: Ordenar por score ajustado y tomar top N válidos de manera consistente
-                                valid_picks = sorted(valid_picks, key=lambda x: x['score_adj'], reverse=True)
-                                
-                                # Tomar solo hasta top_n O todos los válidos si son menos
-                                final_picks = valid_picks[:min(top_n, len(valid_picks))]
-                                
-                                if not final_picks:
-                                    st.warning("⚠️ No hay tickers que pasen el corte de inercia actualmente")
-                                else:
-                                    # Crear DataFrame para mostrar
-                                    current_picks = []
-                                    for rank, pick in enumerate(final_picks, 1):
-                                        ticker = pick['ticker']
-                                        current_picks.append({
-                                            'Rank': rank,
-                                            'Ticker': ticker,
-                                            'Inercia Alcista': pick['inercia'],
-                                            'Score Ajustado': pick['score_adj'],
-                                            'Pasa Corte': '✅',  # Todos pasan porque ya filtramos
-                                            'Precio Actual': prices_df[ticker].iloc[-1] if ticker in prices_df.columns and len(prices_df[ticker]) > 0 else 0
-                                        })
-                                    
-                                    current_picks_df = pd.DataFrame(current_picks)
-                                    actual_count = len(current_picks_df)
-                                    
-                                    # Mostrar fecha de los datos
-                                    data_date = prices_df.index[-1].strftime('%Y-%m-%d')
-                                    st.info(f"📅 **Datos hasta**: {data_date} (vela en formación)")
-                                    
-                                    # Información importante sobre filtrado
-                                    if actual_count < top_n:
-                                        st.warning(f"⚠️ Solo {actual_count} de {top_n} tickers solicitados pasan el corte de inercia ({corte})")
-                                    
-                                    # Tabla de picks actuales
-                                    st.subheader(f"🔥 Top {actual_count} Picks Válidos (de {top_n} solicitados)")
-                                    
-                                    # Formatear tabla para mostrar
-                                    display_df = current_picks_df.copy()
-                                    display_df['Precio Actual'] = display_df['Precio Actual'].apply(lambda x: f"${x:.2f}" if not pd.isna(x) else "$0.00")
-                                    display_df['Inercia Alcista'] = display_df['Inercia Alcista'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "0.00")
-                                    display_df['Score Ajustado'] = display_df['Score Ajustado'].apply(lambda x: f"{x:.2f}" if not pd.isna(x) else "0.00")
-                                    
-                                    st.dataframe(display_df, use_container_width=True)
-                                    
-                                    # Métricas actuales
-                                    col1, col2, col3, col4 = st.columns(4)
-                                    with col1:
-                                        st.metric("Pasan Corte Actual", f"{actual_count}/{top_n}")
-                                    
-                                    with col2:
-                                        avg_inercia_current = current_picks_df['Inercia Alcista'].mean()
-                                        st.metric("Inercia Promedio", f"{avg_inercia_current:.2f}")
-                                    
-                                    with col3:
-                                        avg_score_current = current_picks_df['Score Ajustado'].mean()
-                                        st.metric("Score Adj Promedio", f"{avg_score_current:.2f}")
-                                    
-                                    with col4:
-                                        max_score_current = current_picks_df['Score Ajustado'].max()
-                                        st.metric("Score Adj Máximo", f"{max_score_current:.2f}")
-                                    
-                                    # Comparación con último backtest
-                                    if 'picks_df' in locals() and picks_df is not None and not picks_df.empty:
-                                        st.subheader("🔄 Comparación con Últimos Picks del Backtest")
-                                        
-                                        # Obtener últimos picks del backtest
-                                        latest_bt_date = picks_df["Date"].max()
-                                        latest_bt_picks = picks_df[picks_df["Date"] == latest_bt_date]
-                                        
-                                        if not latest_bt_picks.empty:
-                                            # Comparar tickers
-                                            current_tickers = set(current_picks_df['Ticker'].tolist())
-                                            bt_tickers = set(latest_bt_picks['Ticker'].tolist())
-                                            
-                                            # Tickers que se mantienen
-                                            mantienen = current_tickers.intersection(bt_tickers)
-                                            # Tickers nuevos
-                                            nuevos = current_tickers - bt_tickers
-                                            # Tickers que salen
-                                            salen = bt_tickers - current_tickers
-                                            
-                                            col1, col2, col3 = st.columns(3)
-                                            
-                                            with col1:
-                                                st.success(f"**Se Mantienen ({len(mantienen)})**")
-                                                if mantienen:
-                                                    for ticker in sorted(mantienen):
-                                                        st.text(f"• {ticker}")
-                                            
-                                            with col2:
-                                                st.info(f"**Nuevos ({len(nuevos)})**")
-                                                if nuevos:
-                                                    for ticker in sorted(nuevos):
-                                                        st.text(f"• {ticker}")
-                                            
-                                            with col3:
-                                                st.warning(f"**Salen ({len(salen)})**")
-                                                if salen:
-                                                    for ticker in sorted(salen):
-                                                        st.text(f"• {ticker}")
-                                            
-                                            # Estadísticas de rotación
-                                            rotacion_pct = (len(nuevos) + len(salen)) / (2 * len(current_tickers)) * 100 if current_tickers else 0
-                                            st.metric("% Rotación vs Último Mes", f"{rotacion_pct:.1f}%")
-                                    
-                                    # Gráfico de comparación Score Ajustado
-                                    try:
-                                        fig_comparison = go.Figure()
-                                        
-                                        # Current picks
-                                        fig_comparison.add_trace(go.Bar(
-                                            x=current_picks_df['Ticker'],
-                                            y=current_picks_df['Score Ajustado'],
-                                            name='Señales Actuales',
-                                            marker_color='lightblue',
-                                            text=current_picks_df['Score Ajustado'].round(2),
-                                            textposition='auto'
-                                        ))
-                                        
-                                        fig_comparison.update_layout(
-                                            title="Score Ajustado - Señales Actuales",
-                                            xaxis_title="Ticker",
-                                            yaxis_title="Score Ajustado",
-                                            height=400,
-                                            showlegend=True
-                                        )
-                                        
-                                        st.plotly_chart(fig_comparison, use_container_width=True)
-                                        
-                                    except Exception as chart_error:
-                                        st.warning(f"Error creando gráfico: {chart_error}")
-                                    
-                                    # Instrucciones para uso práctico
-                                    st.subheader("📋 Cómo Usar Estas Señales")
-                                    
-                                    # Mostrar instrucciones según configuración
-                                    if fixed_allocation:
-                                        capital_info = f"- Cada posición recibirá exactamente 10% del capital\n- Con {actual_count} picks: {actual_count * 10}% invertido, {100 - actual_count * 10}% en efectivo"
-                                    else:
-                                        capital_info = f"- El capital se distribuye equitativamente: {100/actual_count:.1f}% por posición\n- 100% del capital invertido en {actual_count} posiciones"
-                                    
-                                    filter_info = ""
-                                    if use_roc_filter or use_sma_filter:
-                                        active_filters = []
-                                        if use_roc_filter:
-                                            active_filters.append("ROC 10M SPY < 0")
-                                        if use_sma_filter:
-                                            active_filters.append("SPY < SMA 10M")
-                                        filter_info = f"\n\n**Filtros de Mercado Activos:**\n- {' y '.join(active_filters)}\n- Si se activan: venta inmediata de todas las posiciones"
-                                    
-                                    st.info(f"""
-                                    **Para Trading Real:**
-                                    1. 📅 **Espera al cierre del mes actual** para señales definitivas
-                                    2. 🔄 **Recalcula el último día del mes** con datos completos
-                                    3. 📈 **Toma posiciones el primer día del próximo mes**
-                                    4. ⏰ **Mantén posiciones todo el mes** siguiente
-                                    5. 🔁 **Repite el proceso** mensualmente
-                                    
-                                    **Distribución de Capital:**
-                                    {capital_info}
-                                    {filter_info}
-                                    """)
-                                    
-                            else:
-                                st.warning("No se encontraron señales actuales")
-                        else:
-                            st.warning("No hay datos suficientes para calcular señales actuales")
-                    else:
-                        st.error("No se pudieron calcular las señales actuales")
-                        
-                except Exception as e:
-                    st.error(f"Error calculando señales actuales: {e}")
-                    st.exception(e)
-
-            # -------------------------------------------------
-            # Información adicional sobre verificación histórica
-            # -------------------------------------------------
-            if historical_info and historical_info.get('has_historical_data', False):
-                with st.expander("🕐 Detalles de Verificación Histórica", expanded=False):
-                    st.subheader("Información sobre la verificación histórica")
-                    
-                    changes_data = historical_info['changes_data']
-                    
-                    st.info(f"""
-                    **Datos históricos procesados:**
-                    - Total de cambios: {len(changes_data)}
-                    - Rango temporal: {changes_data['Date'].min()} a {changes_data['Date'].max()}
-                    - Agregaciones: {len(changes_data[changes_data['Action'] == 'Added'])}
-                    - Remociones: {len(changes_data[changes_data['Action'] == 'Removed'])}
-                    """)
-                    
-                    # Mostrar algunos cambios recientes
-                    st.subheader("Cambios recientes en los índices")
-                    recent_changes = changes_data.head(10)
-                    st.dataframe(recent_changes)
-                    
-                    # Debug: Verificar uso de tickers removidos
-                    if picks_df is not None and not picks_df.empty:
-                        st.subheader("🔍 Debug: Tickers Removidos en Backtest")
-                        
-                        # Ver cuáles aparecen en los picks
-                        try:
-                            removed_df = pd.read_csv("data/sp500_removed_tickers.csv")
-                            removed_tickers = set(removed_df['Ticker'].tolist())
-                            
-                            picks_tickers = set(picks_df['Ticker'].tolist())
-                            used_removed = picks_tickers.intersection(removed_tickers)
-                            
-                            st.info(f"✅ Tickers removidos usados en backtest: {len(used_removed)}")
-                            if used_removed:
-                                st.text(f"Ejemplos: {', '.join(sorted(list(used_removed))[:10])}")
-                            
-                        except:
-                            st.info("No se pudo verificar uso de tickers removidos")
-                    
-                    # Gráfico de cambios por año
-                    try:
-                        changes_by_year = changes_data.copy()
-                        changes_by_year['Year'] = pd.to_datetime(changes_by_year['Date']).dt.year
-                        changes_summary = changes_by_year.groupby(['Year', 'Action']).size().unstack(fill_value=0)
-                        
-                        if not changes_summary.empty:
-                            fig_changes = go.Figure()
-                            
-                            if 'Added' in changes_summary.columns:
-                                fig_changes.add_trace(go.Bar(
-                                    x=changes_summary.index,
-                                    y=changes_summary['Added'],
-                                    name='Agregados',
-                                    marker_color='green'
-                                ))
-                            
-                            if 'Removed' in changes_summary.columns:
-                                fig_changes.add_trace(go.Bar(
-                                    x=changes_summary.index,
-                                    y=changes_summary['Removed'],
-                                    name='Removidos',
-                                    marker_color='red'
-                                ))
-                            
-                            fig_changes.update_layout(
-                                title="Cambios en Índices por Año",
-                                xaxis_title="Año",
-                                yaxis_title="Número de Cambios",
-                                barmode='group',
-                                height=400
-                            )
-                            
-                            st.plotly_chart(fig_changes, use_container_width=True)
-                    except Exception as e:
-                        st.warning(f"Error creando gráfico de cambios: {e}")
-
-            # -------------------------------------------------
-            # ✅ NUEVO: Tabla de Rendimientos Mensuales por Año
-            # -------------------------------------------------
-            if bt_results is not None and not bt_results.empty and "Equity" in bt_results.columns:
-                try:
-                    st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
-                    
-                    monthly_table = calculate_monthly_returns_by_year(bt_results["Equity"])
-                    
-                    if not monthly_table.empty:
-                        # Aplicar estilo condicional
-                        def style_returns(val):
-                            if val == "-" or val == "":
-                                return ""
-                            try:
-                                # Extraer número de porcentaje
-                                num = float(val.rstrip('%'))
-                                if num > 0:
-                                    return "background-color: #d4edda; color: #155724; font-weight: bold"  # Verde claro
-                                elif num < 0:
-                                    return "background-color: #f8d7da; color: #721c24; font-weight: bold"  # Rojo claro
-                                else:
-                                    return ""
-                            except:
-                                return ""
-                        
-                        # Mostrar tabla con estilo
-                        styled_table = monthly_table.style.applymap(style_returns)
-                        st.dataframe(styled_table, use_container_width=True)
-                        
-                        # Estadísticas adicionales
-                        total_years = len(monthly_table)
-                        if total_years > 0:
-                            # Calcular años con retornos positivos
-                            positive_years = 0
-                            avg_annual_return = 0
-                            
-                            ytd_values = []
-                            for _, row in monthly_table.iterrows():
-                                if row['YTD'] != "-" and row['YTD'] != "":
-                                    try:
-                                        ytd_val = float(row['YTD'].rstrip('%'))
-                                        ytd_values.append(ytd_val)
-                                        if ytd_val > 0:
-                                            positive_years += 1
-                                    except:
-                                        continue
-                            
-                            if ytd_values:
-                                avg_annual_return = sum(ytd_values) / len(ytd_values)
-                                win_rate = (positive_years / len(ytd_values)) * 100
-                                
-                                col1, col2, col3 = st.columns(3)
-                                col1.metric("Años Totales", total_years)
-                                col2.metric("Retorno Anual Promedio", f"{avg_annual_return:.1f}%")
-                                col3.metric("Tasa de Éxito Anual", f"{win_rate:.0f}%")
-                    
-                    else:
-                        st.info("No hay datos suficientes para mostrar la tabla de rendimientos mensuales")
-                        
-                except Exception as table_error:
-                    st.warning(f"No se pudo generar la tabla de rendimientos mensuales: {table_error}")
-
-            # -------------------------------------------------
-            # ✅ NUEVO: Mostrar botones de descarga de CSV
-            # -------------------------------------------------
-            if use_historical_verification and (not sp500_changes_df.empty or not ndx_changes_df.empty):
-                show_download_buttons(sp500_changes_df, ndx_changes_df)
-
-    except Exception as e:
-        st.error(f"❌ Excepción no capturada: {str(e)}")
-        st.exception(e)
-        st.info("💡 Consejos para resolver este problema:")
-        st.info("1. Verifica que los archivos CSV existan en la carpeta 'data/'")
-        st.info("2. Asegúrate de que los archivos tengan el formato correcto")
-        st.info("3. Prueba con un rango de fechas más corto")
-        st.info("4. Verifica que los tickers sean válidos")
-        st.info("5. Desactiva la verificación histórica si hay problemas de conectividad")
-
-else:
-    st.info("👈 Configura los parámetros en el panel lateral y haz clic en 'Ejecutar backtest'")
-    
-    # Información sobre el sistema
-    st.subheader("🔍 Información del Sistema")
-    st.info("""
-    **Características principales:**
-    - ✅ Verificación histórica de constituyentes de índices (opcional)
-    - ✅ Cálculos de inercia compatibles con AmiBroker  
-    - ✅ Datos OHLC reales para cálculos precisos
-    - ✅ Eliminación del sesgo de supervivencia
-    - ✅ Señales actuales filtradas por criterios estrictos
-    - ✅ Distribución de capital configurable (fija 10% o equitativa)
-    - ✅ Filtros de mercado para protección en bajadas
-    
-    **Datos requeridos:**
-    - Archivos CSV en carpeta 'data/' con formato: TICKER.csv
-    - Columnas: Date, High, Low, Close, Adj Close (recomendado)
-    - Benchmark: SPY.csv y/o QQQ.csv
-    """)
-    
-    st.subheader("💡 Consejos para mejores resultados")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.info("""
-        **Configuración recomendada:**
-        • Usa un rango de fechas de al menos 2 años
-        • Comienza con 10 activos y ajusta según resultados
-        • Activa verificación histórica para mayor realismo
-        • Considera usar filtros de mercado para protección
-        """)
-    
-    with col2:
-        st.info("""
-        **Nuevas opciones:**
-        • Asignación fija 10%: Mantiene capital en efectivo
-        • Filtros de mercado: Protegen en mercados bajistas
-        • ROC SPY: Evita invertir con momentum negativo
-        • SMA SPY: Evita invertir por debajo de media móvil
-        """)
+                        st.warning(f"Error al crear gráfico de picks: 
