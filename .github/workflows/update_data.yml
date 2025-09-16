@@ -65,78 +65,143 @@ jobs:
                   # Si el DataFrame no está vacío
                   if len(df) > 0:
                       last_date = df.index[-1]
-                      today = datetime.now().date()
+                      today = datetime.now()
                       
-                      # Si ya está actualizado (últimos 3 días), no hacer nada
-                      if last_date.date() >= (today - timedelta(days=3)):
-                          print(f"✅ {ticker}: Ya actualizado hasta {last_date.date()}")
+                      # ✅ CORRECCIÓN: Actualizar si no es del día de hoy
+                      # Considerando que el mercado cierra a las 4PM EST
+                      if last_date.date() >= today.date():
+                          print(f"✅ {ticker}: Ya actualizado para hoy {last_date.date()}")
                           return True
                       
+                      # ✅ MEJORA: Si es antes de las 4PM EST, verificar si ya tiene datos de ayer
+                      from datetime import time
+                      import pytz
+                      
+                      est = pytz.timezone('US/Eastern')
+                      now_est = datetime.now(est)
+                      market_close = time(16, 0)  # 4:00 PM EST
+                      
+                      # Si es antes del cierre del mercado y tiene datos de ayer, esperar
+                      if now_est.time() < market_close:
+                          yesterday = (today - timedelta(days=1)).date()
+                          # Si es fin de semana, buscar el último día hábil
+                          while yesterday.weekday() > 4:  # 5=Sábado, 6=Domingo
+                              yesterday = yesterday - timedelta(days=1)
+                          
+                          if last_date.date() >= yesterday:
+                              print(f"⏰ {ticker}: Mercado aún abierto, datos de {last_date.date()} son los más recientes")
+                              return True
+                      
                       # Descargar datos desde la última fecha
+                      print(f"📥 {ticker}: Actualizando desde {last_date.date()}...")
                       start_date = last_date - timedelta(days=7)  # Margen de seguridad
                       end_date = today + timedelta(days=1)
                       
-                      new_data = yf.download(ticker, start=start_date, end=end_date)
+                      new_data = yf.download(ticker, start=start_date, end=end_date, progress=False)
                       if not new_data.empty and len(new_data) > 0:
                           # Asegurar formato de índice
                           new_data.index = pd.to_datetime(new_data.index)
                           
-                          # Combinar datos
+                          # Combinar datos eliminando duplicados
                           combined = pd.concat([df, new_data])
                           combined = combined[~combined.index.duplicated(keep='last')].sort_index()
-                          combined.to_csv(filename)
-                          print(f"🔄 {ticker}: Actualizado hasta {combined.index[-1].date()}")
-                          return True
+                          
+                          # Solo guardar si hay datos nuevos
+                          if len(combined) > len(df):
+                              combined.to_csv(filename)
+                              print(f"✅ {ticker}: Actualizado hasta {combined.index[-1].date()} (+{len(combined)-len(df)} días)")
+                              return True
+                          else:
+                              print(f"ℹ️ {ticker}: Sin datos nuevos")
+                              return True
                       else:
-                          print(f"⚠️ {ticker}: No hay nuevos datos disponibles")
+                          print(f"⚠️ {ticker}: No hay nuevos datos en Yahoo Finance")
                           return True
                   else:
-                      # Archivo vacío, descargar historial
-                      print(f"📥 {ticker}: Archivo vacío, descargando historial...")
-                      data = yf.download(ticker, period="max")
+                      # Archivo vacío, descargar historial completo
+                      print(f"📥 {ticker}: Archivo vacío, descargando historial completo...")
+                      data = yf.download(ticker, period="max", progress=False)
                       if not data.empty:
                           data.to_csv(filename)
-                          print(f"💾 {ticker}: Historial guardado")
+                          print(f"💾 {ticker}: Historial guardado ({len(data)} días)")
                           return True
                       else:
                           print(f"❌ {ticker}: No se pudo descargar historial")
                           return False
                           
               except Exception as e:
-                  print(f"❌ {ticker}: Error - {e}")
+                  print(f"❌ {ticker}: Error - {str(e)[:100]}")
                   return False
-              return False
           
           if __name__ == "__main__":
-              print("=== Actualización de Datos Diaria ===")
+              print("=" * 50)
+              print("🚀 ACTUALIZACIÓN DIARIA DE DATOS")
+              print("=" * 50)
+              print(f"📅 Fecha/Hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
               
               # Solo actualizar los tickers que existen en la carpeta data/
               tickers = get_existing_tickers()
-              print(f"Encontrados {len(tickers)} archivos CSV para actualizar")
-              print(f"Tickers: {', '.join(tickers[:10])}{'...' if len(tickers) > 10 else ''}")
+              print(f"📊 Encontrados {len(tickers)} archivos CSV para actualizar")
+              
+              if len(tickers) > 20:
+                  print(f"📝 Primeros 20: {', '.join(tickers[:20])}...")
+              else:
+                  print(f"📝 Tickers: {', '.join(tickers)}")
               
               # Asegurar que SPY y QQQ estén incluidos si existen
               important_tickers = ['SPY', 'QQQ']
               for important in important_tickers:
                   if important in tickers:
-                      print(f"🎯 Prioritario: {important}")
+                      print(f"⭐ Ticker prioritario encontrado: {important}")
               
-              print(f"\nActualizando {len(tickers)} tickers...")
+              print("\n" + "=" * 50)
+              print("INICIANDO ACTUALIZACIÓN")
+              print("=" * 50 + "\n")
+              
               updated = 0
+              no_changes = 0
               errors = 0
               
               for i, ticker in enumerate(tickers, 1):
-                  print(f"[{i}/{len(tickers)}] {ticker}")
-                  if update_ticker_data(ticker):
-                      updated += 1
+                  print(f"\n[{i}/{len(tickers)}] Procesando {ticker}...")
+                  result = update_ticker_data(ticker)
+                  if result:
+                      if "Sin datos nuevos" in str(result) or "Ya actualizado" in str(result):
+                          no_changes += 1
+                      else:
+                          updated += 1
                   else:
                       errors += 1
+                  
+                  # Pequeña pausa cada 50 tickers para no sobrecargar
+                  if i % 50 == 0:
+                      import time
+                      time.sleep(1)
               
-              print(f"\n=== Resumen ===")
-              print(f"✅ Actualizados: {updated}")
+              print("\n" + "=" * 50)
+              print("📊 RESUMEN DE ACTUALIZACIÓN")
+              print("=" * 50)
+              print(f"✅ Actualizados con nuevos datos: {updated}")
+              print(f"ℹ️ Sin cambios necesarios: {no_changes}")
               print(f"❌ Errores: {errors}")
               print(f"📊 Total procesados: {len(tickers)}")
+              print("=" * 50)
+              
+              # Verificar algunos archivos para confirmar fechas
+              print("\n🔍 Verificación de últimas fechas:")
+              sample_tickers = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL']
+              for ticker in sample_tickers:
+                  if ticker in tickers:
+                      try:
+                          df = pd.read_csv(f"data/{ticker}.csv", index_col="Date", parse_dates=True)
+                          if len(df) > 0:
+                              print(f"  {ticker}: Último dato = {df.index[-1].date()}")
+                      except:
+                          pass
           EOF
+
+      - name: Install pytz for timezone handling
+        run: pip install pytz
 
       - name: Run update script
         run: python update_csv.py
@@ -145,5 +210,18 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Ver qué archivos han cambiado
+          git status
+          
+          # Agregar todos los CSVs modificados
           git add data/*.csv
-          git diff --staged --quiet || (git commit -m "Auto-update CSVs ($(date -u +'%Y-%m-%d %H:%M:%S'))" && git push) || echo "No changes to commit or push failed"
+          
+          # Hacer commit solo si hay cambios
+          if git diff --staged --quiet; then
+            echo "📊 No hay cambios para commitear"
+          else
+            git commit -m "📊 Auto-update CSVs - $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+            git push
+            echo "✅ Cambios pusheados exitosamente"
+          fi
