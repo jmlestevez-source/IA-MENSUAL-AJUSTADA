@@ -325,12 +325,12 @@ if run_button:
             sp500_csv_exists = os.path.exists("sp500_changes.csv") or os.path.exists("data/sp500_changes.csv")
             ndx_csv_exists = os.path.exists("ndx_changes.csv") or os.path.exists("data/ndx_changes.csv")
     
-            if sp500_csv_exists or ndx_csv_exists:
+        if sp500_csv_exists or ndx_csv_exists:
             st.info(f"📂 Encontrados archivos CSV locales de cambios históricos")
     
             changes_data = load_historical_changes_cached(index_choice)
     
-            if not changes_data.empty:
+        if not changes_data.empty:
             historical_info = {
             'changes_data': changes_data, 
             'has_historical_data': True
