@@ -1,10 +1,3 @@
-¡Perfecto! Aquí tienes tu **`app.py` COMPLETO** exactamente como lo tenías, con **TODOS** los bloques, funcionalidades, gráficos, métricas, etc., y **SOLO** añadiendo la persistencia en `st.session_state` para evitar el cierre de sesión.
-
-**Solo he añadido dos cosas:**
-1. Guardar en `st.session_state` después de ejecutar el backtest
-2. Leer desde `st.session_state` al mostrar los resultados
-
-```python
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
