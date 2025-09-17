@@ -315,27 +315,27 @@ if run_button:
                 spy_result, _ = load_prices_from_csv_parallel(["SPY"], start_date, end_date, load_full_data=False)
                 spy_df = spy_result if not spy_result.empty else None
             
-           # Información histórica
-historical_info = None
-if use_historical_verification:
-    status_text.text("🕐 Cargando datos históricos...")
-    progress_bar.progress(50)
+            # Información histórica
+            historical_info = None
+            if use_historical_verification:
+                status_text.text("🕐 Cargando datos históricos...")
+                progress_bar.progress(50)
     
-    # Verificar si existen los archivos CSV locales
-    sp500_csv_exists = os.path.exists("sp500_changes.csv") or os.path.exists("data/sp500_changes.csv")
-    ndx_csv_exists = os.path.exists("ndx_changes.csv") or os.path.exists("data/ndx_changes.csv")
+            # Verificar si existen los archivos CSV locales
+            sp500_csv_exists = os.path.exists("sp500_changes.csv") or os.path.exists("data/sp500_changes.csv")
+            ndx_csv_exists = os.path.exists("ndx_changes.csv") or os.path.exists("data/ndx_changes.csv")
     
-    if sp500_csv_exists or ndx_csv_exists:
-        st.info(f"📂 Encontrados archivos CSV locales de cambios históricos")
+            if sp500_csv_exists or ndx_csv_exists:
+            st.info(f"📂 Encontrados archivos CSV locales de cambios históricos")
     
-    changes_data = load_historical_changes_cached(index_choice)
+            changes_data = load_historical_changes_cached(index_choice)
     
-    if not changes_data.empty:
-        historical_info = {
+            if not changes_data.empty:
+            historical_info = {
             'changes_data': changes_data, 
             'has_historical_data': True
         }
-        st.success(f"✅ Cargados {len(changes_data)} cambios históricos")
+             st.success(f"✅ Cargados {len(changes_data)} cambios históricos")
         
         # Mostrar información sobre el origen de los datos
         if sp500_csv_exists or ndx_csv_exists:
