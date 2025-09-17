@@ -348,46 +348,56 @@ if run_button:
                     historical_info = None
             
             # Ejecutar backtest
-            status_text.text("🚀 Ejecutando backtest optimizado...")
-            progress_bar.progress(70)
-            
-            bt_results, picks_df = run_backtest_optimized(
-                prices=prices_df,
-                benchmark=benchmark_series,
-                commission=commission,
-                top_n=top_n,
-                corte=corte,
-                ohlc_data=ohlc_data,
-                historical_info=historical_info,
-                fixed_allocation=fixed_allocation,
-                use_roc_filter=use_roc_filter,
-                use_sma_filter=use_sma_filter,
-                spy_data=spy_df,
-                progress_callback=lambda p: progress_bar.progress(70 + int(p * 0.3))
-            )
-            
-            # Guardar en caché
-            status_text.text("💾 Guardando resultados en caché...")
-            progress_bar.progress(100)
-            
-            try:
-                with open(cache_file, 'wb') as f:
-                    pickle.dump({
-                        'bt_results': bt_results,
-                        'picks_df': picks_df,
-                        'historical_info': historical_info,
-                        'prices_df': prices_df,
-                        'ohlc_data': ohlc_data,
-                        'benchmark_series': benchmark_series,
-                        'spy_df': spy_df,
-                        'timestamp': datetime.now()
-                    }, f)
-                st.success("✅ Resultados guardados en caché")
-            except Exception as e:
-                st.warning(f"No se pudo guardar caché: {e}")
-            
-            status_text.empty()
-            progress_bar.empty()
+            # Ejecutar backtest
+status_text.text("🚀 Ejecutando backtest optimizado...")
+progress_bar.progress(70)
+
+bt_results, picks_df = run_backtest_optimized(
+    prices=prices_df,
+    benchmark=benchmark_series,
+    commission=commission,
+    top_n=top_n,
+    corte=corte,
+    ohlc_data=ohlc_data,
+    historical_info=historical_info,
+    fixed_allocation=fixed_allocation,
+    use_roc_filter=use_roc_filter,
+    use_sma_filter=use_sma_filter,
+    spy_data=spy_df,
+    progress_callback=lambda p: progress_bar.progress(70 + int(p * 0.3))
+)
+
+# 👉 Guardar resultados en session_state para persistencia entre recargas
+st.session_state.bt_results = bt_results
+st.session_state.picks_df = picks_df
+st.session_state.prices_df = prices_df
+st.session_state.ohlc_data = ohlc_data
+st.session_state.benchmark_series = benchmark_series
+st.session_state.spy_df = spy_df
+st.session_state.historical_info = historical_info
+
+# Guardar en caché (disco)
+status_text.text("💾 Guardando resultados en caché...")
+progress_bar.progress(100)
+
+try:
+    with open(cache_file, 'wb') as f:
+        pickle.dump({
+            'bt_results': bt_results,
+            'picks_df': picks_df,
+            'historical_info': historical_info,
+            'prices_df': prices_df,
+            'ohlc_data': ohlc_data,
+            'benchmark_series': benchmark_series,
+            'spy_df': spy_df,
+            'timestamp': datetime.now()
+        }, f)
+    st.success("✅ Resultados guardados en caché")
+except Exception as e:
+    st.warning(f"No se pudo guardar caché: {e}")
+
+status_text.empty()
+progress_bar.empty()
         
         # -------------------------------------------------
         # MOSTRAR RESULTADOS COMPLETOS
@@ -610,6 +620,16 @@ if run_button:
                         col3.metric("Tasa de Éxito Anual", f"{win_rate:.0f}%")
             
             # Picks históricos - SECCIÓN COMPLETA Y CORREGIDA
+            if "bt_results" in st.session_state and "picks_df" in st.session_state:
+                bt_results = st.session_state.bt_results
+                picks_df = st.session_state.picks_df
+                prices_df = st.session_state.prices_df
+                ohlc_data = st.session_state.ohlc_data
+                benchmark_series = st.session_state.benchmark_series
+                spy_df = st.session_state.spy_df
+                historical_info = st.session_state.historical_info
+
+            
             if picks_df is not None and not picks_df.empty:
                 st.subheader("📊 Picks Históricos")
                 
