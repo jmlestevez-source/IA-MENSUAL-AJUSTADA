@@ -610,317 +610,318 @@ if run_button:
                         col3.metric("Tasa de Éxito Anual", f"{win_rate:.0f}%")
             
             # Picks históricos - SECCIÓN COMPLETA Y CORREGIDA
-            # Reemplaza toda la sección de Picks Históricos con este código:
-
-if picks_df is not None and not picks_df.empty:
-    st.subheader("📊 Picks Históricos")
-    
-    if 'HistoricallyValid' in picks_df.columns:
-        total_picks = len(picks_df)
-        valid_picks = picks_df['HistoricallyValid'].sum()
-        validity_rate = valid_picks / total_picks * 100 if total_picks > 0 else 0
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Total de Picks", total_picks)
-        col2.metric("Picks Válidos", valid_picks)
-        col3.metric("% Validez Histórica", f"{validity_rate:.1f}%")
-    
-    # Inicializar session state si no existe
-    if 'selected_date' not in st.session_state:
-        st.session_state.selected_date = None
-    
-    # Crear columnas para la interfaz
-    col_sidebar, col_main = st.columns([1, 3])
-    
-    with col_sidebar:
-        st.markdown("### 📅 Navegación por Fechas")
-        
-        # Obtener fechas únicas ordenadas
-        unique_dates = sorted(picks_df['Date'].unique(), reverse=True)
-        
-        # Selector de fecha - usar session_state para mantener el valor
-        selected_date = st.selectbox(
-            "Selecciona una fecha:",
-            unique_dates,
-            index=0 if st.session_state.selected_date is None else 
-                  (unique_dates.index(st.session_state.selected_date) if st.session_state.selected_date in unique_dates else 0),
-            key="date_selector",  # Clave única para el widget
-            help="Muestra los picks seleccionados en esta fecha"
-        )
-        
-        # Guardar en session_state
-        st.session_state.selected_date = selected_date
-        
-        # Mostrar información de la fecha seleccionada
-        date_picks = picks_df[picks_df['Date'] == selected_date]
-        st.info(f"🎯 {len(date_picks)} picks seleccionados el {selected_date}")
-        
-        # Calcular rentabilidad del mes
-        try:
-            # Encontrar el índice de la fecha seleccionada en bt_results
-            bt_dates = bt_results.index.strftime('%Y-%m-%d').tolist()
-            if selected_date in bt_dates:
-                date_idx = bt_dates.index(selected_date)
+            if picks_df is not None and not picks_df.empty:
+                st.subheader("📊 Picks Históricos")
                 
-                # Si no es la última fecha, calcular retorno del siguiente mes
-                if date_idx < len(bt_dates) - 1:
-                    next_date = bt_dates[date_idx + 1]
-                    current_equity = bt_results.iloc[date_idx]['Equity']
-                    next_equity = bt_results.iloc[date_idx + 1]['Equity']
-                    monthly_return = (next_equity / current_equity) - 1
+                if 'HistoricallyValid' in picks_df.columns:
+                    total_picks = len(picks_df)
+                    valid_picks = picks_df['HistoricallyValid'].sum()
+                    validity_rate = valid_picks / total_picks * 100 if total_picks > 0 else 0
                     
-                    st.metric(
-                        "📈 Retorno del Mes",
-                        f"{monthly_return:.2%}",
-                        delta=f"{monthly_return:.2%}"
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total de Picks", total_picks)
+                    col2.metric("Picks Válidos", valid_picks)
+                    col3.metric("% Validez Histórica", f"{validity_rate:.1f}%")
+                
+                # Inicializar session state si no existe
+                if 'selected_date' not in st.session_state:
+                    st.session_state.selected_date = None
+                
+                # Crear columnas para la interfaz
+                col_sidebar, col_main = st.columns([1, 3])
+                
+                with col_sidebar:
+                    st.markdown("### 📅 Navegación por Fechas")
+                    
+                    # Obtener fechas únicas ordenadas
+                    unique_dates = sorted(picks_df['Date'].unique(), reverse=True)
+                    
+                    # Selector de fecha - usar session_state para mantener el valor
+                    selected_date = st.selectbox(
+                        "Selecciona una fecha:",
+                        unique_dates,
+                        index=0 if st.session_state.selected_date is None else 
+                              (unique_dates.index(st.session_state.selected_date) if st.session_state.selected_date in unique_dates else 0),
+                        key="date_selector",  # Clave única para el widget
+                        help="Muestra los picks seleccionados en esta fecha"
                     )
-                else:
-                    st.warning("📅 Último mes del backtest (sin retorno futuro)")
-            else:
-                st.warning("⚠️ No se encontró la fecha en los resultados del backtest")
-        except Exception as e:
-            st.error(f"Error calculando retorno: {e}")
-        
-        # Estadísticas rápidas de la fecha
-        if not date_picks.empty:
-            avg_inercia = date_picks['Inercia'].mean()
-            avg_score = date_picks['ScoreAdj'].mean()
-            
-            st.markdown("### 📊 Estadísticas del Mes")
-            st.metric("Inercia Promedio", f"{avg_inercia:.2f}")
-            st.metric("Score Ajustado Promedio", f"{avg_score:.2f}")
-    
-    with col_main:
-        # Mostrar picks de la fecha seleccionada
-        st.markdown(f"### 🎯 Picks Seleccionados el {selected_date}")
-        
-        date_picks_display = date_picks.copy()
-        
-        # Calcular rentabilidad individual si es posible
-        try:
-            # Convertir fechas a datetime para comparación
-            bt_index = pd.to_datetime(bt_results.index)
-            selected_dt = pd.to_datetime(selected_date)
-            
-            # Encontrar el próximo mes
-            future_dates = bt_index[bt_index > selected_dt]
-            if len(future_dates) > 0:
-                next_month = future_dates[0]
-                
-                # Calcular retorno individual para cada ticker
-                returns_data = []
-                for _, row in date_picks.iterrows():
-                    ticker = row['Ticker']
                     
+                    # Guardar en session_state
+                    st.session_state.selected_date = selected_date
+                    
+                    # Mostrar información de la fecha seleccionada
+                    date_picks = picks_df[picks_df['Date'] == selected_date]
+                    st.info(f"🎯 {len(date_picks)} picks seleccionados el {selected_date}")
+                    
+                    # Calcular rentabilidad del mes
                     try:
-                        # Verificar que el ticker exista en prices_df
-                        if ticker in prices_df.columns:
-                            # Obtener precio de entrada (fecha de selección)
-                            entry_price = prices_df.loc[selected_dt, ticker]
+                        # Encontrar el índice de la fecha seleccionada en bt_results
+                        bt_dates = bt_results.index.strftime('%Y-%m-%d').tolist()
+                        if selected_date in bt_dates:
+                            date_idx = bt_dates.index(selected_date)
                             
-                            # Obtener precio de salida (próximo mes)
-                            exit_price = prices_df.loc[next_month, ticker]
-                            
-                            # Calcular retorno
-                            if entry_price != 0:
-                                individual_return = (exit_price / entry_price) - 1
-                                returns_data.append(individual_return)
+                            # Si no es la última fecha, calcular retorno del siguiente mes
+                            if date_idx < len(bt_dates) - 1:
+                                next_date = bt_dates[date_idx + 1]
+                                current_equity = bt_results.iloc[date_idx]['Equity']
+                                next_equity = bt_results.iloc[date_idx + 1]['Equity']
+                                monthly_return = (next_equity / current_equity) - 1
+                                
+                                st.metric(
+                                    "📈 Retorno del Mes",
+                                    f"{monthly_return:.2%}",
+                                    delta=f"{monthly_return:.2%}"
+                                )
                             else:
-                                returns_data.append(None)
-                    except Exception:
-                        returns_data.append(None)
-                
-                # Agregar columna de retornos individuales
-                date_picks_display['Retorno Individual'] = returns_data
-                
-                # Formatear retornos
-                def format_return(val):
-                    if pd.isna(val):
-                        return "N/A"
-                    elif val >= 0:
-                        return f"+{val:.2%}"
-                    else:
-                        return f"{val:.2%}"
-                
-                # Aplicar formato condicional
-                def color_returns(val):
-                    if isinstance(val, str) and val != "N/A":
-                        num_val = float(val.replace('%', '').replace('+', '')) / 100
-                        if num_val > 0:
-                            return 'color: green; font-weight: bold'
-                        elif num_val < 0:
-                            return 'color: red; font-weight: bold'
-                    return ''
-                
-                # Mostrar tabla con retornos individuales
-                display_columns = ['Rank', 'Ticker', 'Inercia', 'ScoreAdj', 'Retorno Individual']
-                styled_df = date_picks_display[display_columns].style.applymap(
-                    color_returns, 
-                    subset=['Retorno Individual']
-                ).format({
-                    'Inercia': '{:.2f}',
-                    'ScoreAdj': '{:.2f}',
-                    'Retorno Individual': format_return
-                })
-                
-                st.dataframe(styled_df, use_container_width=True)
-                
-                # Resumen de retornos
-                if any(pd.notna(r) for r in returns_data):
-                    valid_returns = [r for r in returns_data if pd.notna(r)]
-                    if valid_returns:
-                        avg_return = sum(valid_returns) / len(valid_returns)
-                        positive_count = sum(1 for r in valid_returns if r > 0)
-                        win_rate = positive_count / len(valid_returns) * 100
+                                st.warning("📅 Último mes del backtest (sin retorno futuro)")
+                        else:
+                            st.warning("⚠️ No se encontró la fecha en los resultados del backtest")
+                    except Exception as e:
+                        st.error(f"Error calculando retorno: {e}")
+                    
+                    # Estadísticas rápidas de la fecha
+                    if not date_picks.empty:
+                        avg_inercia = date_picks['Inercia'].mean()
+                        avg_score = date_picks['ScoreAdj'].mean()
                         
-                        st.markdown("### 📈 Resumen de Rentabilidad")
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Retorno Promedio", f"{avg_return:.2%}")
-                        col2.metric("Tasa de Éxito", f"{win_rate:.1f}%")
-                        col3.metric("Mejor Pick", f"{max(valid_returns):.2%}")
-                        
-                        # Gráfico de barras de retornos individuales
-                        fig_returns = go.Figure()
-                        fig_returns.add_trace(go.Bar(
-                            x=date_picks_display['Ticker'],
-                            y=[r if pd.notna(r) else 0 for r in returns_data],
-                            marker_color=['green' if r > 0 else 'red' if r < 0 else 'gray' for r in returns_data],
-                            text=[format_return(r) for r in returns_data],
-                            textposition='auto',
-                        ))
-                        fig_returns.update_layout(
-                            title="Rentabilidad Individual por Ticker",
-                            xaxis_title="Ticker",
-                            yaxis_title="Retorno",
-                            yaxis_tickformat=".1%",
-                            height=400
-                        )
-                        st.plotly_chart(fig_returns, use_container_width=True)
+                        st.markdown("### 📊 Estadísticas del Mes")
+                        st.metric("Inercia Promedio", f"{avg_inercia:.2f}")
+                        st.metric("Score Ajustado Promedio", f"{avg_score:.2f}")
                 
-            else:
-                # Mostrar sin columna de retornos si es el último mes
-                display_columns = ['Rank', 'Ticker', 'Inercia', 'ScoreAdj']
-                styled_df = date_picks_display[display_columns].style.format({
-                    'Inercia': '{:.2f}',
-                    'ScoreAdj': '{:.2f}'
-                })
-                st.dataframe(styled_df, use_container_width=True)
-                st.warning("📅 Este es el último mes del backtest, no hay datos de retorno futuro")
-                
-        except Exception as e:
-            st.error(f"Error calculando retornos individuales: {e}")
-            # Mostrar tabla básica sin retornos
-            display_columns = ['Rank', 'Ticker', 'Inercia', 'ScoreAdj']
-            styled_df = date_picks_display[display_columns].style.format({
-                'Inercia': '{:.2f}',
-                'ScoreAdj': '{:.2f}'
-            })
-            st.dataframe(styled_df, use_container_width=True)
-    
-    # Sección adicional: Resumen general de todos los picks
-    st.markdown("### 📊 Resumen General de Todos los Picks")
-    
-    # Tabs para diferentes vistas
-    tab1, tab2, tab3 = st.tabs(["📈 Por Fecha", "🏆 Top Tickers", "📉 Distribución"])
-    
-    with tab1:
-        # Picks por fecha
-        picks_by_date = picks_df.groupby('Date').size().reset_index(name='Count')
-        fig_picks = px.bar(
-            picks_by_date, 
-            x='Date', 
-            y='Count', 
-            title="Número de Picks por Fecha",
-            labels={'Date': 'Fecha', 'Count': 'Número de Picks'}
-        )
-        fig_picks.update_layout(height=400)
-        st.plotly_chart(fig_picks, use_container_width=True)
-    
-    with tab2:
-        # Top tickers más seleccionados
-        top_tickers = picks_df['Ticker'].value_counts().head(20).reset_index()
-        top_tickers.columns = ['Ticker', 'Count']
-        fig_top = px.bar(
-            top_tickers, 
-            x='Ticker', 
-            y='Count', 
-            title="Top 20 Tickers Más Seleccionados",
-            labels={'Ticker': 'Ticker', 'Count': 'Veces Seleccionado'}
-        )
-        fig_top.update_layout(height=400)
-        st.plotly_chart(fig_top, use_container_width=True)
-        
-        # Rentabilidad promedio por ticker (si es posible)
-        try:
-            returns_by_ticker = []
-            for ticker in picks_df['Ticker'].unique():
-                ticker_picks = picks_df[picks_df['Ticker'] == ticker]
-                returns = []
-                
-                for _, row in ticker_picks.iterrows():
-                    pick_date = row['Date']
+                with col_main:
+                    # Mostrar picks de la fecha seleccionada
+                    st.markdown(f"### 🎯 Picks Seleccionados el {selected_date}")
+                    
+                    date_picks_display = date_picks.copy()
+                    
+                    # Calcular rentabilidad individual si es posible
                     try:
-                        pick_dt = pd.to_datetime(pick_date)
+                        # Convertir fechas a datetime para comparación
                         bt_index = pd.to_datetime(bt_results.index)
-                        future_dates = bt_index[bt_index > pick_dt]
+                        selected_dt = pd.to_datetime(selected_date)
                         
-                        if len(future_dates) > 0 and ticker in prices_df.columns:
+                        # Encontrar el próximo mes
+                        future_dates = bt_index[bt_index > selected_dt]
+                        if len(future_dates) > 0:
                             next_month = future_dates[0]
-                            entry_price = prices_df.loc[pick_dt, ticker]
-                            exit_price = prices_df.loc[next_month, ticker]
                             
-                            if entry_price != 0:
-                                ret = (exit_price / entry_price) - 1
-                                returns.append(ret)
-                    except:
-                        continue
+                            # Calcular retorno individual para cada ticker
+                            returns_data = []
+                            for _, row in date_picks.iterrows():
+                                ticker = row['Ticker']
+                                
+                                try:
+                                    # Verificar que el ticker exista en prices_df
+                                    if ticker in prices_df.columns:
+                                        # Obtener precio de entrada (fecha de selección)
+                                        entry_price = prices_df.loc[selected_dt, ticker]
+                                        
+                                        # Obtener precio de salida (próximo mes)
+                                        exit_price = prices_df.loc[next_month, ticker]
+                                        
+                                        # Calcular retorno
+                                        if entry_price != 0:
+                                            individual_return = (exit_price / entry_price) - 1
+                                            returns_data.append(individual_return)
+                                        else:
+                                            returns_data.append(None)
+                                except Exception:
+                                    returns_data.append(None)
+                            
+                            # Agregar columna de retornos individuales
+                            date_picks_display['Retorno Individual'] = returns_data
+                            
+                            # Formatear retornos
+                            def format_return(val):
+                                if pd.isna(val):
+                                    return "N/A"
+                                elif val >= 0:
+                                    return f"+{val:.2%}"
+                                else:
+                                    return f"{val:.2%}"
+                            
+                            # Aplicar formato condicional
+                            def color_returns(val):
+                                if isinstance(val, str) and val != "N/A":
+                                    num_val = float(val.replace('%', '').replace('+', '')) / 100
+                                    if num_val > 0:
+                                        return 'color: green; font-weight: bold'
+                                    elif num_val < 0:
+                                        return 'color: red; font-weight: bold'
+                                return ''
+                            
+                            # Mostrar tabla con retornos individuales
+                            display_columns = ['Rank', 'Ticker', 'Inercia', 'ScoreAdj', 'Retorno Individual']
+                            styled_df = date_picks_display[display_columns].style.applymap(
+                                color_returns, 
+                                subset=['Retorno Individual']
+                            ).format({
+                                'Inercia': '{:.2f}',
+                                'ScoreAdj': '{:.2f}',
+                                'Retorno Individual': format_return
+                            })
+                            
+                            st.dataframe(styled_df, use_container_width=True)
+                            
+                            # Resumen de retornos
+                            if any(pd.notna(r) for r in returns_data):
+                                valid_returns = [r for r in returns_data if pd.notna(r)]
+                                if valid_returns:
+                                    avg_return = sum(valid_returns) / len(valid_returns)
+                                    positive_count = sum(1 for r in valid_returns if r > 0)
+                                    win_rate = positive_count / len(valid_returns) * 100
+                                    
+                                    st.markdown("### 📈 Resumen de Rentabilidad")
+                                    col1, col2, col3 = st.columns(3)
+                                    col1.metric("Retorno Promedio", f"{avg_return:.2%}")
+                                    col2.metric("Tasa de Éxito", f"{win_rate:.1f}%")
+                                    col3.metric("Mejor Pick", f"{max(valid_returns):.2%}")
+                                    
+                                    # Gráfico de barras de retornos individuales
+                                    fig_returns = go.Figure()
+                                    fig_returns.add_trace(go.Bar(
+                                        x=date_picks_display['Ticker'],
+                                        y=[r if pd.notna(r) else 0 for r in returns_data],
+                                        marker_color=['green' if r > 0 else 'red' if r < 0 else 'gray' for r in returns_data],
+                                        text=[format_return(r) for r in returns_data],
+                                        textposition='auto',
+                                    ))
+                                    fig_returns.update_layout(
+                                        title="Rentabilidad Individual por Ticker",
+                                        xaxis_title="Ticker",
+                                        yaxis_title="Retorno",
+                                        yaxis_tickformat=".1%",
+                                        height=400
+                                    )
+                                    st.plotly_chart(fig_returns, use_container_width=True)
+                            
+                        else:
+                            # Mostrar sin columna de retornos si es el último mes
+                            display_columns = ['Rank', 'Ticker', 'Inercia', 'ScoreAdj']
+                            styled_df = date_picks_display[display_columns].style.format({
+                                'Inercia': '{:.2f}',
+                                'ScoreAdj': '{:.2f}'
+                            })
+                            st.dataframe(styled_df, use_container_width=True)
+                            st.warning("📅 Este es el último mes del backtest, no hay datos de retorno futuro")
+                            
+                    except Exception as e:
+                        st.error(f"Error calculando retornos individuales: {e}")
+                        # Mostrar tabla básica sin retornos
+                        display_columns = ['Rank', 'Ticker', 'Inercia', 'ScoreAdj']
+                        styled_df = date_picks_display[display_columns].style.format({
+                            'Inercia': '{:.2f}',
+                            'ScoreAdj': '{:.2f}'
+                        })
+                        st.dataframe(styled_df, use_container_width=True)
                 
-                if returns:
-                    avg_return = sum(returns) / len(returns)
-                    returns_by_ticker.append({
-                        'Ticker': ticker,
-                        'Count': len(ticker_picks),
-                        'Avg_Return': avg_return,
-                        'Win_Rate': sum(1 for r in returns if r > 0) / len(returns) * 100
-                    })
-            
-            if returns_by_ticker:
-                returns_df = pd.DataFrame(returns_by_ticker)
-                returns_df = returns_df.sort_values('Avg_Return', ascending=False).head(20)
+                # Sección adicional: Resumen general de todos los picks
+                st.markdown("### 📊 Resumen General de Todos los Picks")
                 
-                fig_returns = px.bar(
-                    returns_df,
-                    x='Ticker',
-                    y='Avg_Return',
-                    color='Win_Rate',
-                    title="Rentabilidad Promedio por Ticker (Top 20)",
-                    labels={'Ticker': 'Ticker', 'Avg_Return': 'Retorno Promedio', 'Win_Rate': 'Tasa de Éxito (%)'},
-                    color_continuous_scale='RdYlGn'
-                )
-                fig_returns.update_layout(height=400)
-                st.plotly_chart(fig_returns, use_container_width=True)
+                # Tabs para diferentes vistas
+                tab1, tab2, tab3 = st.tabs(["📈 Por Fecha", "🏆 Top Tickers", "📉 Distribución"])
                 
-                # Tabla de resumen
-                st.markdown("#### Tabla de Rentabilidad por Ticker")
-                returns_df_display = returns_df.copy()
-                returns_df_display['Avg_Return'] = returns_df_display['Avg_Return'].apply(lambda x: f"{x:.2%}")
-                returns_df_display['Win_Rate'] = returns_df_display['Win_Rate'].apply(lambda x: f"{x:.1f}%")
-                st.dataframe(returns_df_display, use_container_width=True)
+                with tab1:
+                    # Picks por fecha
+                    picks_by_date = picks_df.groupby('Date').size().reset_index(name='Count')
+                    fig_picks = px.bar(
+                        picks_by_date, 
+                        x='Date', 
+                        y='Count', 
+                        title="Número de Picks por Fecha",
+                        labels={'Date': 'Fecha', 'Count': 'Número de Picks'}
+                    )
+                    fig_picks.update_layout(height=400)
+                    st.plotly_chart(fig_picks, use_container_width=True)
                 
-        except Exception as e:
-            st.warning(f"No se pudieron calcular estadísticas de rentabilidad por ticker: {e}")
-    
-    with tab3:
-        # Distribución de Score Adjusted
-        fig_score = px.histogram(
-            picks_df, 
-            x='ScoreAdj', 
-            nbins=50, 
-            title="Distribución de Score Ajustado",
-            labels={'ScoreAdj': 'Score Ajustado'}
-        )
-        fig_score.update_layout(height=400)
-        st.plotly_chart(fig_score, 
+                with tab2:
+                    # Top tickers más seleccionados
+                    top_tickers = picks_df['Ticker'].value_counts().head(20).reset_index()
+                    top_tickers.columns = ['Ticker', 'Count']
+                    fig_top = px.bar(
+                        top_tickers, 
+                        x='Ticker', 
+                        y='Count', 
+                        title="Top 20 Tickers Más Seleccionados",
+                        labels={'Ticker': 'Ticker', 'Count': 'Veces Seleccionado'}
+                    )
+                    fig_top.update_layout(height=400)
+                    st.plotly_chart(fig_top, use_container_width=True)
+                    
+                    # Rentabilidad promedio por ticker (si es posible)
+                    try:
+                        returns_by_ticker = []
+                        for ticker in picks_df['Ticker'].unique():
+                            ticker_picks = picks_df[picks_df['Ticker'] == ticker]
+                            returns = []
+                            
+                            for _, row in ticker_picks.iterrows():
+                                pick_date = row['Date']
+                                try:
+                                    pick_dt = pd.to_datetime(pick_date)
+                                    bt_index = pd.to_datetime(bt_results.index)
+                                    future_dates = bt_index[bt_index > pick_dt]
+                                    
+                                    if len(future_dates) > 0 and ticker in prices_df.columns:
+                                        next_month = future_dates[0]
+                                        entry_price = prices_df.loc[pick_dt, ticker]
+                                        exit_price = prices_df.loc[next_month, ticker]
+                                        
+                                        if entry_price != 0:
+                                            ret = (exit_price / entry_price) - 1
+                                            returns.append(ret)
+                                except:
+                                    continue
+                            
+                            if returns:
+                                avg_return = sum(returns) / len(returns)
+                                positive_count = sum(1 for r in returns if r > 0)
+                                win_rate = positive_count / len(returns) * 100
+                                
+                                returns_by_ticker.append({
+                                    'Ticker': ticker,
+                                    'Count': len(ticker_picks),
+                                    'Avg_Return': avg_return,
+                                    'Win_Rate': win_rate
+                                })
+                        
+                        if returns_by_ticker:
+                            returns_df = pd.DataFrame(returns_by_ticker)
+                            returns_df = returns_df.sort_values('Avg_Return', ascending=False).head(20)
+                            
+                            fig_returns = px.bar(
+                                returns_df,
+                                x='Ticker',
+                                y='Avg_Return',
+                                color='Win_Rate',
+                                title="Rentabilidad Promedio por Ticker (Top 20)",
+                                labels={'Ticker': 'Ticker', 'Avg_Return': 'Retorno Promedio', 'Win_Rate': 'Tasa de Éxito (%)'},
+                                color_continuous_scale='RdYlGn'
+                            )
+                            fig_returns.update_layout(height=400)
+                            st.plotly_chart(fig_returns, use_container_width=True)
+                            
+                            # Tabla de resumen
+                            st.markdown("#### Tabla de Rentabilidad por Ticker")
+                            returns_df_display = returns_df.copy()
+                            returns_df_display['Avg_Return'] = returns_df_display['Avg_Return'].apply(lambda x: f"{x:.2%}")
+                            returns_df_display['Win_Rate'] = returns_df_display['Win_Rate'].apply(lambda x: f"{x:.1f}%")
+                            st.dataframe(returns_df_display, use_container_width=True)
+                            
+                    except Exception as e:
+                        st.warning(f"No se pudieron calcular estadísticas de rentabilidad por ticker: {e}")
+                
+                with tab3:
+                    # Distribución de Score Adjusted
+                    fig_score = px.histogram(
+                        picks_df, 
+                        x='ScoreAdj', 
+                        nbins=50, 
+                        title="Distribución de Score Ajustado",
+                        labels={'ScoreAdj': 'Score Ajustado'}
+                    )
+                    fig_score.update_layout(height=400)
+                    st.plotly_chart(fig_score, use_container_width=True)
             
             # SEÑALES ACTUALES (VELA EN FORMACIÓN)
             with st.expander("🔮 Señales Actuales - Vela en Formación", expanded=True):
@@ -1032,7 +1033,7 @@ if picks_df is not None and not picks_df.empty:
                     st.error(f"Error calculando señales actuales: {str(e)}")
                     import traceback
                     st.code(traceback.format_exc())
-            
+    
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
         st.exception(e)
