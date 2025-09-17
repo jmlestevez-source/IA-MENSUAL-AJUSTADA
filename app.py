@@ -30,15 +30,32 @@ st.set_page_config(
 # FUNCIONES DE CACHÉ OPTIMIZADAS
 # -------------------------------------------------
 @st.cache_data(ttl=3600)
-def load_historical_changes_cached(index_name):
+def load_historical_changes_cached(index_name, force_reload=False):
     """Carga cambios históricos con caché"""
+    
+    # Si force_reload, limpiar caché
+    if force_reload:
+        st.cache_data.clear()
+    
     if index_name == "SP500":
-        return get_sp500_historical_changes()
+        changes = get_sp500_historical_changes()
+        if changes.empty:
+            st.warning("⚠️ No se pudieron cargar cambios históricos del S&P 500")
+        return changes
     elif index_name == "NDX":
-        return get_nasdaq100_historical_changes()
-    else:
+        changes = get_nasdaq100_historical_changes()
+        if changes.empty:
+            st.warning("⚠️ No se pudieron cargar cambios históricos del NASDAQ-100")
+        return changes
+    else:  # Ambos
         sp500 = get_sp500_historical_changes()
         ndx = get_nasdaq100_historical_changes()
+        
+        if sp500.empty:
+            st.warning("⚠️ No se pudieron cargar cambios del S&P 500")
+        if ndx.empty:
+            st.warning("⚠️ No se pudieron cargar cambios del NASDAQ-100")
+            
         if not sp500.empty and not ndx.empty:
             return pd.concat([sp500, ndx], ignore_index=True)
         return sp500 if not sp500.empty else ndx
