@@ -934,7 +934,7 @@ if run_button:
                             returns_df_display = returns_df.copy()
                             returns_df_display['Avg_Return'] = returns_df_display['Avg_Return'].apply(lambda x: f"{x:.2%}")
                             returns_df_display['Win_Rate'] = returns_df_display['Win_Rate'].apply(lambda x: f"{x:.1f}%")
-                                                        st.dataframe(returns_df_display, use_container_width=True)
+                            st.dataframe(returns_df_display, use_container_width=True)
                             
                     except Exception as e:
                         st.warning(f"No se pudieron calcular estadísticas de rentabilidad por ticker: {e}")
