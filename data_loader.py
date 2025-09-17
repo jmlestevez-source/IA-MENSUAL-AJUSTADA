@@ -94,17 +94,179 @@ def parse_wikipedia_date(date_str):
         except:
             return None
 
+# En data_loader.py, reemplaza las funciones get_sp500_historical_changes() y get_nasdaq100_historical_changes() con estas:
+
 def get_sp500_historical_changes():
-    """Obtiene cambios históricos del S&P 500 con caché"""
-    cache_key = "sp500_changes"
+    """Obtiene los cambios históricos del S&P 500 desde CSV local o Wikipedia"""
     
-    # Intentar cargar de caché
-    cached_data = load_cache(cache_key, max_age_days=30)
-    if cached_data is not None:
-        print("📦 Cargando cambios S&P 500 desde caché")
-        return cached_data
+    # PRIMERO: Intentar cargar desde CSV local
+    local_csv_path = "sp500_changes.csv"  # En la raíz del repositorio
+    fallback_path = "data/sp500_changes.csv"  # Alternativa en carpeta data
     
-    print("🌐 Descargando cambios históricos del S&P 500...")
+    changes_df = pd.DataFrame()
+    loaded_from_local = False
+    
+    # Intentar cargar el CSV local
+    for csv_path in [local_csv_path, fallback_path]:
+        if os.path.exists(csv_path):
+            try:
+                print(f"📂 Cargando cambios históricos S&P 500 desde {csv_path}...")
+                changes_df = pd.read_csv(csv_path, parse_dates=['Date'])
+                print(f"✅ Cargados {len(changes_df)} cambios históricos del S&P 500 desde CSV local")
+                loaded_from_local = True
+                break
+            except Exception as e:
+                print(f"⚠️ Error leyendo {csv_path}: {e}")
+    
+    # SEGUNDO: Si necesitamos actualizar o no hay datos locales, ir a Wikipedia
+    try:
+        if loaded_from_local:
+            # Verificar si necesitamos actualizar con datos más recientes
+            last_date = pd.to_datetime(changes_df['Date']).max()
+            days_old = (datetime.now() - last_date).days
+            
+            if days_old > 7:  # Si los datos tienen más de 7 días
+                print(f"🔄 Datos locales tienen {days_old} días. Buscando actualizaciones en Wikipedia...")
+                
+                # Descargar de Wikipedia
+                wikipedia_df = download_sp500_changes_from_wikipedia()
+                
+                if not wikipedia_df.empty:
+                    # Combinar con datos locales
+                    new_changes = wikipedia_df[pd.to_datetime(wikipedia_df['Date']) > last_date]
+                    
+                    if not new_changes.empty:
+                        print(f"📥 Encontrados {len(new_changes)} cambios nuevos desde {last_date.date()}")
+                        changes_df = pd.concat([changes_df, new_changes], ignore_index=True)
+                        changes_df = changes_df.drop_duplicates(subset=['Date', 'Ticker', 'Action'])
+                        changes_df = changes_df.sort_values('Date', ascending=False)
+                        
+                        # Guardar versión actualizada
+                        try:
+                            changes_df.to_csv(local_csv_path, index=False)
+                            print(f"💾 CSV actualizado guardado en {local_csv_path}")
+                        except:
+                            print("⚠️ No se pudo guardar el CSV actualizado")
+                    else:
+                        print("✅ No hay cambios nuevos en Wikipedia")
+            else:
+                print(f"✅ Datos locales están actualizados (última entrada hace {days_old} días)")
+        else:
+            # No hay datos locales, descargar todo de Wikipedia
+            print("🌐 No se encontró CSV local. Descargando desde Wikipedia...")
+            changes_df = download_sp500_changes_from_wikipedia()
+            
+            if not changes_df.empty:
+                # Guardar para futuro uso
+                try:
+                    changes_df.to_csv(local_csv_path, index=False)
+                    print(f"💾 Nuevos datos guardados en {local_csv_path}")
+                except:
+                    print("⚠️ No se pudo guardar el CSV")
+    
+    except Exception as e:
+        print(f"⚠️ Error actualizando desde Wikipedia: {e}")
+        # Si hay error, usar solo los datos locales que tengamos
+    
+    if changes_df.empty:
+        print("❌ No se pudieron obtener cambios históricos del S&P 500")
+    else:
+        print(f"📊 Total: {len(changes_df)} cambios históricos del S&P 500")
+        
+        # Mostrar rango de fechas
+        if not changes_df.empty:
+            date_range = f"{changes_df['Date'].min()} a {changes_df['Date'].max()}"
+            print(f"📅 Rango de cambios: {date_range}")
+    
+    return changes_df
+
+def get_nasdaq100_historical_changes():
+    """Obtiene los cambios históricos del NASDAQ-100 desde CSV local o Wikipedia"""
+    
+    # PRIMERO: Intentar cargar desde CSV local
+    local_csv_path = "ndx_changes.csv"  # En la raíz del repositorio
+    fallback_path = "data/ndx_changes.csv"  # Alternativa en carpeta data
+    
+    changes_df = pd.DataFrame()
+    loaded_from_local = False
+    
+    # Intentar cargar el CSV local
+    for csv_path in [local_csv_path, fallback_path]:
+        if os.path.exists(csv_path):
+            try:
+                print(f"📂 Cargando cambios históricos NASDAQ-100 desde {csv_path}...")
+                changes_df = pd.read_csv(csv_path, parse_dates=['Date'])
+                print(f"✅ Cargados {len(changes_df)} cambios históricos del NASDAQ-100 desde CSV local")
+                loaded_from_local = True
+                break
+            except Exception as e:
+                print(f"⚠️ Error leyendo {csv_path}: {e}")
+    
+    # SEGUNDO: Si necesitamos actualizar o no hay datos locales, ir a Wikipedia
+    try:
+        if loaded_from_local:
+            # Verificar si necesitamos actualizar
+            last_date = pd.to_datetime(changes_df['Date']).max()
+            days_old = (datetime.now() - last_date).days
+            
+            if days_old > 7:  # Si los datos tienen más de 7 días
+                print(f"🔄 Datos locales tienen {days_old} días. Buscando actualizaciones en Wikipedia...")
+                
+                # Descargar de Wikipedia
+                wikipedia_df = download_nasdaq100_changes_from_wikipedia()
+                
+                if not wikipedia_df.empty:
+                    # Combinar con datos locales
+                    new_changes = wikipedia_df[pd.to_datetime(wikipedia_df['Date']) > last_date]
+                    
+                    if not new_changes.empty:
+                        print(f"📥 Encontrados {len(new_changes)} cambios nuevos desde {last_date.date()}")
+                        changes_df = pd.concat([changes_df, new_changes], ignore_index=True)
+                        changes_df = changes_df.drop_duplicates(subset=['Date', 'Ticker', 'Action'])
+                        changes_df = changes_df.sort_values('Date', ascending=False)
+                        
+                        # Guardar versión actualizada
+                        try:
+                            changes_df.to_csv(local_csv_path, index=False)
+                            print(f"💾 CSV actualizado guardado en {local_csv_path}")
+                        except:
+                            print("⚠️ No se pudo guardar el CSV actualizado")
+                    else:
+                        print("✅ No hay cambios nuevos en Wikipedia")
+            else:
+                print(f"✅ Datos locales están actualizados (última entrada hace {days_old} días)")
+        else:
+            # No hay datos locales, descargar todo de Wikipedia
+            print("🌐 No se encontró CSV local. Descargando desde Wikipedia...")
+            changes_df = download_nasdaq100_changes_from_wikipedia()
+            
+            if not changes_df.empty:
+                # Guardar para futuro uso
+                try:
+                    changes_df.to_csv(local_csv_path, index=False)
+                    print(f"💾 Nuevos datos guardados en {local_csv_path}")
+                except:
+                    print("⚠️ No se pudo guardar el CSV")
+    
+    except Exception as e:
+        print(f"⚠️ Error actualizando desde Wikipedia: {e}")
+        # Si hay error, usar solo los datos locales que tengamos
+    
+    if changes_df.empty:
+        print("❌ No se pudieron obtener cambios históricos del NASDAQ-100")
+    else:
+        print(f"📊 Total: {len(changes_df)} cambios históricos del NASDAQ-100")
+        
+        # Mostrar rango de fechas
+        if not changes_df.empty:
+            date_range = f"{changes_df['Date'].min()} a {changes_df['Date'].max()}"
+            print(f"📅 Rango de cambios: {date_range}")
+    
+    return changes_df
+
+def download_sp500_changes_from_wikipedia():
+    """Función auxiliar para descargar cambios del S&P 500 desde Wikipedia"""
+    print("🌐 Conectando con Wikipedia para S&P 500...")
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -117,29 +279,34 @@ def get_sp500_historical_changes():
         response.raise_for_status()
         tables = pd.read_html(StringIO(response.text))
         
-        # [El resto del código de parsing se mantiene igual...]
+        # [El resto del código de parsing de Wikipedia que ya tenías...]
         # [Por brevedad, aquí solo muestro la estructura]
         
-        # Después de procesar los datos:
-        if not result_df.empty:
-            save_cache(cache_key, result_df)
+        # Buscar la tabla de cambios
+        changes_df = None
+        for i, table in enumerate(tables):
+            # [Tu lógica existente para encontrar la tabla correcta]
+            pass
         
+        if changes_df is None:
+            if len(tables) >= 3:
+                changes_df = tables[2]
+        
+        # [Tu lógica de procesamiento existente]
+        
+        # Retornar DataFrame procesado
         return result_df
         
     except Exception as e:
-        print(f"❌ Error obteniendo cambios S&P 500: {e}")
+        print(f"❌ Error descargando de Wikipedia: {e}")
         return pd.DataFrame()
 
-def get_nasdaq100_historical_changes():
-    """Obtiene cambios históricos del NASDAQ-100 con caché"""
-    cache_key = "nasdaq100_changes"
+def download_nasdaq100_changes_from_wikipedia():
+    """Función auxiliar para descargar cambios del NASDAQ-100 desde Wikipedia"""
+    print("🌐 Conectando con Wikipedia para NASDAQ-100...")
     
-    cached_data = load_cache(cache_key, max_age_days=30)
-    if cached_data is not None:
-        print("📦 Cargando cambios NASDAQ-100 desde caché")
-        return cached_data
+    # [Similar a la función anterior pero para NASDAQ-100]
     
-    # [Implementación similar a S&P 500 con caché]
     return pd.DataFrame()
 
 def download_prices_parallel(tickers, start_date, end_date, load_full_data=True, max_workers=10):
