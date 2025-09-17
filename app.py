@@ -335,7 +335,7 @@ if run_button:
             'changes_data': changes_data, 
             'has_historical_data': True
         }
-             st.success(f"✅ Cargados {len(changes_data)} cambios históricos")
+            st.success(f"✅ Cargados {len(changes_data)} cambios históricos")
         
         # Mostrar información sobre el origen de los datos
         if sp500_csv_exists or ndx_csv_exists:
