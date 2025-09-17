@@ -340,9 +340,9 @@ if run_button:
         # Mostrar información sobre el origen de los datos
         if sp500_csv_exists or ndx_csv_exists:
             st.info("📊 Datos cargados desde archivos CSV locales (más rápido)")
-        else:
+    else:
             st.info("🌐 Datos descargados desde Wikipedia")
-        else:
+    else:
             st.warning("⚠️ No se encontraron datos históricos, continuando sin verificación")
             st.info("💡 Tip: Asegúrate de que sp500_changes.csv y ndx_changes.csv estén en la raíz del repositorio")
             historical_info = None
