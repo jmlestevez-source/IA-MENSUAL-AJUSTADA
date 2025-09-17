@@ -342,10 +342,10 @@ if run_button:
             st.info("📊 Datos cargados desde archivos CSV locales (más rápido)")
         else:
             st.info("🌐 Datos descargados desde Wikipedia")
-    else:
-        st.warning("⚠️ No se encontraron datos históricos, continuando sin verificación")
-        st.info("💡 Tip: Asegúrate de que sp500_changes.csv y ndx_changes.csv estén en la raíz del repositorio")
-        historical_info = None
+        else:
+            st.warning("⚠️ No se encontraron datos históricos, continuando sin verificación")
+            st.info("💡 Tip: Asegúrate de que sp500_changes.csv y ndx_changes.csv estén en la raíz del repositorio")
+            historical_info = None
             
             # Ejecutar backtest
             status_text.text("🚀 Ejecutando backtest optimizado...")
