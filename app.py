@@ -17,6 +17,35 @@ import glob
 from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes, generate_removed_tickers_summary
 from backtest import run_backtest_optimized, precalculate_all_indicators, calculate_monthly_returns_by_year, inertia_score, calculate_sharpe_ratio
 
+# Al inicio del script, después de los imports
+def check_historical_files():
+    """Verifica la existencia de archivos de cambios históricos"""
+    files_to_check = [
+        "sp500_changes.csv",
+        "ndx_changes.csv",
+        "data/sp500_changes.csv",
+        "data/ndx_changes.csv"
+    ]
+    
+    found_files = []
+    for file_path in files_to_check:
+        if os.path.exists(file_path):
+            found_files.append(file_path)
+            try:
+                df = pd.read_csv(file_path)
+                print(f"✅ Encontrado: {file_path} ({len(df)} registros)")
+            except Exception as e:
+                print(f"⚠️ Error leyendo {file_path}: {e}")
+    
+    if not found_files:
+        print("⚠️ No se encontraron archivos de cambios históricos")
+        print("📁 Archivos esperados: sp500_changes.csv, ndx_changes.csv")
+    
+    return found_files
+
+# Ejecutar verificación
+historical_files = check_historical_files()
+
 # -------------------------------------------------
 # Configuración de la app
 # -------------------------------------------------
