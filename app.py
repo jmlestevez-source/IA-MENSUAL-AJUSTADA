@@ -635,7 +635,6 @@ if run_button:
                         col1, col2, col3 = st.columns(3)
                         col1.metric("Años Totales", total_years)
                         col2.metric("Retorno Anual Promedio", f"{avg_annual_return:.1f}%")
-                        ```python
                         col3.metric("Tasa de Éxito Anual", f"{win_rate:.0f}%")
             
             # Picks históricos - SECCIÓN COMPLETA Y CORREGIDA
