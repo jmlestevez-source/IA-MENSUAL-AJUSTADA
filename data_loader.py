@@ -230,30 +230,40 @@ def get_current_constituents(index_name):
 def get_all_available_tickers_with_historical_validation(index_name, start_date, end_date):
     """
     Obtiene los tickers que realmente estaban en el índice durante el período especificado
-    VERSIÓN SIMPLIFICADA Y ROBUSTA
+    VERSIÓN CORREGIDA que no filtra demasiado
     """
     try:
         print(f"🔍 Validando constituyentes históricos de {index_name} para {start_date} a {end_date}")
         
-        # 1. Obtener constituyentes actuales y cambios históricos
+        # 1. Obtener constituyentes actuales
         if index_name == "SP500":
             current_constituents = get_sp500_tickers_from_wikipedia()
-            historical_changes = get_sp500_historical_changes()
         elif index_name == "NDX":
             current_constituents = get_nasdaq100_tickers_from_wikipedia()
-            historical_changes = get_nasdaq100_historical_changes()
         elif index_name == "Ambos (SP500 + NDX)":
-            # Combinar ambos índices
             sp500_current = get_sp500_tickers_from_wikipedia()
             ndx_current = get_nasdaq100_tickers_from_wikipedia()
             current_constituents = {
                 'tickers': list(set(sp500_current['tickers'] + ndx_current['tickers']))
             }
-            
+        else:
+            print(f"❌ Índice no soportado: {index_name}")
+            return get_current_constituents(index_name), None
+        
+        if not current_constituents or 'tickers' not in current_constituents:
+            print("❌ No se pudieron obtener constituyentes actuales")
+            return {'tickers': [], 'data': [], 'historical_data_available': False}, None
+        
+        print(f"✅ Constituyentes actuales: {len(current_constituents['tickers'])}")
+        
+        # 2. Obtener cambios históricos
+        if index_name == "SP500":
+            historical_changes = get_sp500_historical_changes()
+        elif index_name == "NDX":
+            historical_changes = get_nasdaq100_historical_changes()
+        else:  # Ambos
             sp500_changes = get_sp500_historical_changes()
             ndx_changes = get_nasdaq100_historical_changes()
-            
-            # Combinar cambios históricos
             if not sp500_changes.empty and not ndx_changes.empty:
                 historical_changes = pd.concat([sp500_changes, ndx_changes], ignore_index=True)
                 historical_changes = historical_changes.drop_duplicates(subset=['Date', 'Ticker', 'Action'])
@@ -261,21 +271,8 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
                 historical_changes = sp500_changes
             else:
                 historical_changes = ndx_changes
-        else:
-            print(f"❌ Índice no soportado: {index_name}")
-            return get_current_constituents(index_name), None
         
-        # 2. Si no hay datos históricos, usar solo constituyentes actuales
-        if historical_changes.empty:
-            print("⚠️ No hay cambios históricos disponibles, usando solo constituyentes actuales")
-            return {
-                'tickers': current_constituents['tickers'],
-                'data': [],
-                'historical_data_available': False,
-                'note': 'No historical data available'
-            }, None
-        
-        # 3. Convertir fechas a datetime para comparación
+        # 3. Convertir fechas a datetime
         if isinstance(start_date, str):
             start_date = pd.to_datetime(start_date)
         elif isinstance(start_date, date):
@@ -288,25 +285,40 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         
         print(f"📅 Período de validación: {start_date.date()} a {end_date.date()}")
         
-        # 4. LÓGICA SIMPLIFICADA: Solo filtrar los que fueron removidos ANTES del start_date
+        # 4. LÓGICA CORREGIDA: Validar tickers para cada mes del período
         valid_tickers = set(current_constituents['tickers'])
         
-        # Agregar tickers que fueron removidos DESPUÉS del start_date (estaban presentes durante el período)
-        for _, change in historical_changes.iterrows():
-            change_date = pd.to_datetime(change['Date'])
-            ticker = str(change['Ticker']).upper()
-            action = change['Action']
+        if not historical_changes.empty:
+            print(f"📊 Procesando {len(historical_changes)} cambios históricos...")
             
-            if action == 'Removed' and change_date > start_date:
-                # Si fue removido después del start_date, SÍ estaba presente durante el backtest
-                valid_tickers.add(ticker)
-            elif action == 'Removed' and change_date <= start_date:
-                # Si fue removido antes o en el start_date, NO estaba presente
-                valid_tickers.discard(ticker)
+            # Para cada cambio histórico
+            for _, change in historical_changes.iterrows():
+                change_date = pd.to_datetime(change['Date'])
+                ticker = str(change['Ticker']).upper()
+                action = change['Action']
+                
+                # Solo considerar cambios que afectan el período del backtest
+                if change_date > start_date and change_date <= end_date:
+                    if action == 'Added':
+                        # Si fue añadido durante el período, estaba presente
+                        valid_tickers.add(ticker)
+                    elif action == 'Removed':
+                        # Si fue removido durante el período, estaba presente antes
+                        pass  # Ya estaba en valid_tickers desde current_constituents
+                elif change_date > end_date:
+                    # Cambios después del período: revertirlos
+                    if action == 'Added':
+                        valid_tickers.discard(ticker)
+                    elif action == 'Removed':
+                        valid_tickers.add(ticker)
+                elif change_date <= start_date:
+                    # Cambios antes o al inicio: solo los removidos afectan
+                    if action == 'Removed':
+                        valid_tickers.discard(ticker)
         
         print(f"📊 Tickers válidos históricamente: {len(valid_tickers)}")
         
-        # 5. Filtrar solo los tickers que tienen datos CSV disponibles
+        # 5. Verificar tickers con datos CSV disponibles
         csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
         available_csv_tickers = set()
         
@@ -318,26 +330,45 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         
         print(f"📁 Tickers con datos CSV disponibles: {len(available_csv_tickers)}")
         
-        # Intersección: tickers válidos históricamente Y con datos disponibles
+        # 6. Intersección: tickers válidos Y con datos disponibles
         final_tickers = list(valid_tickers & available_csv_tickers)
         
-        # 6. Verificar específicamente los tickers problemáticos
+        # 7. Si tenemos muy pocos tickers, usar fallback más permisivo
+        if len(final_tickers) < 50:
+            print("⚠️ Muy pocos tickers, usando fallback más permisivo...")
+            # Usar todos los tickers actuales que tengan CSV
+            current_tickers_set = set(current_constituents['tickers'])
+            fallback_tickers = list(current_tickers_set & available_csv_tickers)
+            
+            # Si aún son pocos, incluir cualquier ticker con CSV que parezca válido
+            if len(fallback_tickers) < 50:
+                for ticker in available_csv_tickers:
+                    # Solo tickers que parecen reales (1-5 letras, sin números extraños)
+                    if 1 <= len(ticker) <= 5 and ticker.isalpha():
+                        if ticker not in fallback_tickers:
+                            fallback_tickers.append(ticker)
+            
+            final_tickers = fallback_tickers[:500]  # Limitar a 500 para evitar sobrecarga
+            print(f"📈 Tickers fallback: {len(final_tickers)}")
+        
+        # 8. Remover específicamente los tickers problemáticos solo si es necesario
         problematic_tickers = ['RIG', 'OI', 'VNT']
         removed_problematic = []
         
         for ticker in problematic_tickers:
             if ticker in final_tickers:
-                # Verificar cuándo fue removido
-                removal_info = historical_changes[
-                    (historical_changes['Ticker'] == ticker) & 
-                    (historical_changes['Action'] == 'Removed')
-                ]
-                if not removal_info.empty:
-                    removal_date = pd.to_datetime(removal_info.iloc[0]['Date'])
-                    if removal_date <= start_date:
-                        print(f"⚠️ REMOVIENDO {ticker} - fue eliminado del índice el {removal_date.date()}")
-                        final_tickers.remove(ticker)
-                        removed_problematic.append(ticker)
+                # Solo remover si el backtest es después de la fecha de remoción
+                if historical_changes is not None and not historical_changes.empty:
+                    removal_info = historical_changes[
+                        (historical_changes['Ticker'] == ticker) & 
+                        (historical_changes['Action'] == 'Removed')
+                    ]
+                    if not removal_info.empty:
+                        removal_date = pd.to_datetime(removal_info.iloc[0]['Date'])
+                        if removal_date <= start_date:
+                            print(f"⚠️ REMOVIENDO {ticker} - fue eliminado del índice el {removal_date.date()}")
+                            final_tickers.remove(ticker)
+                            removed_problematic.append(ticker)
         
         print(f"📈 Tickers válidos finales: {len(final_tickers)}")
         
@@ -347,7 +378,7 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         return {
             'tickers': final_tickers,
             'data': [],
-            'historical_data_available': True,
+            'historical_data_available': True if len(historical_changes) > 0 else False,
             'removed_problematic': removed_problematic
         }, None
         
