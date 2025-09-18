@@ -611,13 +611,3 @@ if __name__ == "__main__":
                 print(f"❌ ERROR: {ticker} no debería estar en los resultados de 2023!")
             else:
                 print(f"✅ Correcto: {ticker} no está en los resultados")
-```
-
-## ✅ Este código está:
-- **Perfectamente indentado** (4 espacios por nivel)
-- **Sin errores de sintaxis** (sin paréntesis extras)
-- **Sin imports de Streamlit** (completamente independiente)
-- **Con validación histórica funcional** (excluye RIG, OI, VNT correctamente)
-- **Listo para usar** (copia y pega directamente)
-
-Reemplaza tu archivo `data_loader.py` completamente con este código y debería funcionar sin problemas.
