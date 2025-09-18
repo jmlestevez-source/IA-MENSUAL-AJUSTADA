@@ -496,7 +496,7 @@ def get_constituents_at_date(index_name, start_date, end_date):
             print(f"❌ Error en fallback: {fallback_error}")
             return None, f"{error_msg} | Fallback error: {str(fallback_error)}"
 
-def download_prices_parallel(tickers, start_date, end_date, load_full_data=True, max_workers=10):
+def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=True):
     """
     OPTIMIZACIÓN CRÍTICA: Carga precios en PARALELO
     """
