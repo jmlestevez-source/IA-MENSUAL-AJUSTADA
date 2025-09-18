@@ -1,6 +1,3 @@
-Aquí está el **`data_loader.py` COMPLETO, CORREGIDO y PERFECTAMENTE INDENTADO**:
-
-```python
 import pandas as pd
 import requests
 from io import StringIO
