@@ -457,9 +457,29 @@ def get_constituents_at_date(index_name, start_date, end_date):
             return fallback_result, "Warning: Using current constituents as fallback"
             
     except Exception as e:
-        error_msg = f"Error obteniendo constituyentes para {index_name}: {e}"
-        print(error_msg)
-        return None, error_msg
+    error_msg = f"Error obteniendo constituyentes para {index_name}: {e}"
+    print(f"⚠️ {error_msg}")
+    
+    # Mejor manejo del fallback
+    try:
+        print("🔄 Intentando fallback a constituyentes actuales...")
+        current_data = get_current_constituents(index_name)
+        
+        if current_data and 'tickers' in current_data and current_data['tickers']:
+            fallback_result = {
+                'tickers': current_data['tickers'],
+                'data': [],
+                'historical_data_available': False,
+                'note': f'Fallback to current constituents due to: {str(e)}'
+            }
+            print(f"✅ Fallback exitoso con {len(current_data['tickers'])} tickers")
+            return fallback_result, f"Warning: Using current constituents as fallback - {str(e)}"
+        else:
+            print("❌ Fallback también falló")
+            return None, error_msg
+    except Exception as fallback_error:
+        print(f"❌ Error en fallback: {fallback_error}")
+        return None, f"{error_msg} | Fallback error: {str(fallback_error)}"
 
 # Función wrapper para compatibilidad
 def download_prices(tickers, start_date, end_date, load_full_data=True):
@@ -489,8 +509,23 @@ def get_current_constituents(index_name):
         result = get_sp500_tickers_from_wikipedia()
     elif index_name == "NDX":
         result = get_nasdaq100_tickers_from_wikipedia()
+    elif index_name == "Ambos (SP500 + NDX)":
+        # Combinar ambos índices
+        sp500 = get_sp500_tickers_from_wikipedia()
+        ndx = get_nasdaq100_tickers_from_wikipedia()
+        # Unir los tickers de ambos índices (sin duplicados)
+        combined_tickers = list(set(sp500['tickers'] + ndx['tickers']))
+        result = {'tickers': combined_tickers}
     else:
-        raise ValueError(f"Índice {index_name} no soportado")
+        # En lugar de lanzar error, intentar interpretarlo
+        print(f"⚠️ Índice '{index_name}' no reconocido, intentando interpretar...")
+        if "SP500" in index_name or "S&P" in index_name:
+            result = get_sp500_tickers_from_wikipedia()
+        elif "NDX" in index_name or "NASDAQ" in index_name:
+            result = get_nasdaq100_tickers_from_wikipedia()
+        else:
+            print(f"❌ No se pudo interpretar el índice '{index_name}'")
+            return {'tickers': []}
     
     save_cache(cache_key, result, prefix="constituents")
     return result
