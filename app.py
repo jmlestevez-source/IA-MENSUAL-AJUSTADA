@@ -596,6 +596,20 @@ if run_button:
             tickers = list(dict.fromkeys(all_tickers_data['tickers']))
             st.success(f"✅ Obtenidos {len(tickers)} tickers únicos")
             
+            # CORRECCIÓN CRÍTICA: Debug y fallback si son muy pocos tickers
+            if len(tickers) < 100:
+                st.warning(f"⚠️ Solo {len(tickers)} tickers obtenidos. Esto puede ser muy poco.")
+                st.write("Primeros tickers:", tickers[:20])  # Mostrar primeros 20
+                
+                # Fallback automático si son muy pocos
+                if use_historical_verification and len(tickers) < 50:
+                    st.info("🔄 Probando sin verificación histórica...")
+                    from data_loader import get_current_constituents
+                    current_constituents = get_current_constituents(index_choice)
+                    if current_constituents and len(current_constituents['tickers']) > len(tickers):
+                        tickers = current_constituents['tickers']
+                        st.success(f"✅ Usando {len(tickers)} constituyentes actuales como fallback")
+            
             # Cargar precios
             status_text.text("📊 Cargando precios en paralelo...")
             progress_bar.progress(30)
