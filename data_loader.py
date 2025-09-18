@@ -44,9 +44,6 @@ def check_historical_files():
 # Ejecutar verificación
 historical_files = check_historical_files()
 
-
-)
-
 # -------------------------------------------------
 # FUNCIONES DE CACHÉ OPTIMIZADAS
 # -------------------------------------------------
