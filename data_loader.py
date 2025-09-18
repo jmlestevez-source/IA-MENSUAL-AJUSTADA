@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pickle
 import hashlib
 import warnings
+import streamlit as st
 warnings.filterwarnings('ignore')
 
 # Directorios
@@ -496,127 +497,78 @@ def get_constituents_at_date(index_name, start_date, end_date):
             print(f"❌ Error en fallback: {fallback_error}")
             return None, f"{error_msg} | Fallback error: {str(fallback_error)}"
 
+@st.cache_data(ttl=3600*24*7)
 def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=True):
-    """
-    OPTIMIZACIÓN CRÍTICA: Carga precios en PARALELO
-    """
-    if isinstance(tickers, dict) and 'tickers' in tickers:
-        ticker_list = tickers['tickers']
-    elif isinstance(tickers, (list, tuple)):
-        ticker_list = list(tickers)
-    elif isinstance(tickers, str):
-        ticker_list = [tickers]
-    else:
-        ticker_list = []
-    
-    # Limpiar tickers
-    ticker_list = [str(t).strip().upper().replace('.', '-') for t in ticker_list]
-    ticker_list = [t for t in ticker_list if t and len(t) <= 6 and not t.isdigit()]
-    ticker_list = list(dict.fromkeys(ticker_list))
-    
-    if not ticker_list:
-        return pd.DataFrame(), {}
-    
-    print(f"📂 Cargando {len(ticker_list)} tickers en paralelo (máx {max_workers} workers)...")
-    
+    """Carga precios desde CSV en PARALELO - NOMBRE CORREGIDO"""
     prices_data = {}
     ohlc_data = {}
     
     def load_single_ticker(ticker):
-        """Carga un ticker individual"""
-        csv_path = os.path.join(DATA_DIR, f"{ticker}.csv")
+        csv_path = f"data/{ticker}.csv"
         if not os.path.exists(csv_path):
             return ticker, None, None
         
         try:
-            # Usar caché de lectura si existe
-            cache_key = get_cache_key(ticker, start_date, end_date)
-            cached = load_cache(cache_key, prefix="price", max_age_days=1)
-            if cached is not None:
-                return ticker, cached.get('price'), cached.get('ohlc')
-            
-            # Leer CSV
             df = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
             
-            # Manejar timezone
             if hasattr(df.index, 'tz') and df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
             
-            # Filtrar fechas
             start_filter = start_date.date() if isinstance(start_date, datetime) else start_date
             end_filter = end_date.date() if isinstance(end_date, datetime) else end_date
             
-            mask = (df.index.date >= start_filter) & (df.index.date <= end_filter)
-            df_filtered = df[mask]
+            df = df[(df.index.date >= start_filter) & (df.index.date <= end_filter)]
             
-            if df_filtered.empty:
+            if df.empty:
                 return ticker, None, None
             
-            # Extraer precio
-            if 'Adj Close' in df_filtered.columns:
-                price_series = df_filtered['Adj Close']
-            elif 'Close' in df_filtered.columns:
-                price_series = df_filtered['Close']
+            # Usar Close ya que los datos están ajustados
+            if 'Close' in df.columns:
+                price = df['Close']
             else:
                 return ticker, None, None
             
-            # Extraer OHLC
             ohlc = None
-            if load_full_data and all(col in df_filtered.columns for col in ['High', 'Low', 'Close']):
+            if load_full_data and all(col in df.columns for col in ['High', 'Low', 'Close']):
                 ohlc = {
-                    'High': df_filtered['High'],
-                    'Low': df_filtered['Low'],
-                    'Close': df_filtered['Adj Close'] if 'Adj Close' in df_filtered.columns else df_filtered['Close'],
-                    'Volume': df_filtered.get('Volume')
+                    'High': df['High'],
+                    'Low': df['Low'],
+                    'Close': df['Close'],
+                    'Volume': df['Volume'] if 'Volume' in df.columns else None
                 }
             
-            # Guardar en caché
-            save_cache(cache_key, {'price': price_series, 'ohlc': ohlc}, prefix="price")
-            
-            return ticker, price_series, ohlc
+            return ticker, price, ohlc
             
         except Exception as e:
             return ticker, None, None
     
-    # Ejecutar en paralelo
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(load_single_ticker, ticker): ticker for ticker in ticker_list}
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(load_single_ticker, ticker) for ticker in tickers]
         
-        completed = 0
-        for future in as_completed(futures):
-            completed += 1
-            if completed % 50 == 0:
-                print(f"  Progreso: {completed}/{len(ticker_list)} tickers cargados...")
-            
+        for future in futures:
             ticker, price, ohlc = future.result()
             if price is not None:
                 prices_data[ticker] = price
             if ohlc is not None:
                 ohlc_data[ticker] = ohlc
     
-    # Crear DataFrame
     if prices_data:
         prices_df = pd.DataFrame(prices_data)
-        # Usar interpolación en lugar de fillna para mejor rendimiento
-        prices_df = prices_df.interpolate(method='linear', limit_direction='both')
-        
-        print(f"✅ Cargados {len(prices_df.columns)} tickers con datos válidos")
+        prices_df = prices_df.fillna(method='ffill').fillna(method='bfill')
         return prices_df, ohlc_data
     else:
         return pd.DataFrame(), {}
 
-def download_prices(tickers, start_date, end_date, load_full_data=True):
-    """Wrapper para compatibilidad con código existente"""
-    prices_df, ohlc_data = download_prices_parallel(
-        tickers, start_date, end_date, 
-        load_full_data=load_full_data,
-        max_workers=10
-    )
-    
-    if load_full_data:
-        return prices_df, ohlc_data
-    else:
-        return prices_df
+def create_download_link(df, filename, link_text):
+    """Crea un enlace de descarga para un DataFrame"""
+    try:
+        csv = df.to_csv(index=False)
+        b64 = base64.b64encode(csv.encode()).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">{link_text}</a>'
+        return href
+    except Exception as e:
+        st.error(f"Error creando enlace de descarga: {e}")
+        return None
 
 def generate_removed_tickers_summary():
     """Genera resumen de tickers removidos con caché"""
