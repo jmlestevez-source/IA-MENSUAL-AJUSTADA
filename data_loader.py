@@ -44,13 +44,7 @@ def check_historical_files():
 # Ejecutar verificación
 historical_files = check_historical_files()
 
-# -------------------------------------------------
-# Configuración de la app
-# -------------------------------------------------
-st.set_page_config(
-    page_title="IA Mensual Ajustada",
-    page_icon="📈",
-    layout="wide"
+
 )
 
 # -------------------------------------------------
