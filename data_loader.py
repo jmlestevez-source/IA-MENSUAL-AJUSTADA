@@ -1,4 +1,3 @@
-import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -14,7 +13,6 @@ import hashlib
 import glob
 
 # Importar nuestros módulos - IMPORTANTE: importar inertia_score
-from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes, generate_removed_tickers_summary
 from backtest import run_backtest_optimized, precalculate_all_indicators, calculate_monthly_returns_by_year, inertia_score, calculate_sharpe_ratio
 
 # Al inicio del script, después de los imports
