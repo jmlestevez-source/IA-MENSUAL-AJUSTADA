@@ -496,35 +496,205 @@ def get_current_constituents(index_name):
     return result
 
 # [Las demás funciones se mantienen con estructura similar]
+def get_sp500_tickers_from_wikipedia():
+    """Obtiene los tickers actuales del S&P 500"""
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        tables = pd.read_html(url)
+        df = tables[0]
+        tickers = df['Symbol'].str.replace('.', '-').tolist()
+        return {'tickers': tickers}
+    except Exception as e:
+        print(f"Error obteniendo S&P 500: {e}")
+        return {'tickers': []}
+
+def get_nasdaq100_tickers_from_wikipedia():
+    """Obtiene los tickers actuales del NASDAQ-100"""
+    try:
+        url = "https://en.wikipedia.org/wiki/Nasdaq-100"
+        tables = pd.read_html(url)
+        df = tables[4]  # La tabla del NASDAQ-100 suele ser la 4ta
+        tickers = df['Ticker'].str.replace('.', '-').tolist()
+        return {'tickers': tickers}
+    except Exception as e:
+        print(f"Error obteniendo NASDAQ-100: {e}")
+        return {'tickers': []}
+
 
 def get_all_available_tickers_with_historical_validation(index_name, start_date, end_date):
-    """Versión optimizada con validación más eficiente"""
+    """
+    Obtiene los tickers que realmente estaban en el índice durante el período especificado
+    """
     try:
-        # Obtener lista de CSVs disponibles (rápido)
+        print(f"🔍 Validando constituyentes históricos de {index_name} para {start_date} a {end_date}")
+        
+        # 1. Obtener constituyentes actuales
+        if index_name == "SP500":
+            current_constituents = get_sp500_tickers_from_wikipedia()
+            historical_changes = get_sp500_historical_changes()
+        elif index_name == "NDX":
+            current_constituents = get_nasdaq100_tickers_from_wikipedia()
+            historical_changes = get_nasdaq100_historical_changes()
+        elif index_name == "Ambos (SP500 + NDX)":
+            # Combinar ambos índices
+            sp500_current = get_sp500_tickers_from_wikipedia()
+            ndx_current = get_nasdaq100_tickers_from_wikipedia()
+            current_constituents = {
+                'tickers': list(set(sp500_current['tickers'] + ndx_current['tickers']))
+            }
+            
+            sp500_changes = get_sp500_historical_changes()
+            ndx_changes = get_nasdaq100_historical_changes()
+            
+            # Combinar cambios históricos
+            if not sp500_changes.empty and not ndx_changes.empty:
+                historical_changes = pd.concat([sp500_changes, ndx_changes], ignore_index=True)
+            elif not sp500_changes.empty:
+                historical_changes = sp500_changes
+            else:
+                historical_changes = ndx_changes
+        else:
+            raise ValueError(f"Índice no soportado: {index_name}")
+        
+        # 2. Si no hay datos históricos, usar solo constituyentes actuales
+        if historical_changes.empty:
+            print("⚠️ No hay cambios históricos disponibles, usando solo constituyentes actuales")
+            return {
+                'tickers': current_constituents['tickers'],
+                'data': [],
+                'historical_data_available': False,
+                'note': 'No historical data available'
+            }, None
+        
+        # 3. Obtener todos los tickers que alguna vez estuvieron en el índice
+        all_tickers_ever = set(current_constituents['tickers'])
+        
+        # Añadir todos los tickers removidos históricamente
+        removed_tickers = historical_changes[historical_changes['Action'] == 'Removed']['Ticker'].unique()
+        all_tickers_ever.update(removed_tickers)
+        
+        print(f"📊 Total tickers históricos encontrados: {len(all_tickers_ever)}")
+        
+        # 4. Ahora filtrar por período - CRÍTICO: Validar para cada mes del backtest
+        valid_tickers_for_period = set()
+        
+        # Convertir fechas a datetime si es necesario
+        if isinstance(start_date, str):
+            start_date = pd.to_datetime(start_date)
+        if isinstance(end_date, str):
+            end_date = pd.to_datetime(end_date)
+        
+        # Para cada mes en el período del backtest
+        current_date = start_date
+        months_checked = 0
+        
+        while current_date <= end_date:
+            # Obtener constituyentes válidos para esta fecha específica
+            constituents_at_date = set(current_constituents['tickers'].copy())
+            
+            # Procesar cambios históricos
+            for _, change in historical_changes.iterrows():
+                change_date = pd.to_datetime(change['Date'])
+                ticker = change['Ticker']
+                action = change['Action']
+                
+                # Si el cambio ocurrió DESPUÉS de current_date, revertirlo
+                if change_date > current_date:
+                    if action == 'Added':
+                        # Si fue añadido después, no estaba en current_date
+                        constituents_at_date.discard(ticker)
+                    elif action == 'Removed':
+                        # Si fue removido después, SÍ estaba en current_date
+                        constituents_at_date.add(ticker)
+            
+            # Agregar estos constituyentes al conjunto válido
+            valid_tickers_for_period.update(constituents_at_date)
+            
+            # Avanzar al siguiente mes
+            if current_date.month == 12:
+                current_date = current_date.replace(year=current_date.year + 1, month=1)
+            else:
+                current_date = current_date.replace(month=current_date.month + 1)
+            
+            months_checked += 1
+            if months_checked % 12 == 0:
+                print(f"  Validados {months_checked} meses...")
+        
+        print(f"✅ Validación completa: {months_checked} meses verificados")
+        
+        # 5. Filtrar solo los tickers que tienen datos CSV disponibles
         csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-        all_available_tickers = []
+        available_csv_tickers = set()
         
         for csv_file in csv_files:
             filename = os.path.basename(csv_file)
             if filename.endswith('.csv'):
-                ticker = filename.replace('.csv', '').upper().replace('.', '-')
-                if ticker and len(ticker) <= 6 and not ticker.isdigit() and ticker not in ['SPY', 'QQQ']:
-                    all_available_tickers.append(ticker)
+                ticker = filename.replace('.csv', '').upper()
+                available_csv_tickers.add(ticker)
         
-        all_available_tickers = list(dict.fromkeys(all_available_tickers))
-        print(f"📊 Total de tickers CSV disponibles: {len(all_available_tickers)}")
+        # Intersección: tickers válidos históricamente Y con datos disponibles
+        final_tickers = list(valid_tickers_for_period & available_csv_tickers)
         
-        # [El resto de la lógica se mantiene pero optimizada con menos iteraciones]
+        # 6. Verificar específicamente los tickers problemáticos
+        problematic_tickers = ['RIG', 'OI', 'VNT']
+        for ticker in problematic_tickers:
+            if ticker in final_tickers:
+                # Verificar cuándo fue removido
+                removal_info = historical_changes[
+                    (historical_changes['Ticker'] == ticker) & 
+                    (historical_changes['Action'] == 'Removed')
+                ]
+                if not removal_info.empty:
+                    removal_date = pd.to_datetime(removal_info.iloc[0]['Date'])
+                    if removal_date < start_date:
+                        print(f"⚠️ REMOVIENDO {ticker} - fue eliminado del índice el {removal_date.date()}")
+                        final_tickers.remove(ticker)
+        
+        print(f"📈 Tickers válidos finales: {len(final_tickers)}")
+        
+        # 7. Crear información detallada para debugging
+        detailed_data = []
+        for ticker in final_tickers[:10]:  # Solo los primeros 10 para no sobrecargar
+            ticker_info = {
+                'ticker': ticker,
+                'in_current': ticker in current_constituents['tickers'],
+                'has_csv': ticker in available_csv_tickers
+            }
+            
+            # Buscar información de cambios
+            ticker_changes = historical_changes[historical_changes['Ticker'] == ticker]
+            if not ticker_changes.empty:
+                last_change = ticker_changes.iloc[0]
+                ticker_info['last_action'] = last_change['Action']
+                ticker_info['last_change_date'] = last_change['Date']
+            
+            detailed_data.append(ticker_info)
         
         return {
-            'tickers': all_available_tickers,
-            'data': [],
+            'tickers': final_tickers,
+            'data': detailed_data,
             'historical_data_available': True,
-            'note': 'Optimized validation'
+            'total_months_validated': months_checked,
+            'removed_problematic': [t for t in problematic_tickers if t not in final_tickers]
         }, None
         
     except Exception as e:
-        return None, str(e)
+        error_msg = f"Error en validación histórica: {str(e)}"
+        print(f"❌ {error_msg}")
+        import traceback
+        traceback.print_exc()
+        
+        # Fallback a constituyentes actuales
+        try:
+            current = get_current_constituents(index_name)
+            return {
+                'tickers': current['tickers'],
+                'data': [],
+                'historical_data_available': False,
+                'note': f'Fallback due to error: {str(e)}'
+            }, error_msg
+        except:
+            return None, error_msg
 
 def generate_removed_tickers_summary():
     """Genera resumen de tickers removidos con caché"""
