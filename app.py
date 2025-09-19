@@ -343,6 +343,30 @@ def display_backtest_results(bt_results, picks_df, prices_df, benchmark_series, 
             showlegend=True
         )
         st.plotly_chart(fig_dd, use_container_width=True)
+
+    # En app.py, donde obtienes los tickers (alrededor de línea 300-320)
+tickers = list(dict.fromkeys(all_tickers_data['tickers']))
+st.success(f"✅ Obtenidos {len(tickers)} tickers únicos")
+
+# AÑADE ESTE CÓDIGO DE DEBUG MEJORADO:
+if len(tickers) < 200:  # Umbral más razonable
+    st.warning(f"⚠️ Solo {len(tickers)} tickers obtenidos. Esto puede ser muy poco.")
+    
+    # Mostrar algunos tickers para debug
+    st.write("Muestra de tickers obtenidos:", tickers[:15])
+    
+    # Verificar si hay datos históricos
+    if use_historical_verification:
+        st.info("🔄 Probando sin verificación histórica...")
+        from data_loader import get_current_constituents
+        current_constituents = get_current_constituents(index_choice)
+        if current_constituents and 'tickers' in current_constituents:
+            st.write(f"Constituyentes actuales: {len(current_constituents['tickers'])}")
+            if len(current_constituents['tickers']) > len(tickers):
+                tickers = current_constituents['tickers']
+                st.success(f"✅ Usando {len(tickers)} constituyentes actuales como fallback")
+                st.write("Muestra de constituyentes actuales:", tickers[:15])
+
     
     # Tabla de rendimientos mensuales
     st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
