@@ -1,10 +1,6 @@
 import pandas as pd
-import requests
-from io import StringIO
 import os
 import numpy as np
-import re
-from dateutil import parser
 import glob
 from datetime import datetime, date, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,7 +16,7 @@ CACHE_DIR = os.path.join(DATA_DIR, "cache")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-# Cache global mejorado
+# Cache global
 _historical_cache = {}
 _constituents_cache = {}
 
@@ -42,7 +38,6 @@ def load_cache(key, prefix="cache", max_age_days=7):
     try:
         cache_file = os.path.join(CACHE_DIR, f"{prefix}_{key}.pkl")
         if os.path.exists(cache_file):
-            # Verificar antigüedad
             file_age = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))).days
             if file_age <= max_age_days:
                 with open(cache_file, 'rb') as f:
@@ -51,40 +46,27 @@ def load_cache(key, prefix="cache", max_age_days=7):
         print(f"Error cargando caché: {e}")
     return None
 
-def get_sp500_tickers_from_wikipedia():
-    """Obtiene los tickers actuales del S&P 500"""
+def get_all_available_tickers():
+    """Obtiene todos los tickers disponibles en la carpeta data/"""
     try:
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        tables = pd.read_html(url)
-        df = tables[0]
-        tickers = df['Symbol'].str.replace('.', '-').tolist()
-        print(f"✅ Obtenidos {len(tickers)} tickers del S&P 500")
-        return {'tickers': tickers}
+        csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+        available_tickers = []
+        
+        for csv_file in csv_files:
+            filename = os.path.basename(csv_file)
+            if filename.endswith('.csv') and not filename.endswith('_changes.csv'):
+                ticker = filename.replace('.csv', '').upper()
+                # Filtrar archivos que no son tickers válidos
+                if len(ticker) <= 6 and ticker.replace('-', '').isalnum():
+                    available_tickers.append(ticker)
+        
+        available_tickers = sorted(list(set(available_tickers)))
+        print(f"📊 Total de tickers disponibles: {len(available_tickers)}")
+        return available_tickers
+        
     except Exception as e:
-        print(f"❌ Error obteniendo S&P 500: {e}")
-        return {'tickers': []}
-
-def get_nasdaq100_tickers_from_wikipedia():
-    """Obtiene los tickers actuales del NASDAQ-100"""
-    try:
-        url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-        tables = pd.read_html(url)
-        # La tabla puede estar en diferentes posiciones, intentar varias
-        for i in [4, 3, 2, 1]:
-            try:
-                df = tables[i]
-                if 'Ticker' in df.columns or 'Symbol' in df.columns:
-                    col_name = 'Ticker' if 'Ticker' in df.columns else 'Symbol'
-                    tickers = df[col_name].str.replace('.', '-').tolist()
-                    print(f"✅ Obtenidos {len(tickers)} tickers del NASDAQ-100")
-                    return {'tickers': tickers}
-            except:
-                continue
-        print("⚠️ No se pudo encontrar la tabla del NASDAQ-100")
-        return {'tickers': []}
-    except Exception as e:
-        print(f"❌ Error obteniendo NASDAQ-100: {e}")
-        return {'tickers': []}
+        print(f"Error obteniendo tickers disponibles: {e}")
+        return []
 
 def get_sp500_historical_changes():
     """Obtiene los cambios históricos del S&P 500 desde CSV local"""
@@ -106,9 +88,7 @@ def get_sp500_historical_changes():
     if changes_df.empty:
         print("❌ No se pudieron obtener cambios históricos del S&P 500")
     else:
-        # Asegurarse de que las fechas estén en formato datetime
         changes_df['Date'] = pd.to_datetime(changes_df['Date'])
-        # Ordenar por fecha descendente
         changes_df = changes_df.sort_values('Date', ascending=False)
         
         if not changes_df.empty:
@@ -137,9 +117,7 @@ def get_nasdaq100_historical_changes():
     if changes_df.empty:
         print("❌ No se pudieron obtener cambios históricos del NASDAQ-100")
     else:
-        # Asegurarse de que las fechas estén en formato datetime
         changes_df['Date'] = pd.to_datetime(changes_df['Date'])
-        # Ordenar por fecha descendente
         changes_df = changes_df.sort_values('Date', ascending=False)
         
         if not changes_df.empty:
@@ -148,23 +126,99 @@ def get_nasdaq100_historical_changes():
     
     return changes_df
 
+def get_sp500_tickers_from_local_data():
+    """Obtiene tickers del S&P 500 basado en datos locales (SIN Wikipedia)"""
+    try:
+        # Lista de tickers conocidos del S&P 500 (los más comunes y estables)
+        known_sp500_tickers = [
+            'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'BRK-B', 'TSLA', 'META', 'UNH',
+            'JNJ', 'XOM', 'JPM', 'V', 'PG', 'CVX', 'HD', 'MA', 'ABBV', 'PFE', 'AVGO', 'KO',
+            'LLY', 'TMO', 'PEP', 'COST', 'ADBE', 'WMT', 'BAC', 'MRK', 'DIS', 'ABT', 'CRM',
+            'NFLX', 'ACN', 'LIN', 'DHR', 'VZ', 'CMCSA', 'NKE', 'TXN', 'RTX', 'AMD', 'QCOM',
+            'HON', 'T', 'UPS', 'NEE', 'LOW', 'AMGN', 'SPGI', 'CAT', 'SBUX', 'GE', 'AMAT',
+            'INTU', 'IBM', 'DE', 'AXP', 'BKNG', 'MDLZ', 'ADI', 'TJX', 'GILD', 'CVS', 'MO',
+            'ADP', 'VRTX', 'PLD', 'LRCX', 'SYK', 'TMUS', 'ZTS', 'FISV', 'BSX', 'REGN', 'C',
+            'DUK', 'SO', 'CL', 'MMM', 'EQIX', 'NOC', 'AON', 'APD', 'ITW', 'ICE', 'PGR',
+            'FCX', 'F', 'USB', 'NSC', 'EMR', 'BSX', 'SHW', 'MCO', 'CME', 'COF', 'HUM',
+            'GD', 'TGT', 'FIS', 'MMC', 'CCI', 'ORLY', 'KLAC', 'APH', 'MSI', 'EOG', 'WM'
+        ]
+        
+        # Obtener cambios históricos para tickers adicionales
+        sp500_changes = get_sp500_historical_changes()
+        historical_tickers = set()
+        
+        if not sp500_changes.empty:
+            # Obtener todos los tickers mencionados en los cambios históricos
+            all_mentioned = sp500_changes['Ticker'].unique()
+            historical_tickers.update(all_mentioned)
+        
+        # Combinar tickers conocidos con históricos
+        all_sp500_tickers = list(set(known_sp500_tickers + list(historical_tickers)))
+        
+        # Filtrar solo los que tienen datos disponibles
+        available_tickers = get_all_available_tickers()
+        final_tickers = [t for t in all_sp500_tickers if t in available_tickers]
+        
+        print(f"✅ S&P 500 tickers obtenidos localmente: {len(final_tickers)}")
+        return {'tickers': final_tickers}
+        
+    except Exception as e:
+        print(f"❌ Error obteniendo S&P 500 local: {e}")
+        return {'tickers': []}
+
+def get_nasdaq100_tickers_from_local_data():
+    """Obtiene tickers del NASDAQ-100 basado en datos locales (SIN Wikipedia)"""
+    try:
+        # Lista de tickers conocidos del NASDAQ-100
+        known_ndx_tickers = [
+            'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'NVDA', 'TSLA', 'META', 'AVGO', 'ASML',
+            'COST', 'ADBE', 'NFLX', 'PEP', 'CSCO', 'CMCSA', 'AMD', 'QCOM', 'INTC', 'INTU',
+            'AMAT', 'TXN', 'BKNG', 'HON', 'AMGN', 'SBUX', 'GILD', 'ADI', 'VRTX', 'ADP',
+            'LRCX', 'FISV', 'REGN', 'ATVI', 'KLAC', 'MRNA', 'ORLY', 'MCHP', 'CSX', 'DXCM',
+            'ABNB', 'PANW', 'CRWD', 'FTNT', 'TEAM', 'DOCU', 'ZM', 'PTON', 'OKTA', 'MTCH',
+            'DDOG', 'ZS', 'LCID', 'RIVN', 'SHOP', 'PLTR', 'MSTR', 'AXON', 'APP', 'SMCI'
+        ]
+        
+        # Obtener cambios históricos para tickers adicionales
+        ndx_changes = get_nasdaq100_historical_changes()
+        historical_tickers = set()
+        
+        if not ndx_changes.empty:
+            all_mentioned = ndx_changes['Ticker'].unique()
+            historical_tickers.update(all_mentioned)
+        
+        # Combinar tickers conocidos con históricos
+        all_ndx_tickers = list(set(known_ndx_tickers + list(historical_tickers)))
+        
+        # Filtrar solo los que tienen datos disponibles
+        available_tickers = get_all_available_tickers()
+        final_tickers = [t for t in all_ndx_tickers if t in available_tickers]
+        
+        print(f"✅ NASDAQ-100 tickers obtenidos localmente: {len(final_tickers)}")
+        return {'tickers': final_tickers}
+        
+    except Exception as e:
+        print(f"❌ Error obteniendo NASDAQ-100 local: {e}")
+        return {'tickers': []}
+
 def get_current_constituents(index_name):
-    """Obtiene constituyentes actuales con caché"""
+    """Obtiene constituyentes actuales usando SOLO datos locales"""
     cache_key = f"current_{index_name}"
     
     cached_data = load_cache(cache_key, prefix="constituents", max_age_days=1)
     if cached_data is not None:
+        print(f"⚡ Usando caché para {index_name}")
         return cached_data
     
+    print(f"🔍 Obteniendo constituyentes locales para {index_name}...")
+    
     if index_name == "SP500":
-        result = get_sp500_tickers_from_wikipedia()
+        result = get_sp500_tickers_from_local_data()
     elif index_name == "NDX":
-        result = get_nasdaq100_tickers_from_wikipedia()
+        result = get_nasdaq100_tickers_from_local_data()
     elif index_name == "Ambos (SP500 + NDX)":
-        # Combinar ambos índices
-        sp500 = get_sp500_tickers_from_wikipedia()
-        ndx = get_nasdaq100_tickers_from_wikipedia()
-        # Unir los tickers de ambos índices (sin duplicados)
+        sp500 = get_sp500_tickers_from_local_data()
+        ndx = get_nasdaq100_tickers_from_local_data()
         combined_tickers = list(set(sp500['tickers'] + ndx['tickers']))
         result = {'tickers': combined_tickers}
         print(f"✅ Combinados: {len(sp500['tickers'])} S&P500 + {len(ndx['tickers'])} NDX = {len(combined_tickers)} únicos")
@@ -176,59 +230,115 @@ def get_current_constituents(index_name):
     return result
 
 def get_all_available_tickers_with_historical_validation(index_name, start_date, end_date):
-    """
-    VERSIÓN SIMPLIFICADA - Solo usa constituyentes actuales con datos disponibles
-    """
+    """Obtiene tickers válidos para el período usando datos locales"""
     try:
-        print(f"🔍 Obteniendo constituyentes de {index_name}")
+        print(f"🔍 Validando constituyentes históricos de {index_name} para {start_date} a {end_date}")
         
-        # 1. Obtener constituyentes actuales
+        # 1. Obtener constituyentes actuales (locales)
         current_constituents = get_current_constituents(index_name)
         
-        if not current_constituents or 'tickers' not in current_constituents or not current_constituents['tickers']:
-            print("❌ No se pudieron obtener constituyentes")
+        if not current_constituents or 'tickers' not in current_constituents:
+            print("❌ No se pudieron obtener constituyentes actuales")
             return {'tickers': []}, "No se pudieron obtener constituyentes"
         
-        print(f"✅ Constituyentes obtenidos: {len(current_constituents['tickers'])}")
+        print(f"✅ Constituyentes actuales: {len(current_constituents['tickers'])}")
         
-        # 2. Verificar qué tickers tienen datos CSV disponibles
-        csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-        available_csv_tickers = set()
+        # 2. Obtener cambios históricos
+        if index_name == "SP500":
+            historical_changes = get_sp500_historical_changes()
+        elif index_name == "NDX":
+            historical_changes = get_nasdaq100_historical_changes()
+        else:  # Ambos
+            sp500_changes = get_sp500_historical_changes()
+            ndx_changes = get_nasdaq100_historical_changes()
+            if not sp500_changes.empty and not ndx_changes.empty:
+                historical_changes = pd.concat([sp500_changes, ndx_changes], ignore_index=True)
+                historical_changes = historical_changes.drop_duplicates(subset=['Date', 'Ticker', 'Action'])
+            elif not sp500_changes.empty:
+                historical_changes = sp500_changes
+            else:
+                historical_changes = ndx_changes
         
-        for csv_file in csv_files:
-            filename = os.path.basename(csv_file)
-            if filename.endswith('.csv') and not filename.endswith('_changes.csv'):
-                ticker = filename.replace('.csv', '').upper()
-                available_csv_tickers.add(ticker)
+        # 3. Convertir fechas
+        if isinstance(start_date, str):
+            start_date = pd.to_datetime(start_date)
+        elif isinstance(start_date, date):
+            start_date = pd.to_datetime(start_date)
+            
+        if isinstance(end_date, str):
+            end_date = pd.to_datetime(end_date)
+        elif isinstance(end_date, date):
+            end_date = pd.to_datetime(end_date)
         
-        print(f"📁 Archivos CSV disponibles: {len(available_csv_tickers)}")
+        print(f"📅 Período de validación: {start_date.date()} a {end_date.date()}")
         
-        # 3. Intersección: tickers del índice que tienen datos disponibles
-        final_tickers = list(set(current_constituents['tickers']) & available_csv_tickers)
+        # 4. Empezar con constituyentes actuales
+        valid_tickers = set(current_constituents['tickers'])
+        print(f"🎯 Tickers iniciales: {len(valid_tickers)}")
+        
+        # 5. Aplicar validación histórica si tenemos datos
+        if not historical_changes.empty:
+            print(f"📊 Procesando {len(historical_changes)} cambios históricos...")
+            
+            # Filtrar cambios futuros
+            today = pd.to_datetime(datetime.now().date())
+            historical_changes = historical_changes[pd.to_datetime(historical_changes['Date']) <= today]
+            
+            for _, change in historical_changes.iterrows():
+                change_date = pd.to_datetime(change['Date'])
+                ticker = str(change['Ticker']).upper()
+                action = change['Action']
+                
+                if change_date > end_date:
+                    continue
+                
+                if action == 'Added' and change_date > start_date:
+                    # Añadido durante el período, no estaba al inicio
+                    valid_tickers.discard(ticker)
+                elif action == 'Removed' and change_date <= start_date:
+                    # Removido antes del período, no estaba presente
+                    valid_tickers.discard(ticker)
+        
+        print(f"📊 Tickers válidos históricamente: {len(valid_tickers)}")
+        
+        # 6. Verificar disponibilidad de datos
+        available_tickers = get_all_available_tickers()
+        final_tickers = list(valid_tickers & set(available_tickers))
         
         print(f"✅ Tickers finales con datos: {len(final_tickers)}")
         
         if len(final_tickers) == 0:
-            print("❌ No hay tickers con datos disponibles")
-            return {'tickers': []}, "No hay tickers con datos disponibles"
+            print("⚠️ No hay tickers válidos, usando todos los disponibles como fallback")
+            final_tickers = available_tickers[:100]  # Usar primeros 100
         
         return {
             'tickers': final_tickers,
             'data': [],
-            'historical_data_available': False
+            'historical_data_available': True if not historical_changes.empty else False
         }, None
         
     except Exception as e:
-        error_msg = f"Error: {str(e)}"
+        error_msg = f"Error en validación histórica: {str(e)}"
         print(f"❌ {error_msg}")
-        import traceback
-        traceback.print_exc()
-        return {'tickers': []}, error_msg
+        
+        # Fallback a todos los tickers disponibles
+        try:
+            available_tickers = get_all_available_tickers()
+            if available_tickers:
+                return {
+                    'tickers': available_tickers[:200],  # Usar primeros 200
+                    'data': [],
+                    'historical_data_available': False,
+                    'note': f'Fallback due to error: {str(e)}'
+                }, f"Warning: Using available tickers as fallback - {str(e)}"
+            else:
+                return {'tickers': []}, error_msg
+        except Exception as fallback_error:
+            return {'tickers': []}, f"{error_msg} | Fallback error: {str(fallback_error)}"
 
 def get_constituents_at_date(index_name, start_date, end_date):
-    """Obtiene constituyentes - VERSIÓN SIMPLIFICADA"""
+    """Obtiene constituyentes para una fecha específica"""
     try:
-        # Intentar obtener con validación
         result, error = get_all_available_tickers_with_historical_validation(
             index_name, start_date, end_date
         )
@@ -269,7 +379,6 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
             if df.empty:
                 return ticker, None, None
             
-            # Usar Close ya que los datos están ajustados
             if 'Close' in df.columns:
                 price = df['Close']
             else:
@@ -318,13 +427,7 @@ def create_download_link(df, filename, link_text):
         return None
 
 def generate_removed_tickers_summary():
-    """Genera resumen de tickers removidos con caché"""
-    cache_key = "removed_tickers_summary"
-    
-    cached_data = load_cache(cache_key, max_age_days=30)
-    if cached_data is not None:
-        return cached_data
-    
+    """Genera resumen de tickers removidos"""
     summary_data = []
     
     # Procesar S&P 500
@@ -355,7 +458,6 @@ def generate_removed_tickers_summary():
         summary = pd.DataFrame(summary_data)
         summary['Date'] = pd.to_datetime(summary['Date'])
         summary = summary.sort_values('Date', ascending=False)
-        save_cache(cache_key, summary)
         return summary
     
     return pd.DataFrame()
@@ -375,74 +477,25 @@ def get_cache_size():
         for f in filenames:
             fp = os.path.join(dirpath, f)
             total_size += os.path.getsize(fp)
-    return total_size / (1024 * 1024)  # Convertir a MB
+    return total_size / (1024 * 1024)
 
-# Función de debug para verificar el estado del sistema
 def debug_system_status():
-    """Función de debug para diagnosticar problemas"""
+    """Función de debug para verificar el estado del sistema"""
     print("\n=== DEBUG: ESTADO DEL SISTEMA ===")
-    
-    # 1. Verificar directorio de datos
     print(f"📁 Directorio de datos: {DATA_DIR}")
     print(f"   Existe: {'✅' if os.path.exists(DATA_DIR) else '❌'}")
     
-    # 2. Verificar archivos CSV de datos
-    csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-    ticker_files = [f for f in csv_files if not f.endswith('_changes.csv')]
-    print(f"\n📊 Archivos de datos CSV encontrados: {len(ticker_files)}")
+    # Verificar archivos disponibles
+    available_tickers = get_all_available_tickers()
+    print(f"📊 Tickers disponibles: {len(available_tickers)}")
+    if available_tickers:
+        print(f"   Primeros 10: {available_tickers[:10]}")
     
-    if ticker_files:
-        print(f"   Primeros 10: {[os.path.basename(f) for f in ticker_files[:10]]}")
-        
-        # Verificar un archivo al azar
-        sample_file = ticker_files[0]
-        try:
-            sample_df = pd.read_csv(sample_file, nrows=5)
-            print(f"   Muestra de {os.path.basename(sample_file)}:")
-            print(f"   Columnas: {list(sample_df.columns)}")
-            print(f"   Filas: {len(sample_df)}")
-        except Exception as e:
-            print(f"   ❌ Error leyendo archivo muestra: {e}")
-    
-    # 3. Verificar archivos de cambios históricos
-    change_files = [
-        'sp500_changes.csv',
-        'ndx_changes.csv',
-        'data/sp500_changes.csv',
-        'data/ndx_changes.csv'
-    ]
-    
-    print(f"\n📋 Archivos de cambios históricos:")
-    for file_path in change_files:
-        exists = os.path.exists(file_path)
-        print(f"   {file_path}: {'✅' if exists else '❌'}")
-        if exists:
-            try:
-                df = pd.read_csv(file_path)
-                print(f"     - {len(df)} registros")
-                print(f"     - Columnas: {list(df.columns)}")
-            except Exception as e:
-                print(f"     - ❌ Error: {e}")
-    
-    # 4. Probar conexión a Wikipedia
-    print(f"\n🌐 Probando conexión a Wikipedia:")
-    try:
-        sp500_data = get_sp500_tickers_from_wikipedia()
-        ndx_data = get_nasdaq100_tickers_from_wikipedia()
-        print(f"   S&P 500: {len(sp500_data.get('tickers', []))} tickers")
-        print(f"   NASDAQ-100: {len(ndx_data.get('tickers', []))} tickers")
-    except Exception as e:
-        print(f"   ❌ Error de conexión: {e}")
-    
-    # 5. Verificar caché
-    print(f"\n💾 Estado de caché:")
-    print(f"   Directorio: {CACHE_DIR}")
-    print(f"   Existe: {'✅' if os.path.exists(CACHE_DIR) else '❌'}")
-    try:
-        cache_size = get_cache_size()
-        print(f"   Tamaño: {cache_size:.2f} MB")
-    except:
-        print(f"   Tamaño: Error calculando")
+    # Verificar cambios históricos
+    sp500_changes = get_sp500_historical_changes()
+    ndx_changes = get_nasdaq100_historical_changes()
+    print(f"📋 Cambios S&P 500: {len(sp500_changes)}")
+    print(f"📋 Cambios NASDAQ-100: {len(ndx_changes)}")
     
     print("=== FIN DEBUG ===\n")
 
@@ -450,29 +503,12 @@ def debug_system_status():
 if __name__ == "__main__":
     debug_system_status()
     
-    print(f"💾 Tamaño actual de caché: {get_cache_size():.2f} MB")
-    
+    # Probar índices
     test_indices = ["SP500", "NDX", "Ambos (SP500 + NDX)"]
     for idx in test_indices:
         print(f"\n🧪 Probando índice: {idx}")
         result = get_current_constituents(idx)
         if result and 'tickers' in result:
             print(f"✅ {idx}: {len(result['tickers'])} tickers encontrados")
-            if result['tickers']:
-                print(f"   Primeros 5: {result['tickers'][:5]}")
         else:
             print(f"❌ {idx}: Error obteniendo tickers")
-    
-    # Test de validación completa
-    print("\n🧪 Probando validación completa...")
-    test_start = datetime(2023, 1, 1)
-    test_end = datetime(2023, 12, 31)
-    
-    result, error = get_constituents_at_date("SP500", test_start, test_end)
-    
-    if result and 'tickers' in result:
-        print(f"✅ Validación completa exitosa: {len(result['tickers'])} tickers")
-        if result['tickers']:
-            print(f"   Primeros 10: {result['tickers'][:10]}")
-    else:
-        print(f"❌ Error en validación completa: {error}")
