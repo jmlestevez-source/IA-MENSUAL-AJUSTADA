@@ -101,31 +101,37 @@ def get_cache_key(params):
 
 @st.cache_data(ttl=3600*24*7)
 def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=True):
-    """Carga precios desde CSV en PARALELO"""
+    """Carga precios desde CSV en PARALELO (corrigida)"""
     prices_data = {}
     ohlc_data = {}
     
     def load_single_ticker(ticker):
-        csv_path = f"data/{ticker}.csv"
+        # Normalizar nombre del ticker (igual que en data_loader.py)
+        clean_ticker = str(ticker).strip().upper().replace('.', '-')
+        csv_path = f"data/{clean_ticker}.csv"
         if not os.path.exists(csv_path):
             return ticker, None, None
         
         try:
             df = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
             
+            # Quitar timezone si lo tiene (ej. "1999-11-18 00:00:00-05:00")
             if hasattr(df.index, 'tz') and df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
+            else:
+                df.index = pd.to_datetime(df.index).tz_localize(None)
             
             start_filter = start_date.date() if isinstance(start_date, datetime) else start_date
             end_filter = end_date.date() if isinstance(end_date, datetime) else end_date
-            
             df = df[(df.index.date >= start_filter) & (df.index.date <= end_filter)]
             
             if df.empty:
                 return ticker, None, None
             
-            # Usar Close ya que los datos están ajustados
-            if 'Close' in df.columns:
+            # Usar Adj Close si existe, si no Close
+            if 'Adj Close' in df.columns:
+                price = df['Adj Close']
+            elif 'Close' in df.columns:
                 price = df['Close']
             else:
                 return ticker, None, None
@@ -135,15 +141,17 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
                 ohlc = {
                     'High': df['High'],
                     'Low': df['Low'],
-                    'Close': df['Close'],
+                    'Close': df['Adj Close'] if 'Adj Close' in df.columns else df['Close'],
                     'Volume': df['Volume'] if 'Volume' in df.columns else None
                 }
             
             return ticker, price, ohlc
             
         except Exception as e:
+            print(f"⚠️ Error leyendo {ticker}: {e}")
             return ticker, None, None
     
+    from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(load_single_ticker, ticker) for ticker in tickers]
         
@@ -160,6 +168,7 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
         return prices_df, ohlc_data
     else:
         return pd.DataFrame(), {}
+
 
 def create_download_link(df, filename, link_text):
     """Crea un enlace de descarga para un DataFrame"""
