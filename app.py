@@ -101,41 +101,40 @@ def get_cache_key(params):
 
 @st.cache_data(ttl=3600*24*7)
 def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=True):
-    """Carga precios desde CSV en PARALELO (corrigida)"""
+    """Carga precios desde CSV en PARALELO (corrigida para manejar zonas horarias)"""
     prices_data = {}
     ohlc_data = {}
-    
+
     def load_single_ticker(ticker):
-        # Normalizar nombre del ticker (igual que en data_loader.py)
         clean_ticker = str(ticker).strip().upper().replace('.', '-')
         csv_path = f"data/{clean_ticker}.csv"
         if not os.path.exists(csv_path):
             return ticker, None, None
-        
+
         try:
-            df = pd.read_csv(csv_path, index_col="Date", parse_dates=True)
-            
-            # Quitar timezone si lo tiene (ej. "1999-11-18 00:00:00-05:00")
-            if hasattr(df.index, 'tz') and df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
-            else:
-                df.index = pd.to_datetime(df.index).tz_localize(None)
-            
+            # Leer CSV eliminando zona horaria directamente
+            df = pd.read_csv(
+                csv_path,
+                index_col="Date",
+                parse_dates=True,
+                date_parser=lambda col: pd.to_datetime(col, utc=True).tz_convert(None)
+            )
+
             start_filter = start_date.date() if isinstance(start_date, datetime) else start_date
             end_filter = end_date.date() if isinstance(end_date, datetime) else end_date
             df = df[(df.index.date >= start_filter) & (df.index.date <= end_filter)]
-            
+
             if df.empty:
                 return ticker, None, None
-            
-            # Usar Adj Close si existe, si no Close
+
+            # Usar Close (o Adj Close si existe)
             if 'Adj Close' in df.columns:
                 price = df['Adj Close']
             elif 'Close' in df.columns:
                 price = df['Close']
             else:
                 return ticker, None, None
-            
+
             ohlc = None
             if load_full_data and all(col in df.columns for col in ['High', 'Low', 'Close']):
                 ohlc = {
@@ -144,24 +143,24 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
                     'Close': df['Adj Close'] if 'Adj Close' in df.columns else df['Close'],
                     'Volume': df['Volume'] if 'Volume' in df.columns else None
                 }
-            
+
             return ticker, price, ohlc
-            
+
         except Exception as e:
             print(f"⚠️ Error leyendo {ticker}: {e}")
             return ticker, None, None
-    
+
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(load_single_ticker, ticker) for ticker in tickers]
-        
+
         for future in futures:
             ticker, price, ohlc = future.result()
             if price is not None:
                 prices_data[ticker] = price
             if ohlc is not None:
                 ohlc_data[ticker] = ohlc
-    
+
     if prices_data:
         prices_df = pd.DataFrame(prices_data)
         prices_df = prices_df.fillna(method='ffill').fillna(method='bfill')
