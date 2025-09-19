@@ -230,7 +230,7 @@ def get_current_constituents(index_name):
 def get_all_available_tickers_with_historical_validation(index_name, start_date, end_date):
     """
     Obtiene los tickers que realmente estaban en el índice durante el período especificado
-    VERSIÓN CORREGIDA Y SIMPLIFICADA
+    VERSIÓN CORREGIDA PARA MANEJAR FECHAS FUTURAS
     """
     try:
         print(f"🔍 Validando constituyentes históricos de {index_name} para {start_date} a {end_date}")
@@ -285,7 +285,7 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         
         print(f"📅 Período de validación: {start_date.date()} a {end_date.date()}")
         
-        # 4. LÓGICA CORREGIDA: Empezar con constituyentes actuales y aplicar cambios históricos
+        # 4. Empezar con constituyentes actuales
         valid_tickers = set(current_constituents['tickers'])
         print(f"🎯 Tickers iniciales (constituyentes actuales): {len(valid_tickers)}")
         
@@ -293,28 +293,40 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         if not historical_changes.empty:
             print(f"📊 Procesando {len(historical_changes)} cambios históricos...")
             
+            # Obtener fecha actual real
+            today = pd.to_datetime(datetime.now().date())
+            
+            # Filtrar cambios futuros (posteriores a hoy)
+            future_changes = historical_changes[pd.to_datetime(historical_changes['Date']) > today]
+            if not future_changes.empty:
+                print(f"⚠️ Ignorando {len(future_changes)} cambios con fechas futuras")
+            
+            # Solo procesar cambios hasta hoy
+            historical_changes = historical_changes[pd.to_datetime(historical_changes['Date']) <= today]
+            
             # Para cada cambio histórico, ver si afecta nuestro período
             for _, change in historical_changes.iterrows():
                 change_date = pd.to_datetime(change['Date'])
                 ticker = str(change['Ticker']).upper()
                 action = change['Action']
                 
-                # Solo considerar cambios que ocurrieron DURANTE o ANTES de nuestro período
-                if change_date <= end_date:  # El cambio ocurrió antes o durante el backtest
-                    if action == 'Removed' and change_date > start_date:
-                        # Si fue removido durante el período, estaba presente antes
-                        # Así que lo mantenemos (ya está en valid_tickers)
-                        pass
-                    elif action == 'Removed' and change_date <= start_date:
-                        # Si fue removido antes del período, NO estaba presente
+                # Si el cambio ocurrió después del período de backtest, ignorarlo
+                if change_date > end_date:
+                    continue
+                
+                # Lógica corregida:
+                if action == 'Added':
+                    # Si fue añadido DESPUÉS del inicio del período, no estaba al principio
+                    if change_date > start_date:
                         valid_tickers.discard(ticker)
-                    elif action == 'Added' and change_date > start_date:
-                        # Si fue añadido durante el período, NO estaba presente al inicio
+                    # Si fue añadido ANTES del inicio, ya está en valid_tickers (OK)
+                    
+                elif action == 'Removed':
+                    # Si fue removido ANTES del inicio del período, no estaba presente
+                    if change_date <= start_date:
                         valid_tickers.discard(ticker)
-                    elif action == 'Added' and change_date <= start_date:
-                        # Si fue añadido antes del período, SÍ estaba presente
-                        # (ya está en valid_tickers desde current_constituents)
-                        pass
+                    # Si fue removido DURANTE el período, estaba presente al inicio
+                    # pero debemos mantenerlo para el backtest
         
         print(f"📊 Tickers válidos históricamente: {len(valid_tickers)}")
         
@@ -324,7 +336,7 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         
         for csv_file in csv_files:
             filename = os.path.basename(csv_file)
-            if filename.endswith('.csv'):
+            if filename.endswith('.csv') and filename != 'sp500_changes.csv' and filename != 'ndx_changes.csv':
                 ticker = filename.replace('.csv', '').upper()
                 available_csv_tickers.add(ticker)
         
@@ -334,13 +346,13 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         final_tickers = list(valid_tickers & available_csv_tickers)
         print(f"📈 Tickers finales (intersección): {len(final_tickers)}")
         
-        # 8. Remover específicamente los tickers problemáticos
+        # 8. Verificación adicional de tickers problemáticos conocidos
         problematic_tickers = ['RIG', 'OI', 'VNT']
         removed_problematic = []
         
         for ticker in problematic_tickers:
             if ticker in final_tickers:
-                # Verificar cuándo fue removido
+                # Verificar si el ticker fue removido antes del período
                 if not historical_changes.empty:
                     removal_info = historical_changes[
                         (historical_changes['Ticker'] == ticker) & 
@@ -349,9 +361,16 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
                     if not removal_info.empty:
                         removal_date = pd.to_datetime(removal_info.iloc[0]['Date'])
                         if removal_date <= start_date:
-                            print(f"⚠️ REMOVIENDO {ticker} - fue eliminado del índice el {removal_date.date()}")
+                            print(f"⚠️ Removiendo {ticker} - fue eliminado del índice el {removal_date.date()}")
                             final_tickers.remove(ticker)
                             removed_problematic.append(ticker)
+        
+        # Verificación final
+        if len(final_tickers) == 0:
+            print("⚠️ No se encontraron tickers válidos, usando constituyentes actuales como fallback")
+            # Fallback: usar constituyentes actuales que tengan datos CSV
+            final_tickers = list(set(current_constituents['tickers']) & available_csv_tickers)
+            print(f"✅ Fallback con {len(final_tickers)} tickers")
         
         print(f"✅ Tickers válidos finales: {len(final_tickers)}")
         
@@ -376,9 +395,21 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
             print("🔄 Intentando fallback a constituyentes actuales...")
             current = get_current_constituents(index_name)
             if current and 'tickers' in current and current['tickers']:
-                print(f"✅ Fallback exitoso con {len(current['tickers'])} tickers")
+                # Verificar qué tickers tienen datos CSV
+                csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+                available_csv_tickers = set()
+                
+                for csv_file in csv_files:
+                    filename = os.path.basename(csv_file)
+                    if filename.endswith('.csv') and filename != 'sp500_changes.csv' and filename != 'ndx_changes.csv':
+                        ticker = filename.replace('.csv', '').upper()
+                        available_csv_tickers.add(ticker)
+                
+                final_tickers = list(set(current['tickers']) & available_csv_tickers)
+                
+                print(f"✅ Fallback exitoso con {len(final_tickers)} tickers")
                 return {
-                    'tickers': current['tickers'],
+                    'tickers': final_tickers,
                     'data': [],
                     'historical_data_available': False,
                     'note': f'Fallback due to error: {str(e)}'
@@ -389,7 +420,6 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         except Exception as fallback_error:
             print(f"❌ Error en fallback: {fallback_error}")
             return None, f"{error_msg} | Fallback error: {str(fallback_error)}"
-
 def get_constituents_at_date(index_name, start_date, end_date):
     """Obtiene constituyentes con caché mejorado"""
     cache_key = get_cache_key(index_name, start_date, end_date)
