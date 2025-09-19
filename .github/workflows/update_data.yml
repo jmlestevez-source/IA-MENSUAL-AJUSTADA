@@ -241,14 +241,17 @@ jobs:
               print("=" * 60)
               print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
               
+              # INICIALIZAR VARIABLES DE CONTEO
+              regenerated = 0
+              failed = 0
+              updated = 0
+              errors = 0
+              
               tickers_to_regenerate = check_and_fix_all_csvs()
               
               if tickers_to_regenerate:
                   print(f"\n🔧 REGENERANDO {len(tickers_to_regenerate)} ARCHIVOS")
                   print("=" * 60)
-                  
-                  regenerated = 0
-                  failed = 0
                   
                   priority = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL']
                   priority_regen = [t for t in priority if t in tickers_to_regenerate]
@@ -267,6 +270,8 @@ jobs:
                   
                   print(f"\n✅ Regenerados: {regenerated}")
                   print(f"❌ Fallidos: {failed}")
+              else:
+                  print("\n✅ Todos los CSVs están en formato correcto")
               
               print("\n📊 ACTUALIZANDO DATOS")
               print("=" * 60)
@@ -279,9 +284,6 @@ jobs:
               other_tickers = [t for t in all_tickers if t not in priority_tickers]
               
               tickers_ordered = priority_found + other_tickers
-              
-              updated = 0
-              errors = 0
               
               for i, ticker in enumerate(tickers_ordered, 1):
                   if i % 10 == 1:
@@ -319,6 +321,36 @@ jobs:
 
       - name: Run update script
         run: python update_csv.py
+
+      - name: Clean up delisted tickers
+        run: |
+          python -c "
+          import os
+          import glob
+          import pandas as pd
+          
+          # Lista de tickers que sabemos están dados de baja
+          delisted_tickers = ['ABK', 'ANR', 'AYE', 'BMC', 'CBE', 'COV', 'EVHC', 'FMCN', 'GAS', 'MEE', 'NCC', 'NFX', 'SBL', 'VIP', 'VMED']
+          
+          print('🧹 Limpiando tickers dados de baja...')
+          
+          removed_count = 0
+          for ticker in delisted_tickers:
+              file_path = f'data/{ticker}.csv'
+              if os.path.exists(file_path):
+                  try:
+                      os.remove(file_path)
+                      print(f'  ❌ Eliminado: {ticker}.csv')
+                      removed_count += 1
+                  except Exception as e:
+                      print(f'  ⚠️ Error eliminando {ticker}: {e}')
+          
+          print(f'\\n✅ Eliminados {removed_count} archivos de tickers dados de baja')
+          
+          # Verificar cuántos archivos quedan
+          remaining_files = len(glob.glob('data/*.csv'))
+          print(f'📁 Archivos restantes: {remaining_files}')
+          "
 
       - name: Final verification
         run: |
@@ -360,10 +392,13 @@ jobs:
           
           git add data/*.csv
           
+          # También agregar eliminaciones
+          git add -A
+          
           if git diff --staged --quiet; then
             echo "📊 No hay cambios"
           else
-            COMMIT_MSG="📊 Update CSVs $(date -u +'%Y-%m-%d')"
+            COMMIT_MSG="📊 Update CSVs $(date -u +'%Y-%m-%d') - Cleaned delisted tickers"
             git commit -m "$COMMIT_MSG"
             git push
             echo "✅ Cambios pusheados"
