@@ -15,7 +15,6 @@ import glob
 
 # Importar nuestros módulos - IMPORTANTE: inertia_score viene de backtest
 from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes, generate_removed_tickers_summary
-from backtest import run_backtest_optimized, precalculate_all_indicators, calculate_monthly_returns_by_year, inertia_score, calculate_sharpe_ratio
 
 # ---------------------------
 # Helper: verificar archivos históricos al inicio
