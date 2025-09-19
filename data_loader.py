@@ -14,6 +14,51 @@ import warnings
 import base64
 warnings.filterwarnings('ignore')
 
+def debug_constituents_issue():
+    """Función de debug para diagnosticar el problema"""
+    print("\n=== DEBUG: DIAGNÓSTICO DE CONSTITUYENTES ===")
+    
+    # 1. Verificar archivos CSV de datos
+    data_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+    ticker_files = [f for f in data_files if not f.endswith('_changes.csv')]
+    print(f"📁 Archivos de datos encontrados: {len(ticker_files)}")
+    if ticker_files:
+        print(f"   Primeros 10: {[os.path.basename(f) for f in ticker_files[:10]]}")
+    
+    # 2. Verificar archivos de cambios
+    change_files = {
+        'sp500_changes.csv': os.path.exists('sp500_changes.csv'),
+        'ndx_changes.csv': os.path.exists('ndx_changes.csv'),
+        'data/sp500_changes.csv': os.path.exists('data/sp500_changes.csv'),
+        'data/ndx_changes.csv': os.path.exists('data/ndx_changes.csv')
+    }
+    print(f"\n📋 Archivos de cambios históricos:")
+    for file, exists in change_files.items():
+        print(f"   {file}: {'✅' if exists else '❌'}")
+    
+    # 3. Probar obtención de constituyentes actuales
+    print(f"\n🔍 Probando obtención de constituyentes actuales:")
+    
+    # SP500
+    try:
+        sp500_current = get_sp500_tickers_from_wikipedia()
+        print(f"   S&P 500: {len(sp500_current.get('tickers', []))} tickers")
+        if sp500_current.get('tickers'):
+            print(f"   Primeros 5: {sp500_current['tickers'][:5]}")
+    except Exception as e:
+        print(f"   S&P 500: ❌ Error - {e}")
+    
+    # NDX
+    try:
+        ndx_current = get_nasdaq100_tickers_from_wikipedia()
+        print(f"   NASDAQ-100: {len(ndx_current.get('tickers', []))} tickers")
+        if ndx_current.get('tickers'):
+            print(f"   Primeros 5: {ndx_current['tickers'][:5]}")
+    except Exception as e:
+        print(f"   NASDAQ-100: ❌ Error - {e}")
+    
+    print("=== FIN DEBUG ===\n")
+
 # Directorios
 DATA_DIR = "data"
 CACHE_DIR = os.path.join(DATA_DIR, "cache")
@@ -420,8 +465,13 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         except Exception as fallback_error:
             print(f"❌ Error en fallback: {fallback_error}")
             return None, f"{error_msg} | Fallback error: {str(fallback_error)}"
+            
 def get_constituents_at_date(index_name, start_date, end_date):
     """Obtiene constituyentes con caché mejorado"""
+    
+    # AÑADIR ESTA LÍNEA PARA DEBUG
+    debug_constituents_issue()
+    
     cache_key = get_cache_key(index_name, start_date, end_date)
     
     # Caché en memoria
@@ -454,13 +504,25 @@ def get_constituents_at_date(index_name, start_date, end_date):
             current_data = get_current_constituents(index_name)
             
             if current_data and 'tickers' in current_data and current_data['tickers']:
+                # AÑADIR VERIFICACIÓN DE ARCHIVOS CSV
+                csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+                available_tickers = set()
+                for csv_file in csv_files:
+                    filename = os.path.basename(csv_file)
+                    if filename.endswith('.csv') and not filename.endswith('_changes.csv'):
+                        ticker = filename.replace('.csv', '').upper()
+                        available_tickers.add(ticker)
+                
+                # Intersección con archivos disponibles
+                valid_tickers = list(set(current_data['tickers']) & available_tickers)
+                
                 fallback_result = {
-                    'tickers': current_data['tickers'],
+                    'tickers': valid_tickers,
                     'data': [],
                     'historical_data_available': False,
                     'note': 'Fallback to current constituents'
                 }
-                print(f"✅ Usando fallback con {len(current_data['tickers'])} tickers actuales")
+                print(f"✅ Usando fallback con {len(valid_tickers)} tickers actuales con datos")
                 return fallback_result, "Warning: Using current constituents as fallback"
             else:
                 print("❌ Fallback también falló")
@@ -469,20 +531,33 @@ def get_constituents_at_date(index_name, start_date, end_date):
     except Exception as e:
         error_msg = f"Error obteniendo constituyentes para {index_name}: {e}"
         print(f"⚠️ {error_msg}")
+        import traceback
+        traceback.print_exc()
         
-        # Fallback
+        # Fallback mejorado
         try:
             print("🔄 Intentando fallback a constituyentes actuales...")
             current_data = get_current_constituents(index_name)
             
             if current_data and 'tickers' in current_data and current_data['tickers']:
+                # Verificar archivos CSV disponibles
+                csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+                available_tickers = set()
+                for csv_file in csv_files:
+                    filename = os.path.basename(csv_file)
+                    if filename.endswith('.csv') and not filename.endswith('_changes.csv'):
+                        ticker = filename.replace('.csv', '').upper()
+                        available_tickers.add(ticker)
+                
+                valid_tickers = list(set(current_data['tickers']) & available_tickers)
+                
                 fallback_result = {
-                    'tickers': current_data['tickers'],
+                    'tickers': valid_tickers,
                     'data': [],
                     'historical_data_available': False,
                     'note': f'Fallback to current constituents due to: {str(e)}'
                 }
-                print(f"✅ Fallback exitoso con {len(current_data['tickers'])} tickers")
+                print(f"✅ Fallback exitoso con {len(valid_tickers)} tickers")
                 return fallback_result, f"Warning: Using current constituents as fallback - {str(e)}"
             else:
                 print("❌ Fallback también falló")
