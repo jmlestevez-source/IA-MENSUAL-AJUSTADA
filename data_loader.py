@@ -230,7 +230,7 @@ def get_current_constituents(index_name):
 def get_all_available_tickers_with_historical_validation(index_name, start_date, end_date):
     """
     Obtiene los tickers que realmente estaban en el índice durante el período especificado
-    VERSIÓN CORREGIDA que no filtra demasiado
+    VERSIÓN CORREGIDA Y SIMPLIFICADA
     """
     try:
         print(f"🔍 Validando constituyentes históricos de {index_name} para {start_date} a {end_date}")
@@ -285,40 +285,40 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         
         print(f"📅 Período de validación: {start_date.date()} a {end_date.date()}")
         
-        # 4. LÓGICA CORREGIDA: Validar tickers para cada mes del período
+        # 4. LÓGICA CORREGIDA: Empezar con constituyentes actuales y aplicar cambios históricos
         valid_tickers = set(current_constituents['tickers'])
+        print(f"🎯 Tickers iniciales (constituyentes actuales): {len(valid_tickers)}")
         
+        # 5. Si tenemos datos históricos, aplicar correcciones
         if not historical_changes.empty:
             print(f"📊 Procesando {len(historical_changes)} cambios históricos...")
             
-            # Para cada cambio histórico
+            # Para cada cambio histórico, ver si afecta nuestro período
             for _, change in historical_changes.iterrows():
                 change_date = pd.to_datetime(change['Date'])
                 ticker = str(change['Ticker']).upper()
                 action = change['Action']
                 
-                # Solo considerar cambios que afectan el período del backtest
-                if change_date > start_date and change_date <= end_date:
-                    if action == 'Added':
-                        # Si fue añadido durante el período, estaba presente
-                        valid_tickers.add(ticker)
-                    elif action == 'Removed':
+                # Solo considerar cambios que ocurrieron DURANTE o ANTES de nuestro período
+                if change_date <= end_date:  # El cambio ocurrió antes o durante el backtest
+                    if action == 'Removed' and change_date > start_date:
                         # Si fue removido durante el período, estaba presente antes
-                        pass  # Ya estaba en valid_tickers desde current_constituents
-                elif change_date > end_date:
-                    # Cambios después del período: revertirlos
-                    if action == 'Added':
+                        # Así que lo mantenemos (ya está en valid_tickers)
+                        pass
+                    elif action == 'Removed' and change_date <= start_date:
+                        # Si fue removido antes del período, NO estaba presente
                         valid_tickers.discard(ticker)
-                    elif action == 'Removed':
-                        valid_tickers.add(ticker)
-                elif change_date <= start_date:
-                    # Cambios antes o al inicio: solo los removidos afectan
-                    if action == 'Removed':
+                    elif action == 'Added' and change_date > start_date:
+                        # Si fue añadido durante el período, NO estaba presente al inicio
                         valid_tickers.discard(ticker)
+                    elif action == 'Added' and change_date <= start_date:
+                        # Si fue añadido antes del período, SÍ estaba presente
+                        # (ya está en valid_tickers desde current_constituents)
+                        pass
         
         print(f"📊 Tickers válidos históricamente: {len(valid_tickers)}")
         
-        # 5. Verificar tickers con datos CSV disponibles
+        # 6. Verificar tickers con datos CSV disponibles
         csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
         available_csv_tickers = set()
         
@@ -330,35 +330,18 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
         
         print(f"📁 Tickers con datos CSV disponibles: {len(available_csv_tickers)}")
         
-        # 6. Intersección: tickers válidos Y con datos disponibles
+        # 7. Intersección: tickers válidos Y con datos disponibles
         final_tickers = list(valid_tickers & available_csv_tickers)
+        print(f"📈 Tickers finales (intersección): {len(final_tickers)}")
         
-        # 7. Si tenemos muy pocos tickers, usar fallback más permisivo
-        if len(final_tickers) < 50:
-            print("⚠️ Muy pocos tickers, usando fallback más permisivo...")
-            # Usar todos los tickers actuales que tengan CSV
-            current_tickers_set = set(current_constituents['tickers'])
-            fallback_tickers = list(current_tickers_set & available_csv_tickers)
-            
-            # Si aún son pocos, incluir cualquier ticker con CSV que parezca válido
-            if len(fallback_tickers) < 50:
-                for ticker in available_csv_tickers:
-                    # Solo tickers que parecen reales (1-5 letras, sin números extraños)
-                    if 1 <= len(ticker) <= 5 and ticker.isalpha():
-                        if ticker not in fallback_tickers:
-                            fallback_tickers.append(ticker)
-            
-            final_tickers = fallback_tickers[:500]  # Limitar a 500 para evitar sobrecarga
-            print(f"📈 Tickers fallback: {len(final_tickers)}")
-        
-        # 8. Remover específicamente los tickers problemáticos solo si es necesario
+        # 8. Remover específicamente los tickers problemáticos
         problematic_tickers = ['RIG', 'OI', 'VNT']
         removed_problematic = []
         
         for ticker in problematic_tickers:
             if ticker in final_tickers:
-                # Solo remover si el backtest es después de la fecha de remoción
-                if historical_changes is not None and not historical_changes.empty:
+                # Verificar cuándo fue removido
+                if not historical_changes.empty:
                     removal_info = historical_changes[
                         (historical_changes['Ticker'] == ticker) & 
                         (historical_changes['Action'] == 'Removed')
@@ -370,7 +353,7 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
                             final_tickers.remove(ticker)
                             removed_problematic.append(ticker)
         
-        print(f"📈 Tickers válidos finales: {len(final_tickers)}")
+        print(f"✅ Tickers válidos finales: {len(final_tickers)}")
         
         if removed_problematic:
             print(f"🚫 Tickers problemáticos removidos: {removed_problematic}")
