@@ -343,7 +343,6 @@ def display_backtest_results(bt_results, picks_df, prices_df, benchmark_series, 
             showlegend=True
         )
         st.plotly_chart(fig_dd, use_container_width=True)
-
     
     # Tabla de rendimientos mensuales
     st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
