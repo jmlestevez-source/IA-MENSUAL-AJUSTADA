@@ -408,44 +408,26 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Añadir todos los cambios incluyendo el script
-          git add .
+          # Mostrar el estado actual
+          echo "📊 Estado actual:"
+          git status --porcelain
           
-          if git diff --staged --quiet; then
-            echo "📊 No hay cambios para commitear"
-          else
+          # Añadir todos los cambios
+          git add data/*.csv update_csv.py
+          
+          # Verificar si hay cambios staged
+          if ! git diff --staged --quiet; then
             echo "📊 Hay cambios para commitear, procediendo..."
             
-            # Intentar push con pull automático (máximo 3 intentos)
-            for i in {1..3}; do
-              echo "Intento $i de push..."
-              git fetch origin
-              
-              # Stash cambios locales antes de pull
-              git stash push -m "Stash before pull"
-              
-              if git pull --rebase origin main; then
-                # Restaurar cambios stasheados
-                git stash pop || echo "No hay stash para restaurar"
-                
-                COMMIT_MSG="📊 Update CSVs $(date -u +'%Y-%m-%d') - Cleaned delisted tickers"
-                git commit -m "$COMMIT_MSG"
-                if git push; then
-                  echo "✅ Cambios pusheados exitosamente"
-                  break
-                fi
-              else
-                # Restaurar cambios stasheados incluso si pull falla
-                git stash pop || echo "No hay stash para restaurar"
-              fi
-              
-              if [ $i -eq 3 ]; then
-                echo "❌ Error: No se pudo hacer push después de 3 intentos"
-                git status
-                exit 1
-              fi
-              
-              echo "Esperando 5 segundos antes de reintentar..."
-              sleep 5
-            done
+            # Configurar credenciales
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            
+            # Commit y push directo (sin pull para evitar conflictos)
+            COMMIT_MSG="📊 Update CSVs $(date -u +'%Y-%m-%d') - Cleaned delisted tickers"
+            git commit -m "$COMMIT_MSG"
+            git push
+            echo "✅ Cambios pusheados exitosamente"
+          else
+            echo "📊 No hay cambios para commitear"
           fi
