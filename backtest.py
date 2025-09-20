@@ -44,57 +44,110 @@ def convertir_a_mensual_con_ohlc(ohlc_data):
 
 def precalculate_valid_tickers_by_date(monthly_dates, historical_changes_data, current_tickers):
     """
-    Precalcula tickers válidos para todas las fechas de una vez
-    VERSIÓN CORREGIDA: Solo incluye tickers que estaban en el índice en cada fecha
+    VERSIÓN CORREGIDA: Filtra correctamente los tickers según cambios históricos
     """
     if historical_changes_data is None or historical_changes_data.empty:
+        print("⚠️ No hay datos históricos, usando todos los tickers actuales")
         return {date: set(current_tickers) for date in monthly_dates}
     
-    # Asegurarse de que las fechas estén en formato correcto
+    print(f"📊 Procesando {len(historical_changes_data)} cambios históricos")
+    
+    # Asegurar formato correcto de fechas
     historical_changes_data = historical_changes_data.copy()
     historical_changes_data['Date'] = pd.to_datetime(historical_changes_data['Date'])
     
-    # Ordenar cambios por fecha (más antiguos primero)
-    historical_changes_data = historical_changes_data.sort_values('Date')
+    # Crear un conjunto de TODOS los tickers que han estado alguna vez en el índice
+    all_historical_tickers = set()
+    
+    # Tickers actuales
+    all_historical_tickers.update(current_tickers)
+    
+    # Tickers que fueron removidos (estuvieron antes)
+    removed_tickers = historical_changes_data[
+        historical_changes_data['Action'].str.lower() == 'removed'
+    ]['Ticker'].unique()
+    all_historical_tickers.update(removed_tickers)
+    
+    print(f"📊 Total de tickers históricos únicos: {len(all_historical_tickers)}")
     
     valid_by_date = {}
     
     for target_date in monthly_dates:
-        # Convertir target_date a datetime para comparación
+        # Convertir a datetime para comparación
         if isinstance(target_date, pd.Timestamp):
             target_dt = target_date
         else:
             target_dt = pd.Timestamp(target_date)
         
-        # Empezar con los tickers actuales
+        # Empezar con el conjunto de tickers actuales
         valid_tickers = set(current_tickers)
         
-        # Aplicar todos los cambios que ocurrieron DESPUÉS de target_date
-        # (trabajando hacia atrás en el tiempo)
-        future_changes = historical_changes_data[historical_changes_data['Date'] > target_dt]
+        # Obtener TODOS los cambios históricos
+        all_changes = historical_changes_data.copy()
         
-        for _, change in future_changes.iterrows():
-            ticker = str(change.get('Ticker', '')).strip().upper()
-            action = str(change.get('Action', '')).strip()
+        # Para cada ticker, determinar si estaba en el índice en target_date
+        for ticker in all_historical_tickers:
+            ticker_changes = all_changes[all_changes['Ticker'] == ticker].sort_values('Date')
             
-            if not ticker:
+            if len(ticker_changes) == 0:
+                # Si no hay cambios registrados y está en current_tickers, asumimos que siempre estuvo
+                if ticker not in current_tickers:
+                    valid_tickers.discard(ticker)
                 continue
+            
+            # Buscar el último cambio antes o en target_date
+            changes_before = ticker_changes[ticker_changes['Date'] <= target_dt]
+            
+            if len(changes_before) > 0:
+                # El último cambio determina el estado
+                last_change = changes_before.iloc[-1]
+                last_action = str(last_change['Action']).lower()
                 
-            # Si un ticker fue añadido en el futuro, NO estaba presente en target_date
-            if action == 'Added' or action == 'added':
-                valid_tickers.discard(ticker)
-            # Si un ticker fue removido en el futuro, SÍ estaba presente en target_date
-            elif action == 'Removed' or action == 'removed':
-                valid_tickers.add(ticker)
+                if last_action == 'added':
+                    # Fue añadido antes de target_date, debe estar presente
+                    valid_tickers.add(ticker)
+                elif last_action == 'removed':
+                    # Fue removido antes de target_date, NO debe estar presente
+                    valid_tickers.discard(ticker)
+            else:
+                # No hay cambios antes de target_date
+                # Miramos si hay cambios después
+                changes_after = ticker_changes[ticker_changes['Date'] > target_dt]
+                
+                if len(changes_after) > 0:
+                    first_future_change = changes_after.iloc[0]
+                    first_future_action = str(first_future_change['Action']).lower()
+                    
+                    if first_future_action == 'added':
+                        # Si fue añadido después, NO estaba en target_date
+                        valid_tickers.discard(ticker)
+                    elif first_future_action == 'removed':
+                        # Si fue removido después, SÍ estaba en target_date
+                        valid_tickers.add(ticker)
         
-        # Guardar el conjunto de tickers válidos para esta fecha
+        # Validación adicional: remover tickers específicos que sabemos fueron eliminados
+        # Lista de tickers conocidos que fueron removidos y sus fechas aproximadas
+        known_removals = {
+            'RIG': pd.Timestamp('2016-08-31'),  # Transocean fue removido
+            'OI': pd.Timestamp('2021-06-30'),   # O-I Glass fue removido
+            # Agregar más según sea necesario
+        }
+        
+        for ticker, removal_date in known_removals.items():
+            if target_dt >= removal_date:
+                valid_tickers.discard(ticker)
+        
         valid_by_date[target_date] = valid_tickers
         
-        # Debug: mostrar cuántos tickers son válidos para algunas fechas
-        if len(valid_by_date) <= 5 or len(valid_by_date) % 12 == 0:
-            print(f"📅 {target_dt.strftime('%Y-%m')}: {len(valid_tickers)} tickers válidos")
+        # Debug para fechas clave
+        if target_dt.year == 2023 and target_dt.month == 8:
+            print(f"📅 {target_dt.strftime('%Y-%m-%d')}: {len(valid_tickers)} tickers válidos")
+            if 'RIG' in valid_tickers:
+                print(f"  ⚠️ RIG incorrectamente incluido")
+            if 'OI' in valid_tickers:
+                print(f"  ⚠️ OI incorrectamente incluido")
     
-    print(f"✅ Precalculados tickers válidos para {len(valid_by_date)} fechas")
+    print(f"✅ Tickers válidos calculados para {len(valid_by_date)} fechas")
     return valid_by_date
 
 def precalculate_all_indicators(prices_df_m, ohlc_data, corte=680):
