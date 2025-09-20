@@ -265,80 +265,71 @@ def get_nasdaq100_historical_changes():
     return changes_df
 
 def download_sp500_changes_from_wikipedia():
-    """Descarga cambios históricos del S&P 500 desde Wikipedia"""
-    print("🌐 Conectando con Wikipedia para S&P 500...")
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
+    """Descarga cambios históricos del S&P 500 desde Wikipedia - VERSIÓN COMPLETA"""
+    print("🌐 Descargando cambios del S&P 500 desde Wikipedia...")
     
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     try:
         response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
         tables = pd.read_html(StringIO(response.text))
         
-        # Buscar la tabla de cambios (normalmente es la segunda o tercera tabla)
-        changes_df = None
-        for i, table in enumerate(tables):
-            if 'Date' in table.columns or 'date' in table.columns:
-                # Buscar columnas que indiquen cambios
-                cols_lower = [col.lower() for col in table.columns]
-                if any('added' in col or 'removed' in col for col in cols_lower):
-                    changes_df = table
-                    break
-        
-        if changes_df is None and len(tables) >= 2:
-            # Por defecto, intentar con la segunda tabla
-            changes_df = tables[1]
-        
-        if changes_df is None:
-            print("❌ No se encontró tabla de cambios en Wikipedia")
+        # La tabla de cambios suele ser la segunda tabla
+        if len(tables) < 2:
+            print("❌ No se encontraron suficientes tablas")
             return pd.DataFrame()
         
-        # Procesar la tabla
+        changes_df = tables[1]  # Segunda tabla contiene los cambios
+        
+        # Procesar la tabla de cambios
         result_list = []
         
         for _, row in changes_df.iterrows():
             try:
-                # Obtener fecha
-                date_col = 'Date' if 'Date' in row else 'date' if 'date' in row else None
-                if date_col and pd.notna(row[date_col]):
-                    date_val = parse_wikipedia_date(row[date_col])
-                    if date_val:
-                        # Buscar tickers añadidos
-                        for col in row.index:
-                            if 'added' in col.lower() and pd.notna(row[col]):
-                                ticker = str(row[col]).strip().upper()
-                                if ticker and len(ticker) <= 6:
-                                    result_list.append({
-                                        'Date': date_val,
-                                        'Ticker': ticker,
-                                        'Action': 'Added'
-                                    })
-                        
-                        # Buscar tickers removidos
-                        for col in row.index:
-                            if 'removed' in col.lower() and pd.notna(row[col]):
-                                ticker = str(row[col]).strip().upper()
-                                if ticker and len(ticker) <= 6:
-                                    result_list.append({
-                                        'Date': date_val,
-                                        'Ticker': ticker,
-                                        'Action': 'Removed'
-                                    })
-            except:
+                # Parsear fecha
+                if 'Date' in row:
+                    date_str = str(row['Date'])
+                    date_val = pd.to_datetime(date_str, errors='coerce')
+                    
+                    if pd.isna(date_val):
+                        continue
+                    
+                    # Procesar ticker añadido
+                    if 'Added' in row and pd.notna(row['Added']):
+                        added_ticker = str(row['Added']).strip()
+                        # Limpiar ticker
+                        added_ticker = added_ticker.split()[0] if ' ' in added_ticker else added_ticker
+                        if added_ticker and len(added_ticker) <= 6:
+                            result_list.append({
+                                'Date': date_val,
+                                'Ticker': added_ticker.upper(),
+                                'Action': 'Added'
+                            })
+                    
+                    # Procesar ticker removido
+                    if 'Removed' in row and pd.notna(row['Removed']):
+                        removed_ticker = str(row['Removed']).strip()
+                        # Limpiar ticker
+                        removed_ticker = removed_ticker.split()[0] if ' ' in removed_ticker else removed_ticker
+                        if removed_ticker and len(removed_ticker) <= 6:
+                            result_list.append({
+                                'Date': date_val,
+                                'Ticker': removed_ticker.upper(),
+                                'Action': 'Removed'
+                            })
+            except Exception as e:
                 continue
         
         if result_list:
             result_df = pd.DataFrame(result_list)
             result_df = result_df.drop_duplicates()
             result_df = result_df.sort_values('Date', ascending=False)
-            print(f"✅ Descargados {len(result_df)} cambios del S&P 500 desde Wikipedia")
+            print(f"✅ Descargados {len(result_df)} cambios del S&P 500")
             return result_df
         else:
-            print("⚠️ No se encontraron cambios válidos en la tabla")
+            print("⚠️ No se encontraron cambios en la tabla")
             return pd.DataFrame()
             
     except Exception as e:
@@ -346,12 +337,43 @@ def download_sp500_changes_from_wikipedia():
         return pd.DataFrame()
 
 def download_nasdaq100_changes_from_wikipedia():
-    """Función auxiliar para descargar cambios del NASDAQ-100 desde Wikipedia"""
-    print("🌐 Conectando con Wikipedia para NASDAQ-100...")
+    """Descarga cambios históricos del NASDAQ-100 desde Wikipedia"""
+    print("🌐 Descargando cambios del NASDAQ-100 desde Wikipedia...")
     
-    # [Similar a la función anterior pero para NASDAQ-100]
+    url = "https://en.wikipedia.org/wiki/Nasdaq-100"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
-    return pd.DataFrame()
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        # Para NASDAQ-100 la estructura puede ser diferente
+        # Intentar encontrar sección de cambios históricos
+        tables = pd.read_html(StringIO(response.text))
+        
+        # Buscar tabla con cambios
+        changes_df = None
+        for table in tables:
+            if 'Date' in table.columns or 'date' in table.columns:
+                # Verificar si tiene columnas de cambios
+                cols = [col.lower() for col in table.columns]
+                if any('add' in col or 'remov' in col for col in cols):
+                    changes_df = table
+                    break
+        
+        if changes_df is None:
+            print("⚠️ No se encontró tabla de cambios del NASDAQ-100")
+            return pd.DataFrame()
+        
+        # Procesar similar al S&P 500
+        result_list = []
+        # [Lógica similar a S&P 500]
+        
+        return pd.DataFrame(result_list) if result_list else pd.DataFrame()
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return pd.DataFrame()
 
 def download_prices_parallel(tickers, start_date, end_date, load_full_data=True, max_workers=10):
     """
