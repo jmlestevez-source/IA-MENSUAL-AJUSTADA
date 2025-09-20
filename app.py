@@ -356,11 +356,16 @@ if run_button:
             else:
                 benchmark_series = benchmark_df[benchmark_ticker]
             
-            # SPY para filtros
-            spy_df = None
-            if use_roc_filter or use_sma_filter:
-                spy_result, _ = load_prices_from_csv_parallel(["SPY"], start_date, end_date, load_full_data=False)
-                spy_df = spy_result if not spy_result.empty else None
+            # SPY para filtros - CORREGIDO
+spy_df = None
+if use_roc_filter or use_sma_filter:
+    # Cargar SPY siempre que se usen filtros
+    spy_result, _ = load_prices_from_csv_parallel(["SPY"], start_date, end_date, load_full_data=False)
+    if not spy_result.empty and "SPY" in spy_result.columns:
+        spy_df = spy_result
+        st.sidebar.success(f"✅ SPY cargado: {len(spy_df)} registros")
+    else:
+        st.sidebar.error("❌ No se pudo cargar SPY para filtros")
             
             # Información histórica
             historical_info = None
