@@ -603,152 +603,169 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     else:
         st.warning("⚠️ Este backtest NO incluye verificación histórica (posible sesgo de supervivencia)")
     
-    # GRÁFICOS PRINCIPALES CON SPY INTEGRADO
-    st.subheader("📈 Gráficos de Rentabilidad")
-    
-    # Mostrar información de debug si hay filtros activos
-    if use_roc_filter or use_sma_filter:
-        col1_debug, col2_debug, col3_debug = st.columns(3)
-        with col1_debug:
-            st.info(f"📊 ROC Filter: {'✅ Activo' if use_roc_filter else '❌ Inactivo'}")
-        with col2_debug:
-            st.info(f"📊 SMA Filter: {'✅ Activo' if use_sma_filter else '❌ Inactivo'}")
-        with col3_debug:
-            if spy_df is not None:
-                st.success(f"📊 SPY Data: {len(spy_df)} registros")
-            else:
-                st.warning("📊 SPY Data: No disponible")
-    
-    fig_equity = go.Figure()
-    
-    # Estrategia
-    fig_equity.add_trace(go.Scatter(
+# GRÁFICOS PRINCIPALES CON SUBPLOTS COMPARTIDOS
+st.subheader("📈 Gráficos de Rentabilidad")
+
+# Mostrar información de debug si hay filtros activos
+if use_roc_filter or use_sma_filter:
+    col1_debug, col2_debug, col3_debug = st.columns(3)
+    with col1_debug:
+        st.info(f"📊 ROC Filter: {'✅ Activo' if use_roc_filter else '❌ Inactivo'}")
+    with col2_debug:
+        st.info(f"📊 SMA Filter: {'✅ Activo' if use_sma_filter else '❌ Inactivo'}")
+    with col3_debug:
+        if spy_df is not None:
+            st.success(f"📊 SPY Data: {len(spy_df)} registros")
+        else:
+            st.warning("📊 SPY Data: No disponible")
+
+# CREAR FIGURA CON SUBPLOTS
+from plotly.subplots import make_subplots
+
+fig = make_subplots(
+    rows=2, cols=1,
+    shared_xaxes=True,
+    vertical_spacing=0.03,
+    row_heights=[0.7, 0.3],
+    subplot_titles=("Evolución del Equity", "Drawdown")
+)
+
+# SUBPLOT 1: EQUITY
+# Estrategia
+fig.add_trace(
+    go.Scatter(
         x=bt_results.index,
         y=bt_results["Equity"],
         mode='lines',
         name='Estrategia',
         line=dict(width=3, color='blue'),
         hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
-    ))
-    
-    # Benchmark normal
-    if bench_equity is not None:
-        common_index = bt_results.index.intersection(bench_equity.index)
-        if len(common_index) > 0:
-            bench_aligned = bench_equity.loc[common_index]
-            
-            fig_equity.add_trace(go.Scatter(
+    ),
+    row=1, col=1
+)
+
+# Benchmark
+if bench_equity is not None:
+    common_index = bt_results.index.intersection(bench_equity.index)
+    if len(common_index) > 0:
+        bench_aligned = bench_equity.loc[common_index]
+        
+        fig.add_trace(
+            go.Scatter(
                 x=bench_aligned.index,
                 y=bench_aligned.values,
                 mode='lines',
                 name=f'Benchmark ({benchmark_name})',
                 line=dict(width=2, dash='dash', color='gray'),
                 hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
-            ))
-    
-    # AGREGAR SPY si se usan filtros
-    if (use_roc_filter or use_sma_filter) and spy_df is not None and not spy_df.empty:
-        try:
-            # Solo agregar si SPY no es ya el benchmark
-            if benchmark_name != "SPY":
-                spy_returns = spy_df['SPY'].pct_change().fillna(0)
-                spy_equity_curve = initial_equity * (1 + spy_returns).cumprod()
+            ),
+            row=1, col=1
+        )
+
+# SPY si se usan filtros y no es el benchmark
+if (use_roc_filter or use_sma_filter) and spy_df is not None and not spy_df.empty:
+    try:
+        if benchmark_name != "SPY":
+            spy_returns = spy_df['SPY'].pct_change().fillna(0)
+            spy_equity_curve = initial_equity * (1 + spy_returns).cumprod()
+            
+            common_index = bt_results.index.intersection(spy_equity_curve.index)
+            if len(common_index) > 0:
+                spy_aligned = spy_equity_curve.loc[common_index]
                 
-                common_index = bt_results.index.intersection(spy_equity_curve.index)
-                if len(common_index) > 0:
-                    spy_aligned = spy_equity_curve.loc[common_index]
-                    
-                    fig_equity.add_trace(go.Scatter(
+                fig.add_trace(
+                    go.Scatter(
                         x=spy_aligned.index,
                         y=spy_aligned.values,
                         mode='lines',
                         name='SPY (Filtro)',
                         line=dict(width=2, dash='dot', color='green'),
                         hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
-                    ))
-                    st.success(f"✅ SPY agregado a la gráfica de equity")
-                else:
-                    st.warning("⚠️ No hay índices comunes entre SPY y backtest")
-        except Exception as e:
-            st.error(f"❌ Error agregando SPY: {e}")
-    
-    fig_equity.update_layout(
-        title="Evolución del Equity",
-        xaxis_title="Fecha",
-        yaxis_title="Equity ($)",
-        hovermode='x unified',
-        height=500,
-        showlegend=True,
-        yaxis_type="log"
-    )
-    st.plotly_chart(fig_equity, use_container_width=True)
-    
-    # DRAWDOWN COMPARATIVO CON SPY INTEGRADO
-    if "Drawdown" in bt_results.columns:
-        fig_dd = go.Figure()
-        
-        # Drawdown estrategia
-        fig_dd.add_trace(go.Scatter(
+                    ),
+                    row=1, col=1
+                )
+    except Exception as e:
+        st.error(f"❌ Error agregando SPY: {e}")
+
+# SUBPLOT 2: DRAWDOWN
+if "Drawdown" in bt_results.columns:
+    # Drawdown estrategia
+    fig.add_trace(
+        go.Scatter(
             x=bt_results.index,
             y=bt_results["Drawdown"] * 100,
             mode='lines',
-            name='Drawdown Estrategia',
+            name='DD Estrategia',
             fill='tozeroy',
             line=dict(color='red', width=2),
             hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
-        ))
-        
-        # Drawdown benchmark
-        if bench_drawdown is not None:
-            common_index = bt_results.index.intersection(bench_drawdown.index)
-            if len(common_index) > 0:
-                bench_dd_aligned = bench_drawdown.loc[common_index]
-                
-                fig_dd.add_trace(go.Scatter(
+        ),
+        row=2, col=1
+    )
+    
+    # Drawdown benchmark
+    if bench_drawdown is not None:
+        common_index = bt_results.index.intersection(bench_drawdown.index)
+        if len(common_index) > 0:
+            bench_dd_aligned = bench_drawdown.loc[common_index]
+            
+            fig.add_trace(
+                go.Scatter(
                     x=bench_dd_aligned.index,
                     y=bench_dd_aligned.values * 100,
                     mode='lines',
-                    name=f'Drawdown {benchmark_name}',
+                    name=f'DD {benchmark_name}',
                     line=dict(color='orange', width=2, dash='dash'),
                     hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
-                ))
-        
-        # AGREGAR Drawdown del SPY si se usan filtros
-        if (use_roc_filter or use_sma_filter) and spy_df is not None and not spy_df.empty:
-            try:
-                # Solo agregar si SPY no es ya el benchmark
-                if benchmark_name != "SPY":
-                    spy_returns = spy_df['SPY'].pct_change().fillna(0)
-                    spy_equity_curve = initial_equity * (1 + spy_returns).cumprod()
-                    spy_drawdown = (spy_equity_curve / spy_equity_curve.cummax() - 1)
+                ),
+                row=2, col=1
+            )
+    
+    # Drawdown SPY si se usan filtros
+    if (use_roc_filter or use_sma_filter) and spy_df is not None and not spy_df.empty:
+        try:
+            if benchmark_name != "SPY":
+                spy_returns = spy_df['SPY'].pct_change().fillna(0)
+                spy_equity_curve = initial_equity * (1 + spy_returns).cumprod()
+                spy_drawdown = (spy_equity_curve / spy_equity_curve.cummax() - 1)
+                
+                common_index = bt_results.index.intersection(spy_drawdown.index)
+                if len(common_index) > 0:
+                    spy_dd_aligned = spy_drawdown.loc[common_index]
                     
-                    common_index = bt_results.index.intersection(spy_drawdown.index)
-                    if len(common_index) > 0:
-                        spy_dd_aligned = spy_drawdown.loc[common_index]
-                        
-                        fig_dd.add_trace(go.Scatter(
+                    fig.add_trace(
+                        go.Scatter(
                             x=spy_dd_aligned.index,
                             y=spy_dd_aligned.values * 100,
                             mode='lines',
-                            name='Drawdown SPY (Filtro)',
+                            name='DD SPY (Filtro)',
                             line=dict(color='green', width=1.5, dash='dot'),
                             hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
-                        ))
-                        st.success(f"✅ Drawdown del SPY agregado a la gráfica")
-                    else:
-                        st.warning("⚠️ No hay índices comunes para drawdown")
-            except Exception as e:
-                st.error(f"❌ Error agregando drawdown SPY: {e}")
-        
-        fig_dd.update_layout(
-            title="Drawdown Comparativo",
-            xaxis_title="Fecha",
-            yaxis_title="Drawdown (%)",
-            hovermode='x unified',
-            height=400,
-            showlegend=True
-        )
-        st.plotly_chart(fig_dd, use_container_width=True)
+                        ),
+                        row=2, col=1
+                    )
+        except Exception as e:
+            st.error(f"❌ Error agregando drawdown SPY: {e}")
+
+# Actualizar layout
+fig.update_xaxes(title_text="Fecha", row=2, col=1)
+fig.update_yaxes(title_text="Equity ($)", type="log", row=1, col=1)
+fig.update_yaxes(title_text="Drawdown (%)", row=2, col=1)
+
+fig.update_layout(
+    height=700,
+    showlegend=True,
+    hovermode='x unified',
+    legend=dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.02,
+        xanchor="right",
+        x=1
+    )
+)
+
+st.plotly_chart(fig, use_container_width=True)
     
     # Tabla de rendimientos mensuales
     st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
