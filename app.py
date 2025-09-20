@@ -765,8 +765,8 @@ fig.update_layout(
     )
 )
 
-st.plotly_chart(fig, use_container_width=True)
-    
+    st.plotly_chart(fig, use_container_width=True)
+
     # Tabla de rendimientos mensuales
     st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
     
