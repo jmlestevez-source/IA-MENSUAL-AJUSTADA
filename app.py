@@ -855,29 +855,44 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             date_picks = picks_df[picks_df['Date'] == selected_date]
             st.info(f"🎯 {len(date_picks)} picks seleccionados el {selected_date}")
             
-            # Calcular rentabilidad del mes
-            try:
-                bt_dates = bt_results.index.strftime('%Y-%m-%d').tolist()
-                if selected_date in bt_dates:
-                    date_idx = bt_dates.index(selected_date)
-                    
-                    if date_idx < len(bt_dates) - 1:
-                        next_date = bt_dates[date_idx + 1]
-                        current_equity = bt_results.iloc[date_idx]['Equity']
-                        next_equity = bt_results.iloc[date_idx + 1]['Equity']
-                        monthly_return = (next_equity / current_equity) - 1
-                        
-                        st.metric(
-                            "📈 Retorno del Mes",
-                            f"{monthly_return:.2%}",
-                            delta=f"{monthly_return:.2%}"
-                        )
-                    else:
-                        st.warning("📅 Último mes del backtest (sin retorno futuro)")
-                else:
-                    st.warning("⚠️ No se encontró la fecha en los resultados del backtest")
-            except Exception as e:
-                st.error(f"Error calculando retorno: {e}")
+            # Reemplaza la sección de cálculo de rentabilidad del mes (aproximadamente línea 850-870) con:
+
+# Calcular rentabilidad del mes
+try:
+    # Convertir selected_date a timestamp
+    selected_dt = pd.Timestamp(selected_date)
+    
+    # Buscar en el índice del backtest (que es mensual)
+    bt_index = pd.to_datetime(bt_results.index)
+    
+    # Encontrar el índice más cercano en bt_results
+    closest_idx = bt_index.get_indexer([selected_dt], method='nearest')[0]
+    
+    if closest_idx >= 0 and closest_idx < len(bt_index) - 1:
+        # Calcular retorno basado en el equity
+        current_equity = bt_results.iloc[closest_idx]['Equity']
+        next_equity = bt_results.iloc[closest_idx + 1]['Equity']
+        monthly_return = (next_equity / current_equity) - 1
+        
+        # Mostrar métricas
+        st.metric(
+            "📈 Retorno del Mes",
+            f"{monthly_return:.2%}",
+            delta=f"{monthly_return:.2%}"
+        )
+        
+        # Debug info
+        with st.expander("🔍 Debug Info"):
+            st.write(f"Fecha seleccionada: {selected_date}")
+            st.write(f"Fecha en backtest: {bt_index[closest_idx].strftime('%Y-%m-%d')}")
+            st.write(f"Equity actual: ${current_equity:,.2f}")
+            st.write(f"Equity siguiente: ${next_equity:,.2f}")
+            st.write(f"Retorno calculado: {monthly_return:.4%}")
+    else:
+        st.warning("📅 Último mes del backtest (sin retorno futuro)")
+        
+except Exception as e:
+    st.error(f"Error calculando retorno: {e}")
             
             # Estadísticas rápidas de la fecha
             if not date_picks.empty:
