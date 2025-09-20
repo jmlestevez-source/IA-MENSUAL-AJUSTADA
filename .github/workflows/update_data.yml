@@ -408,29 +408,36 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
+          # Verificar si hay cambios antes de hacer add
           git add data/*.csv
           git add -A
           
           if git diff --staged --quiet; then
-            echo "📊 No hay cambios"
+            echo "📊 No hay cambios para commitear"
           else
+            echo "📊 Hay cambios para commitear, procediendo..."
+            
             # Intentar push con pull automático (máximo 3 intentos)
             for i in {1..3}; do
-              if git diff --quiet HEAD; then
-                echo "No hay cambios para commitear"
-                break
-              fi
-              
               echo "Intento $i de push..."
               git fetch origin
               
+              # Stash cambios locales antes de pull
+              git stash push -m "Stash before pull"
+              
               if git pull --rebase origin main; then
+                # Restaurar cambios stasheados
+                git stash pop || echo "No hay stash para restaurar"
+                
                 COMMIT_MSG="📊 Update CSVs $(date -u +'%Y-%m-%d') - Cleaned delisted tickers"
-                git commit -m "$COMMIT_MSG" || echo "No hay cambios para commitear"
+                git commit -m "$COMMIT_MSG"
                 if git push; then
                   echo "✅ Cambios pusheados exitosamente"
                   break
                 fi
+              else
+                # Restaurar cambios stasheados incluso si pull falla
+                git stash pop || echo "No hay stash para restaurar"
               fi
               
               if [ $i -eq 3 ]; then
