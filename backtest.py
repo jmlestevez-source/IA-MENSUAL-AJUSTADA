@@ -455,38 +455,24 @@ def calculate_monthly_returns_by_year(equity_series):
         print(f"Error calculando tabla de retornos: {e}")
         return pd.DataFrame()
 
-def calculate_sharpe_ratio(returns, risk_free_rate=0.02, freq="M"):
+# En la función calculate_sharpe_ratio (si existe), asegúrate de que use:
+def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
     """
-    Calcula el Sharpe Ratio anualizado.
-    - returns: Serie de retornos periódicos (por periodo: diario/semana/mes)
-    - risk_free_rate: tasa libre de riesgo anual (por ejemplo 0.02 = 2%)
-    - freq: "D" (diario), "W" (semanal), "M" (mensual)
+    Calcula el Sharpe Ratio con tasa libre de riesgo del 2% anual
     """
-    try:
-        if returns is None or len(returns) < 2:
-            return 0.0
-        if freq == "D":
-            periods_per_year = 252
-            rf_period = (1 + risk_free_rate) ** (1/periods_per_year) - 1
-        elif freq == "W":
-            periods_per_year = 52
-            rf_period = (1 + risk_free_rate) ** (1/periods_per_year) - 1
-        else:
-            periods_per_year = 12
-            rf_period = (1 + risk_free_rate) ** (1/periods_per_year) - 1
-        excess_returns = returns - rf_period
-        excess_returns = excess_returns.dropna()
-        if len(excess_returns) < 2:
-            return 0.0
-        mean_excess = excess_returns.mean()
-        std_excess = excess_returns.std()
-        if std_excess == 0 or np.isnan(std_excess) or np.isinf(std_excess):
-            return 0.0
-        sharpe_ratio = (mean_excess * periods_per_year) / (std_excess * np.sqrt(periods_per_year))
-        return sharpe_ratio
-    except Exception as e:
-        print(f"Error calculando Sharpe: {e}")
-        return 0.0
+    # Convertir tasa anual a mensual correctamente
+    risk_free_rate_monthly = (1 + risk_free_rate) ** (1/12) - 1
+    
+    # Calcular exceso de retornos
+    excess_returns = returns - risk_free_rate_monthly
+    
+    # Sharpe ratio anualizado
+    if excess_returns.std() > 0:
+        sharpe = (excess_returns.mean() * 12) / (excess_returns.std() * np.sqrt(12))
+    else:
+        sharpe = 0
+    
+    return sharpe
 
 # Wrappers compatibilidad
 def calcular_atr_amibroker(*args, **kwargs):
