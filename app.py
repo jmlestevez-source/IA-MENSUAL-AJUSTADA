@@ -920,48 +920,51 @@ except Exception as e:
                 if len(future_dates) > 0:
                     next_month = future_dates[0]
                     
-                    # Calcular retorno individual para cada ticker
-                    returns_data = []
-                    for _, row in date_picks.iterrows():
-                        ticker = row['Ticker']
-                        
-                        try:
-                            # Verificar que el ticker exista en prices_df
-                            if ticker in prices_df.columns:
-                                # Buscar índices más cercanos si no hay coincidencia exacta
-                                prices_index = prices_df.index
-                                
-                                # Encontrar fecha más cercana a selected_dt
-                                selected_dt_normalized = pd.Timestamp(selected_dt).normalize()
-                                closest_entry_idx = prices_index.get_indexer([selected_dt_normalized], method='nearest')[0]
-                                
-                                if closest_entry_idx >= 0 and closest_entry_idx < len(prices_index):
-                                    entry_date = prices_index[closest_entry_idx]
-                                    
-                                    # Buscar próxima fecha (aproximadamente un mes después)
-                                    future_mask = prices_index > entry_date
-                                    if future_mask.any():
-                                        # Tomar la primera fecha futura disponible
-                                        exit_date = prices_index[future_mask][0]
-                                        
-                                        # Obtener precios
-                                        entry_price = prices_df.loc[entry_date, ticker]
-                                        exit_price = prices_df.loc[exit_date, ticker]
-                                        
-                                        # Calcular retorno
-                                        if pd.notna(entry_price) and pd.notna(exit_price) and entry_price != 0:
-                                            individual_return = (exit_price / entry_price) - 1
-                                            returns_data.append(individual_return)
-                                        else:
-                                            returns_data.append(None)
-                                    else:
-                                        returns_data.append(None)
-                                else:
-                                    returns_data.append(None)
-                            else:
-                                returns_data.append(None)
-                        except Exception:
-                            returns_data.append(None)
+                    # Calcular retorno individual para cada ticker - VERSIÓN CORREGIDA
+returns_data = []
+for _, row in date_picks.iterrows():
+    ticker = row['Ticker']
+    
+    try:
+        if ticker in prices_df.columns:
+            # Convertir selected_date a timestamp y normalizar
+            selected_dt_norm = pd.Timestamp(selected_date).normalize()
+            
+            # Obtener el índice de precios
+            prices_index = prices_df.index
+            
+            # Encontrar la fecha más cercana en prices_df
+            closest_idx = prices_index.get_indexer([selected_dt_norm], method='nearest')[0]
+            
+            if closest_idx >= 0 and closest_idx < len(prices_index):
+                entry_date = prices_index[closest_idx]
+                
+                # Buscar aproximadamente un mes después (20-35 días)
+                target_exit = entry_date + pd.Timedelta(days=30)
+                exit_idx = prices_index.get_indexer([target_exit], method='nearest')[0]
+                
+                if exit_idx > closest_idx and exit_idx < len(prices_index):
+                    exit_date = prices_index[exit_idx]
+                    
+                    # Obtener precios
+                    entry_price = prices_df.loc[entry_date, ticker]
+                    exit_price = prices_df.loc[exit_date, ticker]
+                    
+                    # Calcular retorno
+                    if pd.notna(entry_price) and pd.notna(exit_price) and entry_price != 0:
+                        individual_return = (exit_price / entry_price) - 1
+                        returns_data.append(individual_return)
+                    else:
+                        returns_data.append(None)
+                else:
+                    returns_data.append(None)
+            else:
+                returns_data.append(None)
+        else:
+            returns_data.append(None)
+    except Exception as e:
+        print(f"Error con {ticker}: {e}")
+        returns_data.append(None)
                     
                     # Agregar columna de retornos individuales
                     date_picks_display['Retorno Individual'] = returns_data
