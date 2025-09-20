@@ -25,6 +25,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: true
+          fetch-depth: 0  # Importante para el historial completo
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -406,8 +407,20 @@ jobs:
 
       - name: Commit and push changes
         run: |
+          # Configurar git
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # IMPORTANTE: Hacer pull primero para obtener cambios remotos
+          echo "📥 Obteniendo cambios remotos..."
+          git pull origin main --rebase || {
+              echo "⚠️ Error en pull, intentando merge..."
+              git rebase --abort 2>/dev/null || true
+              git pull origin main --no-rebase --strategy=ours || {
+                  echo "❌ No se pudo hacer pull, abortando..."
+                  exit 1
+              }
+          }
           
           # Añadir todos los cambios
           git add .
@@ -416,13 +429,45 @@ jobs:
           if ! git diff --staged --quiet; then
             echo "📊 Hay cambios para commitear, procediendo..."
             
-            # Commit y push
-            COMMIT_MSG="📊 Update CSVs $(date -u +'%Y-%m-%d') - Cleaned delisted tickers"
+            # Commit
+            COMMIT_MSG="📊 Update CSVs $(date -u +'%Y-%m-%d %H:%M') UTC - Auto update"
             git commit -m "$COMMIT_MSG"
             
-            # Configurar credenciales y hacer push
-            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-            echo "✅ Cambios pusheados exitosamente"
+            # Push con reintentos
+            MAX_RETRIES=3
+            RETRY_COUNT=0
+            
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              if git push origin main; then
+                echo "✅ Cambios pusheados exitosamente"
+                break
+              else
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+                echo "⚠️ Push fallido, intento $RETRY_COUNT de $MAX_RETRIES"
+                
+                if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                  echo "📥 Haciendo pull antes de reintentar..."
+                  git pull origin main --rebase
+                  sleep 2
+                else
+                  echo "❌ No se pudo hacer push después de $MAX_RETRIES intentos"
+                  exit 1
+                fi
+              fi
+            done
           else
             echo "📊 No hay cambios para commitear"
           fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "📊 RESUMEN DE LA EJECUCIÓN"
+          echo "=========================="
+          echo "Fecha: $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
+          echo "Archivos CSV: $(ls -1 data/*.csv 2>/dev/null | wc -l)"
+          echo ""
+          
+          # Mostrar últimos commits
+          echo "📝 Últimos 3 commits:"
+          git log --oneline -3
