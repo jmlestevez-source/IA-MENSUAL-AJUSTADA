@@ -23,7 +23,8 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -408,25 +409,19 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Mostrar el estado actual
-          echo "📊 Estado actual:"
-          git status --porcelain
-          
           # Añadir todos los cambios
-          git add data/*.csv update_csv.py
+          git add .
           
           # Verificar si hay cambios staged
           if ! git diff --staged --quiet; then
             echo "📊 Hay cambios para commitear, procediendo..."
             
-            # Configurar credenciales
-            git config --local user.email "action@github.com"
-            git config --local user.name "GitHub Action"
-            
-            # Commit y push directo (sin pull para evitar conflictos)
+            # Commit y push
             COMMIT_MSG="📊 Update CSVs $(date -u +'%Y-%m-%d') - Cleaned delisted tickers"
             git commit -m "$COMMIT_MSG"
-            git push
+            
+            # Configurar credenciales y hacer push
+            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
             echo "✅ Cambios pusheados exitosamente"
           else
             echo "📊 No hay cambios para commitear"
