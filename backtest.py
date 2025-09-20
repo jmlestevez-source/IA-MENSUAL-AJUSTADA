@@ -45,29 +45,56 @@ def convertir_a_mensual_con_ohlc(ohlc_data):
 def precalculate_valid_tickers_by_date(monthly_dates, historical_changes_data, current_tickers):
     """
     Precalcula tickers válidos para todas las fechas de una vez
+    VERSIÓN CORREGIDA: Solo incluye tickers que estaban en el índice en cada fecha
     """
     if historical_changes_data is None or historical_changes_data.empty:
         return {date: set(current_tickers) for date in monthly_dates}
     
-    # Convertir fechas
-    historical_changes_data['Date'] = pd.to_datetime(historical_changes_data['Date']).dt.date
+    # Asegurarse de que las fechas estén en formato correcto
+    historical_changes_data = historical_changes_data.copy()
+    historical_changes_data['Date'] = pd.to_datetime(historical_changes_data['Date'])
+    
+    # Ordenar cambios por fecha (más antiguos primero)
+    historical_changes_data = historical_changes_data.sort_values('Date')
+    
     valid_by_date = {}
     
     for target_date in monthly_dates:
+        # Convertir target_date a datetime para comparación
         if isinstance(target_date, pd.Timestamp):
-            target_date_clean = target_date.date()
+            target_dt = target_date
         else:
-            target_date_clean = target_date
+            target_dt = pd.Timestamp(target_date)
+        
+        # Empezar con los tickers actuales
         valid_tickers = set(current_tickers)
-        future_changes = historical_changes_data[historical_changes_data['Date'] > target_date_clean]
+        
+        # Aplicar todos los cambios que ocurrieron DESPUÉS de target_date
+        # (trabajando hacia atrás en el tiempo)
+        future_changes = historical_changes_data[historical_changes_data['Date'] > target_dt]
+        
         for _, change in future_changes.iterrows():
-            ticker = change.get('Ticker')
-            action = change.get('Action')
-            if action == 'Added':
+            ticker = str(change.get('Ticker', '')).strip().upper()
+            action = str(change.get('Action', '')).strip()
+            
+            if not ticker:
+                continue
+                
+            # Si un ticker fue añadido en el futuro, NO estaba presente en target_date
+            if action == 'Added' or action == 'added':
                 valid_tickers.discard(ticker)
-            elif action == 'Removed':
+            # Si un ticker fue removido en el futuro, SÍ estaba presente en target_date
+            elif action == 'Removed' or action == 'removed':
                 valid_tickers.add(ticker)
+        
+        # Guardar el conjunto de tickers válidos para esta fecha
         valid_by_date[target_date] = valid_tickers
+        
+        # Debug: mostrar cuántos tickers son válidos para algunas fechas
+        if len(valid_by_date) <= 5 or len(valid_by_date) % 12 == 0:
+            print(f"📅 {target_dt.strftime('%Y-%m')}: {len(valid_tickers)} tickers válidos")
+    
+    print(f"✅ Precalculados tickers válidos para {len(valid_by_date)} fechas")
     return valid_by_date
 
 def precalculate_all_indicators(prices_df_m, ohlc_data, corte=680):
