@@ -1052,7 +1052,33 @@ for _, row in date_picks.iterrows():
                     'ScoreAdj': '{:.2f}'
                 })
                 st.dataframe(styled_df, use_container_width=True)
+# Después de agregar la columna de retornos individuales
+if any(pd.notna(r) for r in returns_data):
+    valid_returns = [r for r in returns_data if pd.notna(r)]
+    if valid_returns:
+        # Calcular el retorno ponderado de la estrategia
+        strategy_return = sum(valid_returns) / len(valid_returns)
         
+        # Mostrar comparación
+        st.info(f"""
+        📊 **Verificación de Retornos:**
+        - Retorno promedio de picks: {strategy_return:.2%}
+        - Número de picks con retorno: {len(valid_returns)}
+        - Retorno del mes (estrategia): {monthly_return:.2%}
+        """)
+        
+        # Si hay discrepancia significativa
+        if abs(strategy_return - monthly_return) > 0.01:  # Más de 1% de diferencia
+            st.warning("""
+            ⚠️ Hay una diferencia entre el retorno promedio de los picks individuales 
+            y el retorno de la estrategia. Esto puede deberse a:
+            - Comisiones aplicadas en el backtest
+            - Diferencias en las fechas exactas de entrada/salida
+            - Ponderación diferente en la estrategia
+            """)
+
+
+
         # Sección adicional: Resumen general de todos los picks
         st.markdown("### 📊 Resumen General de Todos los Picks")
         
