@@ -421,9 +421,16 @@ if run_button:
             max_drawdown = float(bt_results["Drawdown"].min())
             
             monthly_returns = bt_results["Returns"]
-            risk_free_rate_monthly = 0.02 / 12
+            risk_free_rate_annual = 0.02  # 2% anual
+            risk_free_rate_monthly = (1 + risk_free_rate_annual) ** (1/12) - 1  # Conversión correcta
             excess_returns = monthly_returns - risk_free_rate_monthly
-            sharpe_ratio = (excess_returns.mean() * 12) / (excess_returns.std() * np.sqrt(12)) if excess_returns.std() > 0 else 0
+            
+            # Asegurarse de que estamos usando retornos mensuales
+            if len(monthly_returns) > 0:
+                sharpe_ratio = (excess_returns.mean() * 12) / (excess_returns.std() * np.sqrt(12)) if excess_returns.std() > 0 else 0
+            else:
+                sharpe_ratio = 0
+            
             volatility = float(monthly_returns.std() * np.sqrt(12))
             
             st.subheader("📊 Métricas de la Estrategia")
