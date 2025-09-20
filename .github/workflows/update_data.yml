@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 jobs:
-  update-data:
+  update-
     runs-on: ubuntu-latest
 
     steps:
@@ -408,9 +408,8 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Verificar si hay cambios antes de hacer add
-          git add data/*.csv
-          git add -A
+          # Añadir todos los cambios incluyendo el script
+          git add .
           
           if git diff --staged --quiet; then
             echo "📊 No hay cambios para commitear"
@@ -442,6 +441,7 @@ jobs:
               
               if [ $i -eq 3 ]; then
                 echo "❌ Error: No se pudo hacer push después de 3 intentos"
+                git status
                 exit 1
               fi
               
