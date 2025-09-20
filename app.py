@@ -382,6 +382,11 @@ if run_button:
                 spy_data=spy_df,
                 progress_callback=lambda p: progress_bar.progress(70 + int(p * 0.3))
             )
+
+            # Guardar resultados en session state
+            st.session_state.backtest_results = bt_results
+            st.session_state.picks_dataframe = picks_df
+            st.session_state.spy_data = spy_df
             
             # Guardar en caché
             status_text.text("💾 Guardando resultados en caché...")
