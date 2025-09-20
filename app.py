@@ -13,15 +13,6 @@ import pickle
 import hashlib
 import glob
 
-# CORRECCIÓN 1: Agregar después de los imports (línea ~30)
-# Inicializar session state para mantener resultados del backtest
-if 'backtest_results' not in st.session_state:
-    st.session_state.backtest_results = None
-if 'picks_dataframe' not in st.session_state:
-    st.session_state.picks_dataframe = None
-if 'spy_data' not in st.session_state:
-    st.session_state.spy_data = None
-
 # Importar nuestros módulos - IMPORTANTE: importar inertia_score
 from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes, generate_removed_tickers_summary
 from backtest import run_backtest_optimized, precalculate_all_indicators, calculate_monthly_returns_by_year, inertia_score, calculate_sharpe_ratio
@@ -63,6 +54,20 @@ st.set_page_config(
     page_icon="📈",
     layout="wide"
 )
+
+# -------------------------------------------------
+# INICIALIZAR SESSION STATE PARA MANTENER RESULTADOS
+# -------------------------------------------------
+if 'backtest_results' not in st.session_state:
+    st.session_state.backtest_results = None
+if 'picks_dataframe' not in st.session_state:
+    st.session_state.picks_dataframe = None
+if 'spy_data' not in st.session_state:
+    st.session_state.spy_data = None
+if 'prices_dataframe' not in st.session_state:
+    st.session_state.prices_dataframe = None
+if 'benchmark_series_state' not in st.session_state:
+    st.session_state.benchmark_series_state = None
 
 # -------------------------------------------------
 # FUNCIONES DE CACHÉ OPTIMIZADAS
@@ -382,11 +387,13 @@ if run_button:
                 spy_data=spy_df,
                 progress_callback=lambda p: progress_bar.progress(70 + int(p * 0.3))
             )
-
+            
             # Guardar resultados en session state
             st.session_state.backtest_results = bt_results
             st.session_state.picks_dataframe = picks_df
             st.session_state.spy_data = spy_df
+            st.session_state.prices_dataframe = prices_df
+            st.session_state.benchmark_series_state = benchmark_series
             
             # Guardar en caché
             status_text.text("💾 Guardando resultados en caché...")
@@ -425,17 +432,18 @@ if run_button:
             cagr = (final_equity / initial_equity) ** (1/years) - 1 if years > 0 else 0
             max_drawdown = float(bt_results["Drawdown"].min())
             
+            # CORRECCIÓN DEL SHARPE RATIO
             monthly_returns = bt_results["Returns"]
             risk_free_rate_annual = 0.02  # 2% anual
             risk_free_rate_monthly = (1 + risk_free_rate_annual) ** (1/12) - 1  # Conversión correcta
             excess_returns = monthly_returns - risk_free_rate_monthly
             
             # Asegurarse de que estamos usando retornos mensuales
-            if len(monthly_returns) > 0:
-                sharpe_ratio = (excess_returns.mean() * 12) / (excess_returns.std() * np.sqrt(12)) if excess_returns.std() > 0 else 0
+            if len(monthly_returns) > 0 and excess_returns.std() > 0:
+                sharpe_ratio = (excess_returns.mean() * 12) / (excess_returns.std() * np.sqrt(12))
             else:
                 sharpe_ratio = 0
-            
+                
             volatility = float(monthly_returns.std() * np.sqrt(12))
             
             st.subheader("📊 Métricas de la Estrategia")
@@ -444,7 +452,7 @@ if run_button:
             col2.metric("Retorno Total", f"{total_return:.2%}")
             col3.metric("CAGR", f"{cagr:.2%}")
             col4.metric("Max Drawdown", f"{max_drawdown:.2%}")
-            col5.metric("Sharpe Ratio", f"{sharpe_ratio:.2f}")
+            col5.metric("Sharpe Ratio (RF=2%)", f"{sharpe_ratio:.2f}")
             
             # Benchmark
             bench_equity = None
@@ -470,17 +478,20 @@ if run_button:
                     
                     bench_max_dd = float(bench_drawdown.min())
                     
-                    if len(bench_returns) > len(bt_results) * 15:
-                        bench_returns_monthly = bench_returns.resample('ME').apply(lambda x: (1 + x).prod() - 1)
-                    else:
-                        bench_returns_monthly = bench_returns
+                    # CORRECCIÓN: Calcular retornos mensuales del benchmark correctamente
+                    bench_returns_monthly = benchmark_series.resample('ME').apply(lambda x: (1 + x.pct_change()).prod() - 1).fillna(0)
                     
+                    # Usar la misma tasa libre de riesgo
                     bench_excess_returns = bench_returns_monthly - risk_free_rate_monthly
+                    
                     if bench_excess_returns.std() != 0:
                         bench_sharpe = (bench_excess_returns.mean() * 12) / (bench_excess_returns.std() * np.sqrt(12))
+                    else:
+                        bench_sharpe = 0
                         
                 except Exception as e:
                     st.warning(f"Error calculando benchmark: {e}")
+                    bench_sharpe = 0
             
             benchmark_name = "SPY" if index_choice != "NDX" else "QQQ"
             
@@ -490,7 +501,7 @@ if run_button:
             col2b.metric("Retorno Total", f"{bench_total_return:.2%}")
             col3b.metric("CAGR", f"{bench_cagr:.2%}")
             col4b.metric("Max Drawdown", f"{bench_max_dd:.2%}")
-            col5b.metric("Sharpe Ratio", f"{bench_sharpe:.2f}")
+            col5b.metric("Sharpe Ratio (RF=2%)", f"{bench_sharpe:.2f}")
             
             # Comparación
             st.subheader("⚖️ Comparación Estrategia vs Benchmark")
@@ -590,6 +601,93 @@ if run_button:
                 )
                 st.plotly_chart(fig_dd, use_container_width=True)
             
+            # NUEVA SECCIÓN: Gráficas específicas del SPY si se usan filtros
+            if (use_roc_filter or use_sma_filter) and spy_df is not None and not spy_df.empty:
+                st.subheader("📊 Evolución del SPY (Benchmark de Filtros)")
+                
+                # Calcular equity del SPY
+                spy_returns = spy_df['SPY'].pct_change().fillna(0)
+                spy_equity = initial_equity * (1 + spy_returns).cumprod()
+                spy_drawdown = (spy_equity / spy_equity.cummax() - 1)
+                
+                # Calcular métricas del SPY
+                spy_final = float(spy_equity.iloc[-1])
+                spy_total_return = (spy_final / initial_equity) - 1
+                spy_cagr = (spy_final / initial_equity) ** (1/years) - 1 if years > 0 else 0
+                spy_max_dd = float(spy_drawdown.min())
+                
+                # Mostrar métricas del SPY
+                st.subheader("📊 Métricas del SPY")
+                col1s, col2s, col3s, col4s = st.columns(4)
+                col1s.metric("Equity Final SPY", f"${spy_final:,.0f}")
+                col2s.metric("Retorno Total SPY", f"{spy_total_return:.2%}")
+                col3s.metric("CAGR SPY", f"{spy_cagr:.2%}")
+                col4s.metric("Max DD SPY", f"{spy_max_dd:.2%}")
+                
+                # Gráfica de equity del SPY
+                fig_spy = go.Figure()
+                fig_spy.add_trace(go.Scatter(
+                    x=spy_equity.index,
+                    y=spy_equity.values,
+                    mode='lines',
+                    name='SPY',
+                    line=dict(width=3, color='green'),
+                    hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
+                ))
+                
+                # Agregar la estrategia para comparación
+                fig_spy.add_trace(go.Scatter(
+                    x=bt_results.index,
+                    y=bt_results["Equity"],
+                    mode='lines',
+                    name='Estrategia',
+                    line=dict(width=2, color='blue', dash='dash'),
+                    hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
+                ))
+                
+                fig_spy.update_layout(
+                    title="Evolución del SPY vs Estrategia",
+                    xaxis_title="Fecha",
+                    yaxis_title="Equity ($)",
+                    hovermode='x unified',
+                    height=400,
+                    yaxis_type="log",
+                    showlegend=True
+                )
+                st.plotly_chart(fig_spy, use_container_width=True)
+                
+                # Gráfica de drawdown del SPY
+                fig_spy_dd = go.Figure()
+                fig_spy_dd.add_trace(go.Scatter(
+                    x=spy_drawdown.index,
+                    y=spy_drawdown.values * 100,
+                    mode='lines',
+                    name='Drawdown SPY',
+                    fill='tozeroy',
+                    line=dict(color='darkgreen', width=2),
+                    hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
+                ))
+                
+                # Agregar drawdown de la estrategia para comparación
+                fig_spy_dd.add_trace(go.Scatter(
+                    x=bt_results.index,
+                    y=bt_results["Drawdown"] * 100,
+                    mode='lines',
+                    name='Drawdown Estrategia',
+                    line=dict(color='red', width=1, dash='dash'),
+                    hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
+                ))
+                
+                fig_spy_dd.update_layout(
+                    title="Drawdown del SPY vs Estrategia",
+                    xaxis_title="Fecha",
+                    yaxis_title="Drawdown (%)",
+                    hovermode='x unified',
+                    height=400,
+                    showlegend=True
+                )
+                st.plotly_chart(fig_spy_dd, use_container_width=True)
+            
             # Tabla de rendimientos mensuales
             st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
             
@@ -638,7 +736,10 @@ if run_button:
                         col2.metric("Retorno Anual Promedio", f"{avg_annual_return:.1f}%")
                         col3.metric("Tasa de Éxito Anual", f"{win_rate:.0f}%")
             
-            # Picks históricos - SECCIÓN COMPLETA Y CORREGIDA
+            # Picks históricos - Usar session state si está disponible
+            if st.session_state.picks_dataframe is not None:
+                picks_df = st.session_state.picks_dataframe
+            
             if picks_df is not None and not picks_df.empty:
                 st.subheader("📊 Picks Históricos")
                 
@@ -666,36 +767,37 @@ if run_button:
                         "Selecciona una fecha:",
                         unique_dates,
                         index=0,
-                        help="Muestra los picks seleccionados en esta fecha"
+                        help="Muestra los picks seleccionados en esta fecha",
+                        key="date_selector"  # Agregar key único
                     )
                     
                     # Mostrar información de la fecha seleccionada
                     date_picks = picks_df[picks_df['Date'] == selected_date]
                     st.info(f"🎯 {len(date_picks)} picks seleccionados el {selected_date}")
                     
-                    # Calcular rentabilidad del mes
+                    # Calcular rentabilidad del mes usando session state
                     try:
-                        # Encontrar el índice de la fecha seleccionada en bt_results
-                        bt_dates = bt_results.index.strftime('%Y-%m-%d').tolist()
-                        if selected_date in bt_dates:
-                            date_idx = bt_dates.index(selected_date)
-                            
-                            # Si no es la última fecha, calcular retorno del siguiente mes
-                            if date_idx < len(bt_dates) - 1:
-                                next_date = bt_dates[date_idx + 1]
-                                current_equity = bt_results.iloc[date_idx]['Equity']
-                                next_equity = bt_results.iloc[date_idx + 1]['Equity']
-                                monthly_return = (next_equity / current_equity) - 1
+                        if st.session_state.backtest_results is not None:
+                            bt_results = st.session_state.backtest_results
+                            bt_dates = bt_results.index.strftime('%Y-%m-%d').tolist()
+                            if selected_date in bt_dates:
+                                date_idx = bt_dates.index(selected_date)
                                 
-                                st.metric(
-                                    "📈 Retorno del Mes",
-                                    f"{monthly_return:.2%}",
-                                    delta=f"{monthly_return:.2%}"
-                                )
+                                if date_idx < len(bt_dates) - 1:
+                                    next_date = bt_dates[date_idx + 1]
+                                    current_equity = bt_results.iloc[date_idx]['Equity']
+                                    next_equity = bt_results.iloc[date_idx + 1]['Equity']
+                                    monthly_return = (next_equity / current_equity) - 1
+                                    
+                                    st.metric(
+                                        "📈 Retorno del Mes",
+                                        f"{monthly_return:.2%}",
+                                        delta=f"{monthly_return:.2%}"
+                                    )
+                                else:
+                                    st.warning("📅 Último mes del backtest (sin retorno futuro)")
                             else:
-                                st.warning("📅 Último mes del backtest (sin retorno futuro)")
-                        else:
-                            st.warning("⚠️ No se encontró la fecha en los resultados del backtest")
+                                st.warning("⚠️ No se encontró la fecha en los resultados del backtest")
                     except Exception as e:
                         st.error(f"Error calculando retorno: {e}")
                     
@@ -716,6 +818,10 @@ if run_button:
                     
                     # Calcular rentabilidad individual si es posible
                     try:
+                        # Usar prices_df desde session state si está disponible
+                        if st.session_state.prices_dataframe is not None:
+                            prices_df = st.session_state.prices_dataframe
+                        
                         # Convertir fechas a datetime para comparación
                         bt_index = pd.to_datetime(bt_results.index)
                         selected_dt = pd.to_datetime(selected_date)
@@ -870,6 +976,9 @@ if run_button:
                     
                     # Rentabilidad promedio por ticker (si es posible)
                     try:
+                        if st.session_state.prices_dataframe is not None:
+                            prices_df = st.session_state.prices_dataframe
+                            
                         returns_by_ticker = []
                         for ticker in picks_df['Ticker'].unique():
                             ticker_picks = picks_df[picks_df['Ticker'] == ticker]
@@ -1095,6 +1204,11 @@ else:
     - ⚡ Carga paralela de CSVs
     - ⚡ Precálculo de indicadores
     - ⚡ Caché persistente de resultados
+    
+    **Correcciones aplicadas:**
+    - ✅ Gráficas del SPY ahora visibles cuando se usan filtros
+    - ✅ Session state para mantener picks históricos al cambiar fechas
+    - ✅ Sharpe Ratio calculado correctamente con RF=2% anual
     """)
     
     cache_files = glob.glob(os.path.join(CACHE_DIR, "backtest_*.pkl"))
