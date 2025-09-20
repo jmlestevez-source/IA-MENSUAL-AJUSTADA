@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import time
 import numpy as np
@@ -359,7 +360,6 @@ if run_button:
             # SPY para filtros - CORREGIDO
             spy_df = None
             if use_roc_filter or use_sma_filter:
-                # Cargar SPY siempre que se usen filtros
                 spy_result, _ = load_prices_from_csv_parallel(["SPY"], start_date, end_date, load_full_data=False)
                 if not spy_result.empty and "SPY" in spy_result.columns:
                     spy_df = spy_result
@@ -467,6 +467,7 @@ if run_button:
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
         st.exception(e)
+
 # Mostrar resultados si están en session state
 if st.session_state.backtest_completed and st.session_state.bt_results is not None:
     # RECUPERAR TODAS LAS VARIABLES DEL SESSION STATE
@@ -625,8 +626,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 st.warning("📊 SPY Data: No disponible")
     
     # CREAR FIGURA CON SUBPLOTS
-    from plotly.subplots import make_subplots
-    
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -771,6 +770,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     )
     
     st.plotly_chart(fig, use_container_width=True)
+    
     # Tabla de rendimientos mensuales
     st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
     
@@ -894,7 +894,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             
             date_picks_display = date_picks.copy()
             
-            # Calcular rentabilidad individual si es posible
+            # Calcular rentabilidad individual si es posible - CORREGIDO
             try:
                 # Convertir fechas a datetime para comparación
                 bt_index = pd.to_datetime(bt_results.index)
@@ -906,52 +906,50 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                     next_month = future_dates[0]
                     
                     # Calcular retorno individual para cada ticker
-returns_data = []
-for _, row in date_picks.iterrows():
-    ticker = row['Ticker']
-    
-    try:
-        # Verificar que el ticker exista en prices_df
-        if ticker in prices_df.columns:
-            # Buscar índices más cercanos si no hay coincidencia exacta
-            prices_index = prices_df.index
-            
-            # Encontrar fecha más cercana a selected_dt
-            selected_dt_normalized = pd.Timestamp(selected_dt).normalize()
-            closest_entry_idx = prices_index.get_indexer([selected_dt_normalized], method='nearest')[0]
-            
-            if closest_entry_idx >= 0 and closest_entry_idx < len(prices_index):
-                entry_date = prices_index[closest_entry_idx]
-                
-                # Buscar próxima fecha (aproximadamente un mes después)
-                future_mask = prices_index > entry_date
-                if future_mask.any():
-                    # Tomar la primera fecha futura disponible
-                    exit_date = prices_index[future_mask][0]
+                    returns_data = []
+                    for _, row in date_picks.iterrows():
+                        ticker = row['Ticker']
+                        
+                        try:
+                            # Verificar que el ticker exista en prices_df
+                            if ticker in prices_df.columns:
+                                # Buscar índices más cercanos si no hay coincidencia exacta
+                                prices_index = prices_df.index
+                                
+                                # Encontrar fecha más cercana a selected_dt
+                                selected_dt_normalized = pd.Timestamp(selected_dt).normalize()
+                                closest_entry_idx = prices_index.get_indexer([selected_dt_normalized], method='nearest')[0]
+                                
+                                if closest_entry_idx >= 0 and closest_entry_idx < len(prices_index):
+                                    entry_date = prices_index[closest_entry_idx]
+                                    
+                                    # Buscar próxima fecha (aproximadamente un mes después)
+                                    future_mask = prices_index > entry_date
+                                    if future_mask.any():
+                                        # Tomar la primera fecha futura disponible
+                                        exit_date = prices_index[future_mask][0]
+                                        
+                                        # Obtener precios
+                                        entry_price = prices_df.loc[entry_date, ticker]
+                                        exit_price = prices_df.loc[exit_date, ticker]
+                                        
+                                        # Calcular retorno
+                                        if pd.notna(entry_price) and pd.notna(exit_price) and entry_price != 0:
+                                            individual_return = (exit_price / entry_price) - 1
+                                            returns_data.append(individual_return)
+                                        else:
+                                            returns_data.append(None)
+                                    else:
+                                        returns_data.append(None)
+                                else:
+                                    returns_data.append(None)
+                            else:
+                                returns_data.append(None)
+                        except Exception:
+                            returns_data.append(None)
                     
-                    # Obtener precios
-                    entry_price = prices_df.loc[entry_date, ticker]
-                    exit_price = prices_df.loc[exit_date, ticker]
-                    
-                    # Calcular retorno
-                    if pd.notna(entry_price) and pd.notna(exit_price) and entry_price != 0:
-                        individual_return = (exit_price / entry_price) - 1
-                        returns_data.append(individual_return)
-                    else:
-                        returns_data.append(None)
-                else:
-                    returns_data.append(None)
-            else:
-                returns_data.append(None)
-        else:
-            print(f"⚠️ Ticker {ticker} no encontrado en prices_df")
-            returns_data.append(None)
-    except Exception as e:
-        print(f"Error calculando retorno para {ticker}: {e}")
-        returns_data.append(None)
-
-# Agregar columna de retornos individuales
-date_picks_display['Retorno Individual'] = returns_data
+                    # Agregar columna de retornos individuales
+                    date_picks_display['Retorno Individual'] = returns_data
                     
                     # Formatear retornos
                     def format_return(val):
@@ -1277,6 +1275,7 @@ date_picks_display['Retorno Individual'] = returns_data
             st.error(f"Error calculando señales actuales: {str(e)}")
             import traceback
             st.code(traceback.format_exc())
+
 # Al final del archivo, antes del else final, agrega:
 if st.session_state.spy_df is not None:
     st.sidebar.success(f"✅ SPY en memoria: {len(st.session_state.spy_df)} registros")
