@@ -280,17 +280,17 @@ if run_button:
     
     try:
         cache_params = {
-    'index': index_choice,
-    'start': str(start_date),
-    'end': str(end_date),
-    'top_n': top_n,
-    'corte': corte,
-    'commission': commission,
-    'historical': use_historical_verification,
-    'fixed_alloc': fixed_allocation,
-    'roc_filter': use_roc_filter,  # ASEGÚRATE de que esto esté
-    'sma_filter': use_sma_filter    # ASEGÚRATE de que esto esté
-}
+            'index': index_choice,
+            'start': str(start_date),
+            'end': str(end_date),
+            'top_n': top_n,
+            'corte': corte,
+            'commission': commission,
+            'historical': use_historical_verification,
+            'fixed_alloc': fixed_allocation,
+            'roc_filter': use_roc_filter,
+            'sma_filter': use_sma_filter
+        }
         cache_key = get_cache_key(cache_params)
         cache_file = os.path.join(CACHE_DIR, f"backtest_{cache_key}.pkl")
         
@@ -357,15 +357,16 @@ if run_button:
                 benchmark_series = benchmark_df[benchmark_ticker]
             
             # SPY para filtros - CORREGIDO
-spy_df = None
-if use_roc_filter or use_sma_filter:
-    # Cargar SPY siempre que se usen filtros
-    spy_result, _ = load_prices_from_csv_parallel(["SPY"], start_date, end_date, load_full_data=False)
-    if not spy_result.empty and "SPY" in spy_result.columns:
-        spy_df = spy_result
-        st.sidebar.success(f"✅ SPY cargado: {len(spy_df)} registros")
-    else:
-        st.sidebar.error("❌ No se pudo cargar SPY para filtros")
+            spy_df = None
+            if use_roc_filter or use_sma_filter:
+                # Cargar SPY siempre que se usen filtros
+                spy_result, _ = load_prices_from_csv_parallel(["SPY"], start_date, end_date, load_full_data=False)
+                if not spy_result.empty and "SPY" in spy_result.columns:
+                    spy_df = spy_result
+                    st.sidebar.success(f"✅ SPY cargado: {len(spy_df)} registros")
+                else:
+                    st.sidebar.error("❌ No se pudo cargar SPY para filtros")
+                    spy_df = None
             
             # Información histórica
             historical_info = None
@@ -466,7 +467,6 @@ if use_roc_filter or use_sma_filter:
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
         st.exception(e)
-
 # Mostrar resultados si están en session state
 if st.session_state.backtest_completed and st.session_state.bt_results is not None:
     # RECUPERAR TODAS LAS VARIABLES DEL SESSION STATE
