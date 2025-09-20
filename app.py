@@ -512,11 +512,23 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     bench_cagr = 0
     bench_max_dd = 0
     
-    # Recuperar el index_choice de los parámetros guardados
-    if st.session_state.backtest_params:
-        index_choice = st.session_state.backtest_params.get('index', 'SP500')
-        use_roc_filter = st.session_state.backtest_params.get('roc_filter', False)
-        use_sma_filter = st.session_state.backtest_params.get('sma_filter', False)
+    # Recuperar TODOS los parámetros de los guardados
+if st.session_state.backtest_params:
+    index_choice = st.session_state.backtest_params.get('index', 'SP500')
+    use_roc_filter = st.session_state.backtest_params.get('roc_filter', False)
+    use_sma_filter = st.session_state.backtest_params.get('sma_filter', False)
+else:
+    # Si no hay parámetros guardados, usar valores por defecto
+    index_choice = 'SP500'
+    use_roc_filter = False
+    use_sma_filter = False
+
+# Debug para verificar
+st.sidebar.info(f"🔍 Debug - Filtros activos: ROC={use_roc_filter}, SMA={use_sma_filter}")
+if spy_df is not None:
+    st.sidebar.success(f"✅ Datos SPY disponibles: {len(spy_df)} registros")
+else:
+    st.sidebar.warning("⚠️ No hay datos del SPY")
     
     if benchmark_series is not None and not benchmark_series.empty:
         try:
