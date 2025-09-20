@@ -13,6 +13,15 @@ import pickle
 import hashlib
 import glob
 
+# CORRECCIÓN 1: Agregar después de los imports (línea ~30)
+# Inicializar session state para mantener resultados del backtest
+if 'backtest_results' not in st.session_state:
+    st.session_state.backtest_results = None
+if 'picks_dataframe' not in st.session_state:
+    st.session_state.picks_dataframe = None
+if 'spy_data' not in st.session_state:
+    st.session_state.spy_data = None
+
 # Importar nuestros módulos - IMPORTANTE: importar inertia_score
 from data_loader import get_constituents_at_date, get_sp500_historical_changes, get_nasdaq100_historical_changes, generate_removed_tickers_summary
 from backtest import run_backtest_optimized, precalculate_all_indicators, calculate_monthly_returns_by_year, inertia_score, calculate_sharpe_ratio
