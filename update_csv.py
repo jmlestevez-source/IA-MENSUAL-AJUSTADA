@@ -1,3 +1,4 @@
+import sys
 import yfinance as yf
 import pandas as pd
 import os
@@ -6,6 +7,8 @@ from datetime import datetime, timedelta
 import pytz
 import warnings
 warnings.filterwarnings('ignore')
+
+FORCE_UPDATE = '--force' in sys.argv
 
 def normalize_adjusted_dataframe(df):
     """Normaliza el DataFrame con datos ajustados"""
@@ -111,7 +114,7 @@ def update_ticker_data(ticker, force_regenerate=False):
             last_date = df_existing.index[-1]
             today = datetime.now()
             
-            if today.weekday() >= 5:
+            if not FORCE_UPDATE and today.weekday() >= 5:
                 print(f"📅 {ticker}: Fin de semana")
                 return True
             
@@ -122,7 +125,7 @@ def update_ticker_data(ticker, force_regenerate=False):
             est = pytz.timezone('US/Eastern')
             now_est = datetime.now(est)
             
-            if now_est.hour < 17:
+            if not FORCE_UPDATE and now_est.hour < 17:
                 yesterday = today - timedelta(days=1)
                 while yesterday.weekday() > 4:
                     yesterday = yesterday - timedelta(days=1)
@@ -208,6 +211,8 @@ if __name__ == "__main__":
     print("🚀 ACTUALIZACIÓN DIARIA")
     print("=" * 60)
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    if FORCE_UPDATE:
+        print("⚡ MODO FORCE ACTIVADO")
     
     # INICIALIZAR VARIABLES DE CONTEO
     regenerated = 0
