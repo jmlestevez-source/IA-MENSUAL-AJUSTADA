@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 jobs:
-  update-
+  update-data:
     runs-on: ubuntu-latest
 
     steps:
