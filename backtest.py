@@ -496,6 +496,16 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
         import traceback
         traceback.print_exc()
         return pd.DataFrame(), pd.DataFrame()
+        
+                    # Debug: registrar detalles del retorno
+                if i == 1 or (date.year == 2023 and date.month == 9):  # Ejemplo para debug específico
+                    print(f"📊 Debug {date.strftime('%Y-%m')}:")
+                    print(f"  - Tickers seleccionados: {len(valid_tickers)}")
+                    print(f"  - Retorno antes de comisión: {portfolio_return + commission:.4%}")
+                    print(f"  - Comisión: -{commission:.4%}")
+                    print(f"  - Retorno después de comisión: {portfolio_return:.4%}")
+
+
 
 def calculate_monthly_returns_by_year(equity_series):
     """Calcula retornos mensuales por año"""
