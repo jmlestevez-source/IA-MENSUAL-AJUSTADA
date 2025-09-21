@@ -344,7 +344,7 @@ if run_button:
             
             st.success(f"✅ Cargados {len(prices_df.columns)} tickers con datos")
             
-            # Cargar benchmark
+                        # Cargar benchmark
             status_text.text("📈 Cargando benchmark...")
             progress_bar.progress(40)
             
@@ -357,18 +357,22 @@ if run_button:
             else:
                 benchmark_series = benchmark_df[benchmark_ticker]
             
-            # SPY para benchmark y filtros - SIEMPRE CARGAR
+            # SIEMPRE cargar SPY para gráficas (independiente de filtros)
             spy_df = None
+            status_text.text("📈 Cargando SPY para visualización...")
             spy_result, _ = load_prices_from_csv_parallel(["SPY"], start_date, end_date, load_full_data=False)
             if not spy_result.empty and "SPY" in spy_result.columns:
                 spy_df = spy_result
                 st.sidebar.success(f"✅ SPY cargado: {len(spy_df)} registros")
                 
-                # Información adicional sobre el uso del SPY
-                if not use_roc_filter and not use_sma_filter:
-                    st.sidebar.info("📊 SPY cargado para visualización")
+                # Información sobre el uso del SPY
+                if use_roc_filter or use_sma_filter:
+                    st.sidebar.info("📊 SPY usado para filtros y visualización")
+                else:
+                    st.sidebar.info("📊 SPY cargado solo para visualización")
             else:
                 st.sidebar.warning("⚠️ No se pudo cargar SPY")
+                spy_df = None
             
             # Información histórica
             historical_info = None
