@@ -1014,7 +1014,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             mime="text/csv",
             help="Descarga todos los picks del backtest con sus métricas"
         )
-        )
+        
     # SEÑALES ACTUALES (VELA EN FORMACIÓN)
     with st.expander("🔮 Señales Actuales - Vela en Formación", expanded=True):
         st.subheader("📊 Picks Prospectivos para el Próximo Mes")
