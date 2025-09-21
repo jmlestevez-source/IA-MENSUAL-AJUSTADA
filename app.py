@@ -344,7 +344,7 @@ if run_button:
             
             st.success(f"✅ Cargados {len(prices_df.columns)} tickers con datos")
             
-                        # Cargar benchmark
+            # Cargar benchmark
             status_text.text("📈 Cargando benchmark...")
             progress_bar.progress(40)
             
@@ -359,7 +359,7 @@ if run_button:
             
             # SIEMPRE cargar SPY para gráficas (independiente de filtros)
             spy_df = None
-            status_text.text("📈 Cargando SPY para visualización...")
+            status_text.text("📈 Cargando SPY...")
             spy_result, _ = load_prices_from_csv_parallel(["SPY"], start_date, end_date, load_full_data=False)
             if not spy_result.empty and "SPY" in spy_result.columns:
                 spy_df = spy_result
@@ -369,7 +369,7 @@ if run_button:
                 if use_roc_filter or use_sma_filter:
                     st.sidebar.info("📊 SPY usado para filtros y visualización")
                 else:
-                    st.sidebar.info("📊 SPY cargado solo para visualización")
+                    st.sidebar.info("📊 SPY cargado para visualización")
             else:
                 st.sidebar.warning("⚠️ No se pudo cargar SPY")
                 spy_df = None
@@ -818,7 +818,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 col2.metric("Retorno Anual Promedio", f"{avg_annual_return:.1f}%")
                 col3.metric("Tasa de Éxito Anual", f"{win_rate:.0f}%")
     
-    # PICKS HISTÓRICOS - Con session state funcionando correctamente
+    # PICKS HISTÓRICOS - Con cálculo corregido de retornos
     if picks_df is not None and not picks_df.empty:
         st.subheader("📊 Picks Históricos")
         
@@ -857,20 +857,21 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             date_picks = picks_df[picks_df['Date'] == selected_date]
             st.info(f"🎯 {len(date_picks)} picks seleccionados el {selected_date}")
             
-            # Calcular rentabilidad del mes - VERSIÓN DEFINITIVA CORREGIDA
+            # Calcular rentabilidad del mes - VERSIÓN CORREGIDA
             try:
-                # El retorno del mes debe ser el retorno generado por los picks seleccionados en selected_date
                 selected_dt = pd.Timestamp(selected_date)
                 bt_index = pd.to_datetime(bt_results.index)
                 
                 # Buscar la posición exacta de selected_date en el índice
                 if selected_dt in bt_index:
-                    # Encontrar el índice exacto
                     current_idx = bt_index.get_loc(selected_dt)
                     
                     if current_idx < len(bt_index) - 1:
-                        # El retorno es simplemente el valor de Returns del siguiente período
+                        # El retorno del mes es el retorno de la estrategia
                         monthly_return = bt_results['Returns'].iloc[current_idx + 1]
+                        
+                        # Obtener comisión para mostrar el desglose
+                        commission = st.session_state.backtest_params.get('commission', 0.003) if st.session_state.backtest_params else 0.003
                         
                         st.metric(
                             "📈 Retorno del Mes",
@@ -878,18 +879,14 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                             delta=f"{monthly_return:.2%}" if monthly_return != 0 else None
                         )
                         
-                        # Debug mejorado
-                        with st.expander("🔍 Verificación de Cálculo", expanded=False):
+                        # Mostrar desglose
+                        with st.expander("🔍 Desglose del Retorno", expanded=False):
                             st.write(f"Fecha picks: {selected_date}")
-                            st.write(f"Índice en backtest: {current_idx}")
-                            st.write(f"Equity al inicio: ${bt_results['Equity'].iloc[current_idx]:,.2f}")
-                            st.write(f"Equity al final: ${bt_results['Equity'].iloc[current_idx + 1]:,.2f}")
-                            st.write(f"Retorno del período: {monthly_return:.4%}")
-                            
-                            # Verificar con cálculo manual
-                            manual_return = (bt_results['Equity'].iloc[current_idx + 1] / 
-                                           bt_results['Equity'].iloc[current_idx]) - 1
-                            st.write(f"Verificación manual: {manual_return:.4%}")
+                            st.write(f"Equity inicial: ${bt_results['Equity'].iloc[current_idx]:,.2f}")
+                            st.write(f"Equity final: ${bt_results['Equity'].iloc[current_idx + 1]:,.2f}")
+                            st.write(f"**Retorno neto: {monthly_return:.4%}**")
+                            st.write(f"Comisión aplicada: -{commission:.2%}")
+                            st.write(f"Retorno bruto estimado: {monthly_return + commission:.4%}")
                     else:
                         st.warning("📅 Último mes del backtest (sin retorno futuro)")
                         monthly_return = 0.0
@@ -932,34 +929,25 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 selected_dt = pd.Timestamp(selected_date)
                 
                 # Calcular retorno individual para cada ticker
+                # IMPORTANTE: Usar la misma lógica que el backtest
                 returns_data = []
                 for _, row in date_picks.iterrows():
                     ticker = row['Ticker']
                     
                     try:
                         if ticker in prices_df.columns:
-                            # Convertir selected_date a timestamp y normalizar
-                            selected_dt_norm = pd.Timestamp(selected_date).normalize()
+                            # Convertir a mensual como hace el backtest
+                            ticker_monthly = prices_df[ticker].resample('ME').last()
                             
-                            # Obtener el índice de precios
-                            prices_index = prices_df.index
-                            
-                            # Encontrar la fecha más cercana en prices_df
-                            closest_idx = prices_index.get_indexer([selected_dt_norm], method='nearest')[0]
-                            
-                            if closest_idx >= 0 and closest_idx < len(prices_index):
-                                entry_date = prices_index[closest_idx]
+                            # Buscar las fechas correctas
+                            if selected_dt in ticker_monthly.index:
+                                current_idx = ticker_monthly.index.get_loc(selected_dt)
                                 
-                                # Buscar aproximadamente un mes después (20-35 días)
-                                target_exit = entry_date + pd.Timedelta(days=30)
-                                exit_idx = prices_index.get_indexer([target_exit], method='nearest')[0]
-                                
-                                if exit_idx > closest_idx and exit_idx < len(prices_index):
-                                    exit_date = prices_index[exit_idx]
-                                    
-                                    # Obtener precios
-                                    entry_price = prices_df.loc[entry_date, ticker]
-                                    exit_price = prices_df.loc[exit_date, ticker]
+                                if current_idx < len(ticker_monthly) - 1:
+                                    # Precio al final del mes de selección
+                                    entry_price = ticker_monthly.iloc[current_idx]
+                                    # Precio al final del siguiente mes
+                                    exit_price = ticker_monthly.iloc[current_idx + 1]
                                     
                                     # Calcular retorno
                                     if pd.notna(entry_price) and pd.notna(exit_price) and entry_price != 0:
@@ -970,7 +958,19 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                                 else:
                                     returns_data.append(None)
                             else:
-                                returns_data.append(None)
+                                # Buscar fecha más cercana
+                                closest_idx = ticker_monthly.index.get_indexer([selected_dt], method='nearest')[0]
+                                if closest_idx >= 0 and closest_idx < len(ticker_monthly) - 1:
+                                    entry_price = ticker_monthly.iloc[closest_idx]
+                                    exit_price = ticker_monthly.iloc[closest_idx + 1]
+                                    
+                                    if pd.notna(entry_price) and pd.notna(exit_price) and entry_price != 0:
+                                        individual_return = (exit_price / entry_price) - 1
+                                        returns_data.append(individual_return)
+                                    else:
+                                        returns_data.append(None)
+                                else:
+                                    returns_data.append(None)
                         else:
                             returns_data.append(None)
                     except Exception as e:
@@ -1032,23 +1032,37 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                         col2.metric("Tasa de Éxito", f"{win_rate:.1f}%")
                         col3.metric("Mejor Pick", f"{max(valid_returns):.2%}")
                         
-                        # Verificación de consistencia
+                        # Verificación de consistencia mejorada
+                        commission = st.session_state.backtest_params.get('commission', 0.003) if st.session_state.backtest_params else 0.003
+                        
+                        # Calcular retorno teórico con comisión
+                        theoretical_return_with_commission = avg_return - commission
+                        difference = abs(monthly_return - theoretical_return_with_commission)
+                        
                         st.info(f"""
-                        📊 **Verificación de Retornos:**
-                        - Retorno promedio de picks individuales: {avg_return:.2%}
-                        - Retorno del mes (estrategia completa): {monthly_return:.2%}
-                        - Número de picks con retorno válido: {len(valid_returns)}/{len(date_picks)}
+                        📊 **Análisis de Retornos:**
+                        - Retorno promedio picks (bruto): {avg_return:.2%}
+                        - Menos comisión: -{commission:.2%}
+                        - Retorno teórico neto: {theoretical_return_with_commission:.2%}
+                        - Retorno real estrategia: {monthly_return:.2%}
+                        - Diferencia: {difference:.2%}
                         """)
                         
-                        # Si hay discrepancia significativa
-                        if abs(avg_return - monthly_return) > 0.01:  # Más de 1% de diferencia
-                            with st.expander("ℹ️ Explicación de diferencias"):
-                                st.write("""
-                                La diferencia entre retornos individuales y de estrategia puede deberse a:
-                                - **Comisiones**: El backtest aplica comisiones que reducen el retorno
-                                - **Ponderación**: La estrategia puede usar ponderación diferente
-                                - **Fechas**: Pequeñas diferencias en las fechas exactas de entrada/salida
-                                - **Cash**: La estrategia puede mantener cash en algunos períodos
+                        # Explicación de diferencias
+                        if difference > 0.005:  # Más de 0.5% de diferencia
+                            with st.expander("ℹ️ Análisis de diferencias", expanded=True):
+                                st.write(f"""
+                                **Diferencia de {difference:.2%} puede deberse a:**
+                                
+                                1. **Ponderación**: La estrategia usa {len(valid_returns)} de {len(date_picks)} picks
+                                2. **Validación histórica**: Algunos tickers podrían no estar disponibles
+                                3. **Redondeo y precisión**: Pequeñas diferencias en cálculos
+                                
+                                **Cálculo detallado:**
+                                - Suma de retornos: {sum(valid_returns):.4%}
+                                - Dividido entre {len(valid_returns)} = {avg_return:.4%}
+                                - Menos comisión {commission:.2%} = {theoretical_return_with_commission:.4%}
+                                - Retorno backtest = {monthly_return:.4%}
                                 """)
                         
                         # Gráfico de barras de retornos individuales
@@ -1163,23 +1177,18 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 
                 if ticker in prices_df.columns:
                     try:
-                        # Encontrar precio de entrada
-                        selected_dt_norm = selected_dt.normalize()
-                        prices_index = prices_df.index
-                        closest_idx = prices_index.get_indexer([selected_dt_norm], method='nearest')[0]
+                        # Usar la misma lógica que el backtest
+                        ticker_monthly = prices_df[ticker].resample('ME').last()
                         
-                        if closest_idx >= 0 and closest_idx < len(prices_index):
-                            entry_date = prices_index[closest_idx]
+                        if selected_dt in ticker_monthly.index:
+                            current_idx = ticker_monthly.index.get_loc(selected_dt)
                             
-                            # Buscar precio de salida (aproximadamente 30 días después)
-                            target_exit = entry_date + pd.Timedelta(days=30)
-                            exit_idx = prices_index.get_indexer([target_exit], method='nearest')[0]
-                            
-                            if exit_idx > closest_idx and exit_idx < len(prices_index):
-                                exit_date = prices_index[exit_idx]
+                            if current_idx < len(ticker_monthly) - 1:
+                                entry_date = ticker_monthly.index[current_idx]
+                                exit_date = ticker_monthly.index[current_idx + 1]
                                 
-                                entry_price = prices_df.loc[entry_date, ticker]
-                                exit_price = prices_df.loc[exit_date, ticker]
+                                entry_price = ticker_monthly.iloc[current_idx]
+                                exit_price = ticker_monthly.iloc[current_idx + 1]
                                 
                                 if pd.notna(entry_price) and pd.notna(exit_price) and entry_price != 0:
                                     trade_return = (exit_price / entry_price) - 1
@@ -1398,9 +1407,9 @@ else:
         
         **Correcciones aplicadas:**
         - ✅ SPY siempre visible en gráficas
-        - ✅ Session state persistente para navegación de picks históricos
+        - ✅ Cálculo correcto de retornos mensuales
         - ✅ Sharpe Ratio calculado correctamente con RF=2% anual
-        - ✅ Cálculo mejorado del retorno mensual
+        - ✅ Análisis detallado de diferencias entre retornos
         """)
         
         cache_files = glob.glob(os.path.join(CACHE_DIR, "backtest_*.pkl"))
