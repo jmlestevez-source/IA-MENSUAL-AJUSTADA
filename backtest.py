@@ -318,13 +318,17 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
     """
     VERSIÓN OPTIMIZADA del backtest con precálculo
     Retorna: bt_results (DataFrame), picks_df (DataFrame)
+    
+    IMPORTANTE: Esta función calcula retornos usando precios mensuales
+    Los picks se seleccionan en prev_date (ej: 2023-08-31)
+    El retorno se calcula entre prev_date y date (ej: 2023-08-31 a 2023-09-30)
     """
     try:
         print("🚀 Iniciando backtest OPTIMIZADO...")
         if prices is None or prices.empty:
             return pd.DataFrame(), pd.DataFrame()
         
-        # Mensualizar
+        # Mensualizar - IMPORTANTE: usar 'ME' para fin de mes
         if isinstance(prices, pd.Series):
             prices_m = prices.resample('ME').last()
             prices_df_m = pd.DataFrame({'Close': prices_m})
@@ -362,6 +366,9 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
         picks_list = []
         total_months = len(prices_df_m) - 1
         
+        # Variable para rastrear retornos detallados (para debug)
+        detailed_returns = []
+        
         for i in range(1, len(prices_df_m)):
             try:
                 prev_date = prices_df_m.index[i - 1]
@@ -383,12 +390,13 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                         spy_sma_10m = spy_monthly[:prev_date].iloc[-10:].mean()
                         if spy_price < spy_sma_10m:
                             market_filter_active = True
+                
                 if market_filter_active:
                     equity.append(equity[-1])
                     dates.append(date)
                     continue
                 
-                # Tickers válidos
+                # Tickers válidos según verificación histórica
                 valid_tickers_for_date = valid_tickers_by_date.get(prev_date, set(current_tickers))
                 
                 # Seleccionar candidatos
@@ -402,7 +410,11 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                             inercia = indicators['InerciaAlcista'].loc[prev_date]
                             score_adj = indicators['ScoreAdjusted'].loc[prev_date]
                             if inercia >= corte and score_adj > 0 and not np.isnan(score_adj):
-                                candidates.append({'ticker': ticker, 'inercia': float(inercia), 'score_adj': float(score_adj)})
+                                candidates.append({
+                                    'ticker': ticker, 
+                                    'inercia': float(inercia), 
+                                    'score_adj': float(score_adj)
+                                })
                     except Exception:
                         continue
                 
@@ -411,7 +423,9 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                     dates.append(date)
                     continue
                 
+                # Ordenar por score ajustado y seleccionar
                 candidates = sorted(candidates, key=lambda x: x['score_adj'], reverse=True)
+                
                 if fixed_allocation:
                     selected_picks = candidates[:10]
                 else:
@@ -419,11 +433,14 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                 
                 selected_tickers = [p['ticker'] for p in selected_picks]
                 
-                # Precios
+                # Obtener precios para calcular retornos
                 available_prices = prices_df_m.loc[date]
                 prev_prices = prices_df_m.loc[prev_date]
                 
+                # Validar que los tickers tienen precios disponibles
                 valid_tickers = []
+                ticker_returns = []
+                
                 for ticker in selected_tickers:
                     if (ticker in available_prices.index and
                         ticker in prev_prices.index and
@@ -431,47 +448,71 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                         not pd.isna(prev_prices[ticker]) and
                         prev_prices[ticker] != 0):
                         valid_tickers.append(ticker)
+                        # Calcular retorno individual
+                        ret = (available_prices[ticker] / prev_prices[ticker]) - 1
+                        ticker_returns.append(ret)
                 
                 if not valid_tickers:
                     equity.append(equity[-1])
                     dates.append(date)
                     continue
                 
+                # Calcular retorno del portfolio
                 if fixed_allocation:
+                    # Solo usar los primeros 10
                     valid_tickers = valid_tickers[:10]
+                    ticker_returns = ticker_returns[:10]
                     weight = 0.1
                 else:
                     weight = 1.0 / len(valid_tickers)
                 
-                portfolio_return = 0.0
-                for ticker in valid_tickers:
-                    ret = (available_prices[ticker] / prev_prices[ticker]) - 1
-                    portfolio_return += ret * weight
+                # Retorno ponderado del portfolio
+                portfolio_return = sum(r * weight for r in ticker_returns)
                 
+                # Aplicar comisión
                 portfolio_return -= commission
+                
+                # Actualizar equity
                 new_equity = equity[-1] * (1 + portfolio_return)
                 equity.append(new_equity)
                 dates.append(date)
                 
-                # Guardar picks
+                # Debug para fechas específicas
+                if date.year == 2023 and date.month == 9:  # Septiembre 2023
+                    print(f"\n📊 Debug {date.strftime('%Y-%m-%d')}:")
+                    print(f"  Fecha selección (prev_date): {prev_date.strftime('%Y-%m-%d')}")
+                    print(f"  Fecha retorno (date): {date.strftime('%Y-%m-%d')}")
+                    print(f"  Tickers seleccionados: {len(valid_tickers)}")
+                    print(f"  Retornos individuales:")
+                    for t, r in zip(valid_tickers[:5], ticker_returns[:5]):  # Mostrar primeros 5
+                        print(f"    {t}: {r:.4%}")
+                    print(f"  Retorno promedio: {sum(ticker_returns)/len(ticker_returns):.4%}")
+                    print(f"  Retorno ponderado: {sum(r * weight for r in ticker_returns):.4%}")
+                    print(f"  Comisión: -{commission:.4%}")
+                    print(f"  Retorno final: {portfolio_return:.4%}")
+                
+                # Guardar picks seleccionados
+                # IMPORTANTE: Los picks se guardan con la fecha de SELECCIÓN (prev_date)
+                # pero el retorno corresponde al período siguiente
                 for rank, ticker in enumerate(valid_tickers, 1):
                     pick_data = next((p for p in selected_picks if p['ticker'] == ticker), None)
                     if pick_data:
                         picks_list.append({
-                            "Date": date.strftime("%Y-%m-%d"),
+                            "Date": prev_date.strftime("%Y-%m-%d"),  # Fecha de selección
                             "Rank": rank,
                             "Ticker": ticker,
                             "Inercia": pick_data['inercia'],
                             "ScoreAdj": pick_data['score_adj'],
                             "HistoricallyValid": ticker in valid_tickers_for_date
                         })
+                
             except Exception as e:
-                print(f"Error en mes {i}: {e}")
+                print(f"Error en mes {i} ({date}): {e}")
                 equity.append(equity[-1])
                 dates.append(date)
                 continue
         
-        # Resultados
+        # Crear resultados finales
         equity_series = pd.Series(equity, index=dates)
         returns = equity_series.pct_change().fillna(0)
         drawdown = (equity_series / equity_series.cummax() - 1).fillna(0)
@@ -482,58 +523,61 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
             "Drawdown": drawdown
         })
         
-        picks_df = pd.DataFrame(picks_list)
+        picks_df = pd.DataFrame(picks_list) if picks_list else pd.DataFrame()
         
         print(f"✅ Backtest OPTIMIZADO completado. Equity final: ${equity_series.iloc[-1]:,.2f}")
+        print(f"   Retorno total: {(equity_series.iloc[-1] / equity_series.iloc[0] - 1):.2%}")
+        
         if historical_info and historical_info.get('has_historical_data', False):
             print("✅ Backtest ejecutado con verificación histórica de constituyentes")
         else:
             print("⚠️ Backtest ejecutado SIN verificación histórica (posible sesgo de supervivencia)")
         
         return bt_results, picks_df
+        
     except Exception as e:
         print(f"❌ Error en backtest: {e}")
         import traceback
         traceback.print_exc()
         return pd.DataFrame(), pd.DataFrame()
-        
-                    # Debug: registrar detalles del retorno
-                if i == 1 or (date.year == 2023 and date.month == 9):  # Ejemplo para debug específico
-                    print(f"📊 Debug {date.strftime('%Y-%m')}:")
-                    print(f"  - Tickers seleccionados: {len(valid_tickers)}")
-                    print(f"  - Retorno antes de comisión: {portfolio_return + commission:.4%}")
-                    print(f"  - Comisión: -{commission:.4%}")
-                    print(f"  - Retorno después de comisión: {portfolio_return:.4%}")
-
-
 
 def calculate_monthly_returns_by_year(equity_series):
     """Calcula retornos mensuales por año"""
     try:
         if equity_series is None or len(equity_series) < 2:
             return pd.DataFrame()
+        
         monthly_returns = equity_series.pct_change().fillna(0)
         monthly_returns.index = pd.to_datetime(monthly_returns.index)
+        
+        # Agrupar por año y mes
         monthly_by_year = monthly_returns.groupby([monthly_returns.index.year, monthly_returns.index.month]).apply(lambda x: (1 + x).prod() - 1)
+        
         years = sorted(monthly_by_year.index.get_level_values(0).unique())
         months_es = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+        
         table_data = []
         for year in years:
             year_data = {'Año': year}
             year_monthly = monthly_by_year[monthly_by_year.index.get_level_values(0) == year]
+            
             for i, month_abbr in enumerate(months_es, 1):
                 if i in year_monthly.index.get_level_values(1):
                     return_value = year_monthly[year_monthly.index.get_level_values(1) == i].iloc[0]
                     year_data[month_abbr] = f"{return_value*100:.1f}%"
                 else:
                     year_data[month_abbr] = "-"
+            
+            # Calcular YTD
             year_equity = equity_series[equity_series.index.year == year]
             if len(year_equity) > 1:
                 ytd_return = (year_equity.iloc[-1] / year_equity.iloc[0]) - 1
                 year_data['YTD'] = f"{ytd_return*100:.1f}%"
             else:
                 year_data['YTD'] = "-"
+                
             table_data.append(year_data)
+        
         if table_data:
             result_df = pd.DataFrame(table_data)
             columns_order = ['Año'] + months_es + ['YTD']
@@ -541,11 +585,11 @@ def calculate_monthly_returns_by_year(equity_series):
             return result_df
         else:
             return pd.DataFrame()
+            
     except Exception as e:
         print(f"Error calculando tabla de retornos: {e}")
         return pd.DataFrame()
 
-# En la función calculate_sharpe_ratio (si existe), asegúrate de que use:
 def calculate_sharpe_ratio(returns, risk_free_rate=0.02):
     """
     Calcula el Sharpe Ratio con tasa libre de riesgo del 2% anual
