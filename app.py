@@ -723,7 +723,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 y=bench_aligned.values,
                 mode='lines',
                 name=f'Benchmark ({benchmark_name})',
-                line=dict(width=2, dash='dash', color='gray'),
+                line=dict(width=2.5, color='#50C878'), # verde esmeralda
                 hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
             ),
             row=1, col=1
@@ -738,7 +738,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 y=spy_aligned.values,
                 mode='lines',
                 name='SPY (Referencia)',
-                line=dict(width=2, dash='dot', color='green'),
+                line=dict(width=2.5, color='#50C878'), # verde esmeralda
                 hovertemplate='<b>SPY: %{y:,.0f}</b><br>%{x}<extra></extra>'
             ),
             row=1, col=1
@@ -769,7 +769,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                     y=bench_dd_aligned.values,
                     mode='lines',
                     name=f'DD {benchmark_name}',
-                    line=dict(color='orange', width=2, dash='dash'),
+                    line=dict(color='#FF7F0E', width=2), # naranja
                     hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
                 ),
                 row=2, col=1
@@ -781,10 +781,10 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             fig.add_trace(
                 go.Scatter(
                     x=spy_dd_aligned.index,
-                    y=spy_dd_aligned.values,
+                    y=spy_dd_aligned.values * 100,
                     mode='lines',
                     name='DD SPY (Ref)',
-                    line=dict(color='green', width=1.5, dash='dot'),
+                    line=dict(color='#FF7F0E', width=2), # naranja
                     hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
                 ),
                 row=2, col=1
