@@ -387,7 +387,7 @@ if run_button:
                 if sp500_csv_exists or ndx_csv_exists:
                     st.info(f"📂 Encontrados archivos CSV locales de cambios históricos")
                 
-                changes_data = load_historical_changes_cached(index_choice)
+                changes_data = load_historical_changes_cached(index_name=index_choice)
                 
                 if not changes_data.empty:
                     historical_info = {
@@ -542,42 +542,51 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     col4.metric("Max Drawdown (Mensual)", f"{max_drawdown:.2%}")
     col5.metric("Sharpe Ratio (RF=2%)", f"{sharpe_ratio:.2f}")
     
-    # Max drawdown diario (aprox) de la estrategia, distribuyendo retorno mensual por días hábiles
+    # Max drawdown diario REAL de la estrategia (reconstruyendo equity diario a partir de picks)
     strategy_daily_mdd = None
     try:
-        m_index = pd.to_datetime(bt_results.index)
-        daily_dates = pd.date_range(start=m_index[0], end=m_index[-1], freq='B')
-        equity_daily = []
-        current_equity = float(bt_results["Equity"].iloc[0])
-        equity_daily.append((m_index[0], current_equity))
-        
-        for i in range(1, len(m_index)):
-            prev_date = m_index[i-1]
-            date = m_index[i]
-            month_ret = float(bt_results["Returns"].iloc[i])  # retorno del tramo prev_date->date
-            # Rango diario del mes (excluye el día prev_date, incluye días hábiles hasta date)
-            span_days = pd.date_range(start=prev_date + pd.Timedelta(days=1), end=date, freq='B')
-            n = len(span_days)
-            if n <= 0:
-                # sin días (caso raro), aplicar todo al final
-                current_equity = current_equity * (1 + month_ret)
-                equity_daily.append((date, current_equity))
+        picks_all = picks_df.copy()
+        picks_all['Date'] = pd.to_datetime(picks_all['Date'])
+        sel_dates = sorted(picks_all['Date'].unique())
+
+        equity = float(bt_results['Equity'].iloc[0])
+        equity_points = []
+
+        for i, sel_dt in enumerate(sel_dates):
+            next_dt = sel_dates[i+1] if i+1 < len(sel_dates) else prices_df.index.max()
+            window = prices_df.loc[(prices_df.index > sel_dt) & (prices_df.index <= next_dt)]
+            if window.empty:
                 continue
-            per_day_factor = (1 + month_ret) ** (1 / n)
-            for d in span_days:
-                current_equity *= per_day_factor
-                equity_daily.append((d, current_equity))
-        
-        equity_daily_series = pd.Series([v for _, v in equity_daily], index=[d for d, _ in equity_daily]).sort_index()
-        dd_daily = (equity_daily_series / equity_daily_series.cummax()) - 1
-        strategy_daily_mdd = float(dd_daily.min())
+
+            period_tickers = picks_all.loc[picks_all['Date'] == sel_dt, 'Ticker'].tolist()
+            period_tickers = [t for t in period_tickers if t in prices_df.columns]
+            if not period_tickers:
+                continue
+
+            port_daily_ret = window[period_tickers].pct_change().fillna(0).mean(axis=1)
+
+            # Aplicar una sola comisión el primer día del período
+            if len(port_daily_ret) > 0:
+                port_daily_ret.iloc[0] = port_daily_ret.iloc[0] - commission
+
+            for d, r in port_daily_ret.items():
+                equity *= (1 + r)
+                equity_points.append((d, equity))
+
+        if equity_points:
+            strat_eq_daily = pd.Series([v for _, v in equity_points], index=[d for d, _ in equity_points]).sort_index()
+            dd_daily = (strat_eq_daily / strat_eq_daily.cummax()) - 1
+            strategy_daily_mdd = float(dd_daily.min())
+        else:
+            strategy_daily_mdd = None
+
     except Exception:
         strategy_daily_mdd = None
     
     col_row = st.columns(2)
-    col_row[0].metric("Max DD Diario Estrategia (aprox)", f"{strategy_daily_mdd:.2%}" if strategy_daily_mdd is not None else "N/D")
+    col_row[0].metric("Max DD Diario Estrategia", f"{strategy_daily_mdd:.2%}" if strategy_daily_mdd is not None else "N/D")
     
-    # Benchmark (usar mensual para coherencia con la estrategia)
+    # Benchmark (usar mensual para coherencia con la estrategia) + Max DD diario SPY
     bench_equity = None
     bench_drawdown = None
     bench_sharpe = 0
@@ -586,7 +595,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     bench_cagr = 0
     bench_max_dd = 0
     
-    # Preparar SPY para métricas diarias (si existe)
+    # Max DD Diario SPY
     spy_daily_mdd = None
     if spy_df is not None and hasattr(spy_df, 'columns') and 'SPY' in spy_df.columns:
         try:
@@ -599,7 +608,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     
     if benchmark_series is not None and not benchmark_series.empty:
         try:
-            # Mensualizar y calcular métricas coherentes con la estrategia
             bench_prices_m = benchmark_series.resample('ME').last()
             bench_returns_m = bench_prices_m.pct_change().fillna(0)
             bench_equity = initial_equity * (1 + bench_returns_m).cumprod()
@@ -614,7 +622,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             
             bench_max_dd = float(bench_drawdown.reindex(bt_results.index).ffill().min())
             
-            # Sharpe mensual con la misma metodología
             bench_excess_returns = bench_returns_m - risk_free_rate_monthly
             bench_sharpe = (bench_excess_returns.mean() * 12) / (bench_excess_returns.std() * np.sqrt(12)) if bench_excess_returns.std() != 0 else 0
                 
@@ -714,23 +721,24 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
         row=1, col=1
     )
     
-    # Benchmark mensual y alineado
+    # Benchmark mensual y alineado (sin gris/dashed)
     if bench_equity_m is not None:
         bench_aligned = bench_equity_m.reindex(bt_results.index).ffill()
+        bench_line = dict(width=2.5, color='#50C878') if (index_choice != "NDX") else dict(width=2.5, color='#9467BD')
         fig.add_trace(
             go.Scatter(
                 x=bench_aligned.index,
                 y=bench_aligned.values,
                 mode='lines',
-                name=f'Benchmark ({benchmark_name})',
-                line=dict(width=2.5, color='#50C878'), # verde esmeralda
+                name=f'Benchmark ({("SPY" if index_choice != "NDX" else "QQQ")})',
+                line=bench_line,
                 hovertemplate='<b>%{y:,.0f}</b><br>%{x}<extra></extra>'
             ),
             row=1, col=1
         )
     
-    # SPY mensual y alineado (solo si el benchmark no es SPY para no duplicar)
-    if spy_equity_m is not None and benchmark_name != "SPY":
+    # SPY mensual y alineado (solo si el benchmark no es SPY) en verde esmeralda
+    if spy_equity_m is not None and index_choice == "NDX":
         spy_aligned = spy_equity_m.reindex(bt_results.index).ffill()
         fig.add_trace(
             go.Scatter(
@@ -738,7 +746,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 y=spy_aligned.values,
                 mode='lines',
                 name='SPY (Referencia)',
-                line=dict(width=2.5, color='#50C878'), # verde esmeralda
+                line=dict(width=2.5, color='#50C878'),
                 hovertemplate='<b>SPY: %{y:,.0f}</b><br>%{x}<extra></extra>'
             ),
             row=1, col=1
@@ -760,31 +768,32 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             row=2, col=1
         )
         
-        # Drawdown benchmark mensual y alineado
+        # Drawdown benchmark mensual y alineado (sin gris/dashed)
         if bench_drawdown_m is not None:
             bench_dd_aligned = (bench_drawdown_m.reindex(bt_results.index).ffill() * 100)
+            bench_dd_line = dict(color='#FF7F0E', width=2) if (index_choice != "NDX") else dict(color='#9467BD', width=2)
             fig.add_trace(
                 go.Scatter(
                     x=bench_dd_aligned.index,
                     y=bench_dd_aligned.values,
                     mode='lines',
-                    name=f'DD {benchmark_name}',
-                    line=dict(color='#FF7F0E', width=2), # naranja
+                    name=f'DD {("SPY" if index_choice != "NDX" else "QQQ")}',
+                    line=bench_dd_line,
                     hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
                 ),
                 row=2, col=1
             )
         
-        # Drawdown SPY mensual y alineado
-        if spy_drawdown_m is not None and benchmark_name != "SPY":
+        # Drawdown SPY mensual y alineado (solo si el benchmark no es SPY) en naranja
+        if spy_drawdown_m is not None and index_choice == "NDX":
             spy_dd_aligned = (spy_drawdown_m.reindex(bt_results.index).ffill() * 100)
             fig.add_trace(
                 go.Scatter(
                     x=spy_dd_aligned.index,
-                    y=spy_dd_aligned.values * 100,
+                    y=spy_dd_aligned.values,
                     mode='lines',
                     name='DD SPY (Ref)',
-                    line=dict(color='#FF7F0E', width=2), # naranja
+                    line=dict(color='#FF7F0E', width=2),
                     hovertemplate='<b>%{y:.2f}%</b><br>%{x}<extra></extra>'
                 ),
                 row=2, col=1
