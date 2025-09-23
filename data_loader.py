@@ -574,7 +574,7 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
             filename = os.path.basename(csv_file)
             if filename.endswith('.csv'):
                 ticker = filename.replace('.csv', '').upper().replace('.', '-')
-                if ticker and len(ticker) <= 6 and not ticker.isdigit() and ticker not in ['SPY', 'QQQ']:
+                if ticker and len(ticker) <= 6 and not ticker.isdigit() and ticker not in ['SPY', 'QQQ', 'IEF', 'BIL']:
                     all_available_tickers.append(ticker)
         
         all_available_tickers = list(dict.fromkeys(all_available_tickers))
