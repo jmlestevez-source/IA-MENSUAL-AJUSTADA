@@ -126,11 +126,9 @@ def precalculate_valid_tickers_by_date(monthly_dates, historical_changes_data, c
                         valid_tickers.add(ticker)
         
         # Validación adicional: remover tickers específicos que sabemos fueron eliminados
-        # Lista de tickers conocidos que fueron removidos y sus fechas aproximadas
         known_removals = {
-            'RIG': pd.Timestamp('2016-08-31'),  # Transocean fue removido
-            'OI': pd.Timestamp('2021-06-30'),   # O-I Glass fue removido
-            # Agregar más según sea necesario
+            'RIG': pd.Timestamp('2016-08-31'),
+            'OI': pd.Timestamp('2021-06-30'),
         }
         
         for ticker, removal_date in known_removals.items():
@@ -314,7 +312,9 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
 def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=680, 
                           ohlc_data=None, historical_info=None, fixed_allocation=False,
                           use_roc_filter=False, use_sma_filter=False, spy_data=None,
-                          progress_callback=None):
+                          progress_callback=None,
+                          use_safety_etfs=False, safety_prices=None, safety_ohlc=None,
+                          safety_tickers=('IEF','BIL')):
     """
     VERSIÓN OPTIMIZADA del backtest con precálculo
     Retorna: bt_results (DataFrame), picks_df (DataFrame)
@@ -345,6 +345,19 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
             spy_series = spy_data.iloc[:, 0] if isinstance(spy_data, pd.DataFrame) else spy_data
             spy_monthly = spy_series.resample('ME').last()
         
+        # Datos de ETFs refugio (IEF/BIL)
+        safety_prices_m = None
+        safety_scores = None
+        if use_safety_etfs and safety_prices is not None and not isinstance(safety_prices, pd.DataFrame) and not safety_prices.empty:
+            safety_prices = safety_prices.to_frame()
+        if use_safety_etfs and safety_prices is not None and not getattr(safety_prices, 'empty', True):
+            safety_prices_m = safety_prices.resample('ME').last()
+            safety_ind = inertia_score(safety_prices, corte=corte, ohlc_data=safety_ohlc)
+            safety_scores = {
+                'InerciaAlcista': safety_ind.get('InerciaAlcista'),
+                'ATR14': safety_ind.get('ATR14')
+            }
+        
         # Precalculos
         all_indicators = precalculate_all_indicators(prices_df_m, ohlc_data, corte)
         current_tickers = list(prices_df_m.columns)
@@ -365,9 +378,6 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
         dates = [prices_df_m.index[0]]
         picks_list = []
         total_months = len(prices_df_m) - 1
-        
-        # Variable para rastrear retornos detallados (para debug)
-        detailed_returns = []
         
         for i in range(1, len(prices_df_m)):
             try:
@@ -391,13 +401,87 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                         if spy_price < spy_sma_10m:
                             market_filter_active = True
                 
+                # Tickers válidos según verificación histórica
+                valid_tickers_for_date = valid_tickers_by_date.get(prev_date, set(current_tickers))
+                # Excluir explícitamente los ETFs de refugio del universo de selección normal
+                if use_safety_etfs and safety_tickers:
+                    valid_tickers_for_date = set(valid_tickers_for_date) - set(safety_tickers)
+                
                 if market_filter_active:
+                    # Si hay filtro de mercado y está activado el modo refugio, invertimos 100% en el mejor (IEF/BIL)
+                    if use_safety_etfs and safety_prices_m is not None and not safety_prices_m.empty:
+                        best_ticker = None
+                        best_score_adj_raw = -1e18
+                        best_ret = None
+                        inercia_val_out = 0.0
+                        score_adj_out = 0.0
+                        
+                        for st in safety_tickers:
+                            if safety_prices_m is None or st not in safety_prices_m.columns:
+                                continue
+                            try:
+                                # Score ajustado crudo = InerciaAlcista / ATR14 (sin aplicar corte)
+                                if (safety_scores and
+                                    safety_scores['InerciaAlcista'] is not None and
+                                    safety_scores['ATR14'] is not None and
+                                    prev_date in safety_scores['InerciaAlcista'].index and
+                                    prev_date in safety_scores['ATR14'].index and
+                                    st in safety_scores['InerciaAlcista'].columns and
+                                    st in safety_scores['ATR14'].columns):
+                                    
+                                    inercia_val = float(safety_scores['InerciaAlcista'].loc[prev_date, st])
+                                    atr_val = float(safety_scores['ATR14'].loc[prev_date, st])
+                                    score_adj_raw = (inercia_val / atr_val) if atr_val and atr_val != 0 else np.nan
+                                else:
+                                    inercia_val = np.nan
+                                    score_adj_raw = np.nan
+                                
+                                # Fallback: si NaN, usar retorno 1M como heurística
+                                if pd.isna(score_adj_raw):
+                                    if prev_date in safety_prices_m.index and date in safety_prices_m.index:
+                                        pr0 = safety_prices_m.loc[prev_date, st]
+                                        pr1 = safety_prices_m.loc[date, st]
+                                        score_adj_raw = ((pr1 / pr0) - 1) if (pd.notna(pr0) and pd.notna(pr1) and pr0 != 0) else -1e18
+                                    else:
+                                        score_adj_raw = -1e18
+                                
+                                if score_adj_raw > best_score_adj_raw:
+                                    best_score_adj_raw = score_adj_raw
+                                    best_ticker = st
+                                    inercia_val_out = float(inercia_val) if pd.notna(inercia_val) else 0.0
+                                    score_adj_out = float(score_adj_raw)
+                            except Exception:
+                                continue
+                        
+                        if best_ticker is not None:
+                            # Retorno mensual de ese ETF
+                            if prev_date in safety_prices_m.index and date in safety_prices_m.index:
+                                pr0 = safety_prices_m.loc[prev_date, best_ticker]
+                                pr1 = safety_prices_m.loc[date, best_ticker]
+                                if pd.notna(pr0) and pd.notna(pr1) and pr0 != 0:
+                                    best_ret = (pr1 / pr0) - 1
+                            
+                            if best_ret is not None:
+                                portfolio_return = best_ret - commission
+                                new_equity = equity[-1] * (1 + portfolio_return)
+                                equity.append(new_equity)
+                                dates.append(date)
+                                
+                                # Registrar pick (Rank=1)
+                                picks_list.append({
+                                    "Date": prev_date.strftime("%Y-%m-%d"),
+                                    "Rank": 1,
+                                    "Ticker": best_ticker,
+                                    "Inercia": inercia_val_out,
+                                    "ScoreAdj": score_adj_out,
+                                    "HistoricallyValid": True
+                                })
+                                continue
+                    
+                    # Si no hay refugio disponible, nos quedamos en cash ese mes
                     equity.append(equity[-1])
                     dates.append(date)
                     continue
-                
-                # Tickers válidos según verificación histórica
-                valid_tickers_for_date = valid_tickers_by_date.get(prev_date, set(current_tickers))
                 
                 # Seleccionar candidatos
                 candidates = []
@@ -477,28 +561,12 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                 equity.append(new_equity)
                 dates.append(date)
                 
-                # Debug para fechas específicas
-                if date.year == 2023 and date.month == 9:  # Septiembre 2023
-                    print(f"\n📊 Debug {date.strftime('%Y-%m-%d')}:")
-                    print(f"  Fecha selección (prev_date): {prev_date.strftime('%Y-%m-%d')}")
-                    print(f"  Fecha retorno (date): {date.strftime('%Y-%m-%d')}")
-                    print(f"  Tickers seleccionados: {len(valid_tickers)}")
-                    print(f"  Retornos individuales:")
-                    for t, r in zip(valid_tickers[:5], ticker_returns[:5]):  # Mostrar primeros 5
-                        print(f"    {t}: {r:.4%}")
-                    print(f"  Retorno promedio: {sum(ticker_returns)/len(ticker_returns):.4%}")
-                    print(f"  Retorno ponderado: {sum(r * weight for r in ticker_returns):.4%}")
-                    print(f"  Comisión: -{commission:.4%}")
-                    print(f"  Retorno final: {portfolio_return:.4%}")
-                
-                # Guardar picks seleccionados
-                # IMPORTANTE: Los picks se guardan con la fecha de SELECCIÓN (prev_date)
-                # pero el retorno corresponde al período siguiente
+                # Guardar picks seleccionados (fecha de selección: prev_date)
                 for rank, ticker in enumerate(valid_tickers, 1):
                     pick_data = next((p for p in selected_picks if p['ticker'] == ticker), None)
                     if pick_data:
                         picks_list.append({
-                            "Date": prev_date.strftime("%Y-%m-%d"),  # Fecha de selección
+                            "Date": prev_date.strftime("%Y-%m-%d"),
                             "Rank": rank,
                             "Ticker": ticker,
                             "Inercia": pick_data['inercia'],
