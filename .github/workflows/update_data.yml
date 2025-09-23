@@ -89,9 +89,16 @@ jobs:
               for file_path in csv_files:
                   filename = os.path.basename(file_path)
                   if filename.endswith('.csv'):
-                      ticker = filename.replace('.csv', '')
+                      ticker = filename.replace('.csv', '').upper()
                       tickers.append(ticker)
               return sorted(list(set(tickers)))
+          
+          def load_extra_tickers(path="data/extra_tickers.txt"):
+              """Carga tickers extra declarados (uno por línea) para crear/actualizar."""
+              if os.path.exists(path):
+                  with open(path, "r") as f:
+                      return sorted(list({line.strip().upper() for line in f if line.strip()}))
+              return []
           
           def regenerate_full_history(ticker):
               """Regenera historial completo"""
@@ -118,9 +125,17 @@ jobs:
               try:
                   filename = f"data/{ticker}.csv"
                   
-                  if not os.path.exists(filename) and not force_regenerate:
-                      print(f"❌ {ticker}: Archivo no encontrado")
-                      return False
+                  # NUEVO: si no existe, crearlo desde cero
+                  if not os.path.exists(filename):
+                      print(f"📄 {ticker}: No existía, descargando historial completo...")
+                      data = regenerate_full_history(ticker)
+                      if data is not None:
+                          data.to_csv(filename)
+                          print(f"✅ {ticker}: Creado")
+                          return True
+                      else:
+                          print(f"❌ {ticker}: No se pudo crear")
+                          return False
                   
                   needs_full_regeneration = force_regenerate
                   
@@ -222,7 +237,7 @@ jobs:
               ok_files = []
               
               for file_path in csv_files:
-                  ticker = os.path.basename(file_path).replace('.csv', '')
+                  ticker = os.path.basename(file_path).replace('.csv', '').upper()
                   try:
                       df = pd.read_csv(file_path, index_col="Date", parse_dates=True)
                       
@@ -262,6 +277,19 @@ jobs:
               updated = 0
               errors = 0
               
+              # Cargar y crear tickers extra (p.ej. IEF, BIL)
+              extra = load_extra_tickers()
+              if extra:
+                  print("\n➕ Tickers extra declarados:", extra)
+                  for t in extra:
+                      if not os.path.exists(f"data/{t}.csv"):
+                          data = regenerate_full_history(t)
+                          if data is not None:
+                              data.to_csv(f"data/{t}.csv")
+                              print(f"✅ {t}: CSV creado desde cero")
+                          else:
+                              print(f"❌ {t}: No se pudo crear CSV inicial")
+              
               tickers_to_regenerate = check_and_fix_all_csvs()
               
               if tickers_to_regenerate:
@@ -292,6 +320,8 @@ jobs:
               print("=" * 60)
               
               all_tickers = get_existing_tickers()
+              # incluir extra por si acabamos de crearlos
+              all_tickers = sorted(list({*all_tickers, *extra}))
               print(f"\n📁 Total: {len(all_tickers)}")
               
               priority_tickers = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA']
@@ -320,17 +350,6 @@ jobs:
               print(f"✅ Procesados: {updated + regenerated}")
               print(f"❌ Errores: {errors + failed}")
               print(f"📊 Total: {len(tickers_ordered)}")
-              
-              print("\n🔍 Verificación:")
-              for ticker in priority_found[:5]:
-                  try:
-                      df = pd.read_csv(f"data/{ticker}.csv", index_col="Date", parse_dates=True)
-                      has_adj = 'Adj Close' in df.columns
-                      status = "⚠️ TIENE ADJ CLOSE" if has_adj else "✅ OK"
-                      print(f"  {ticker}: {len(df)} registros - {status}")
-                  except Exception as e:
-                      print(f"  {ticker}: Error")
-              
               print("\n✅ Proceso completado")
           EOF
 
