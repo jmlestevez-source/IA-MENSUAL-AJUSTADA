@@ -314,7 +314,8 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                           use_roc_filter=False, use_sma_filter=False, spy_data=None,
                           progress_callback=None,
                           use_safety_etfs=False, safety_prices=None, safety_ohlc=None,
-                          safety_tickers=('IEF','BIL')):
+                          safety_tickers=('IEF','BIL'),
+                          avoid_rebuy_unchanged=True):
     """
     VERSIÓN OPTIMIZADA del backtest con precálculo
     Retorna: bt_results (DataFrame), picks_df (DataFrame)
@@ -348,15 +349,16 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
         # Datos de ETFs refugio (IEF/BIL)
         safety_prices_m = None
         safety_scores = None
-        if use_safety_etfs and safety_prices is not None and not isinstance(safety_prices, pd.DataFrame) and not safety_prices.empty:
-            safety_prices = safety_prices.to_frame()
-        if use_safety_etfs and safety_prices is not None and not getattr(safety_prices, 'empty', True):
-            safety_prices_m = safety_prices.resample('ME').last()
-            safety_ind = inertia_score(safety_prices, corte=corte, ohlc_data=safety_ohlc)
-            safety_scores = {
-                'InerciaAlcista': safety_ind.get('InerciaAlcista'),
-                'ATR14': safety_ind.get('ATR14')
-            }
+        if use_safety_etfs and safety_prices is not None:
+            if isinstance(safety_prices, pd.Series):
+                safety_prices = safety_prices.to_frame()
+            if isinstance(safety_prices, pd.DataFrame) and not safety_prices.empty:
+                safety_prices_m = safety_prices.resample('ME').last()
+                safety_ind = inertia_score(safety_prices, corte=corte, ohlc_data=safety_ohlc)
+                safety_scores = {
+                    'InerciaAlcista': safety_ind.get('InerciaAlcista'),
+                    'ATR14': safety_ind.get('ATR14')
+                }
         
         # Precalculos
         all_indicators = precalculate_all_indicators(prices_df_m, ohlc_data, corte)
@@ -378,6 +380,11 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
         dates = [prices_df_m.index[0]]
         picks_list = []
         total_months = len(prices_df_m) - 1
+
+        # Estado para evitar recompras innecesarias
+        prev_selected_set = set()
+        last_mode = 'none'   # 'normal' | 'safety' | 'none'
+        last_safety_ticker = None
         
         for i in range(1, len(prices_df_m)):
             try:
@@ -462,7 +469,12 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                                     best_ret = (pr1 / pr0) - 1
                             
                             if best_ret is not None:
-                                portfolio_return = best_ret - commission
+                                # Comisión: solo si cambiamos de modo o de ETF (si se evita recomprar)
+                                commission_effect = commission
+                                if avoid_rebuy_unchanged and last_mode == 'safety' and last_safety_ticker == best_ticker:
+                                    commission_effect = 0.0
+                                
+                                portfolio_return = best_ret - commission_effect
                                 new_equity = equity[-1] * (1 + portfolio_return)
                                 equity.append(new_equity)
                                 dates.append(date)
@@ -476,11 +488,18 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                                     "ScoreAdj": score_adj_out,
                                     "HistoricallyValid": True
                                 })
+
+                                last_mode = 'safety'
+                                last_safety_ticker = best_ticker
+                                prev_selected_set = set([best_ticker])  # para consistencia
                                 continue
                     
                     # Si no hay refugio disponible, nos quedamos en cash ese mes
                     equity.append(equity[-1])
                     dates.append(date)
+                    last_mode = 'safety'
+                    last_safety_ticker = None
+                    prev_selected_set = set()
                     continue
                 
                 # Seleccionar candidatos
@@ -505,6 +524,8 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                 if not candidates:
                     equity.append(equity[-1])
                     dates.append(date)
+                    last_mode = 'normal'
+                    # NO cambiamos prev_selected_set para que el próximo turnover se mida desde la última cartera real
                     continue
                 
                 # Ordenar por score ajustado y seleccionar
@@ -539,6 +560,7 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                 if not valid_tickers:
                     equity.append(equity[-1])
                     dates.append(date)
+                    last_mode = 'normal'
                     continue
                 
                 # Calcular retorno del portfolio
@@ -553,8 +575,23 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                 # Retorno ponderado del portfolio
                 portfolio_return = sum(r * weight for r in ticker_returns)
                 
+                # Comisión dinámica (evitar recompras si siguen en cartera)
+                commission_effect = commission
+                if avoid_rebuy_unchanged:
+                    if last_mode != 'normal':
+                        # Venimos de 'safety' o sin cartera previa -> turnover completo
+                        commission_effect = commission
+                    else:
+                        new_set = set(valid_tickers)
+                        old_set = set(prev_selected_set)
+                        entries = len(new_set - old_set)
+                        exits = len(old_set - new_set)
+                        # Aproximación: comisiones proporcionales al número de operaciones sobre el total de posiciones
+                        turnover_ratio = (entries + exits) / max(1, len(new_set))
+                        commission_effect = commission * turnover_ratio
+                
                 # Aplicar comisión
-                portfolio_return -= commission
+                portfolio_return -= commission_effect
                 
                 # Actualizar equity
                 new_equity = equity[-1] * (1 + portfolio_return)
@@ -573,6 +610,11 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                             "ScoreAdj": pick_data['score_adj'],
                             "HistoricallyValid": ticker in valid_tickers_for_date
                         })
+                
+                # Actualizar estado
+                prev_selected_set = set(valid_tickers)
+                last_mode = 'normal'
+                last_safety_ticker = None
                 
             except Exception as e:
                 print(f"Error en mes {i} ({date}): {e}")
