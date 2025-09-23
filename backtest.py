@@ -415,84 +415,76 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                     valid_tickers_for_date = set(valid_tickers_for_date) - set(safety_tickers)
                 
                 if market_filter_active:
-                    # Si hay filtro de mercado y está activado el modo refugio, invertimos 100% en el mejor (IEF/BIL)
+                    # Si hay filtro de mercado y está activado el modo refugio, invertir 100% en el mejor disponible (IEF/BIL)
                     if use_safety_etfs and safety_prices_m is not None and not safety_prices_m.empty:
-                        best_ticker = None
-                        best_score_adj_raw = -1e18
-                        best_ret = None
-                        inercia_val_out = 0.0
-                        score_adj_out = 0.0
-                        
+                        # Determinar cuáles safety tienen datos válidos este mes
+                        candidates = []
                         for st in safety_tickers:
-                            if safety_prices_m is None or st not in safety_prices_m.columns:
+                            if st not in safety_prices_m.columns:
                                 continue
                             try:
-                                # Score ajustado crudo = InerciaAlcista / ATR14 (sin aplicar corte)
-                                if (safety_scores and
-                                    safety_scores['InerciaAlcista'] is not None and
-                                    safety_scores['ATR14'] is not None and
-                                    prev_date in safety_scores['InerciaAlcista'].index and
-                                    prev_date in safety_scores['ATR14'].index and
-                                    st in safety_scores['InerciaAlcista'].columns and
-                                    st in safety_scores['ATR14'].columns):
-                                    
-                                    inercia_val = float(safety_scores['InerciaAlcista'].loc[prev_date, st])
-                                    atr_val = float(safety_scores['ATR14'].loc[prev_date, st])
-                                    score_adj_raw = (inercia_val / atr_val) if atr_val and atr_val != 0 else np.nan
-                                else:
-                                    inercia_val = np.nan
-                                    score_adj_raw = np.nan
-                                
-                                # Fallback: si NaN, usar retorno 1M como heurística
-                                if pd.isna(score_adj_raw):
-                                    if prev_date in safety_prices_m.index and date in safety_prices_m.index:
-                                        pr0 = safety_prices_m.loc[prev_date, st]
-                                        pr1 = safety_prices_m.loc[date, st]
-                                        score_adj_raw = ((pr1 / pr0) - 1) if (pd.notna(pr0) and pd.notna(pr1) and pr0 != 0) else -1e18
-                                    else:
-                                        score_adj_raw = -1e18
-                                
-                                if score_adj_raw > best_score_adj_raw:
-                                    best_score_adj_raw = score_adj_raw
-                                    best_ticker = st
-                                    inercia_val_out = float(inercia_val) if pd.notna(inercia_val) else 0.0
-                                    score_adj_out = float(score_adj_raw)
+                                if prev_date in safety_prices_m.index and date in safety_prices_m.index:
+                                    pr0 = safety_prices_m.loc[prev_date, st]
+                                    pr1 = safety_prices_m.loc[date, st]
+                                    if pd.notna(pr0) and pd.notna(pr1) and pr0 != 0:
+                                        ret_1m = (pr1 / pr0) - 1
+                                        
+                                        # Calcular métricas opcionales (inercia/ATR) si existen
+                                        inercia_val = 0.0
+                                        score_adj_raw = ret_1m  # por si no hay ATR/Inercia
+                                        if (safety_scores and
+                                            safety_scores['InerciaAlcista'] is not None and
+                                            safety_scores['ATR14'] is not None and
+                                            prev_date in safety_scores['InerciaAlcista'].index and
+                                            prev_date in safety_scores['ATR14'].index and
+                                            st in safety_scores['InerciaAlcista'].columns and
+                                            st in safety_scores['ATR14'].columns):
+                                            try:
+                                                inercia_val = float(safety_scores['InerciaAlcista'].loc[prev_date, st])
+                                                atr_val = float(safety_scores['ATR14'].loc[prev_date, st])
+                                                if atr_val and atr_val != 0:
+                                                    score_adj_raw = inercia_val / atr_val
+                                            except Exception:
+                                                pass
+                                        
+                                        candidates.append({
+                                            'ticker': st,
+                                            'ret': float(ret_1m),
+                                            'inercia': float(inercia_val),
+                                            'score_adj': float(score_adj_raw)
+                                        })
                             except Exception:
                                 continue
                         
-                        if best_ticker is not None:
-                            # Retorno mensual de ese ETF
-                            if prev_date in safety_prices_m.index and date in safety_prices_m.index:
-                                pr0 = safety_prices_m.loc[prev_date, best_ticker]
-                                pr1 = safety_prices_m.loc[date, best_ticker]
-                                if pd.notna(pr0) and pd.notna(pr1) and pr0 != 0:
-                                    best_ret = (pr1 / pr0) - 1
+                        if candidates:
+                            # Elegir el mejor por score ajustado (siempre habrá un ganador entre los válidos)
+                            candidates = sorted(candidates, key=lambda x: x['score_adj'], reverse=True)
+                            best = candidates[0]
                             
-                            if best_ret is not None:
-                                # Comisión: solo si cambiamos de modo o de ETF (si se evita recomprar)
-                                commission_effect = commission
-                                if avoid_rebuy_unchanged and last_mode == 'safety' and last_safety_ticker == best_ticker:
-                                    commission_effect = 0.0
-                                
-                                portfolio_return = best_ret - commission_effect
-                                new_equity = equity[-1] * (1 + portfolio_return)
-                                equity.append(new_equity)
-                                dates.append(date)
-                                
-                                # Registrar pick (Rank=1)
-                                picks_list.append({
-                                    "Date": prev_date.strftime("%Y-%m-%d"),
-                                    "Rank": 1,
-                                    "Ticker": best_ticker,
-                                    "Inercia": inercia_val_out,
-                                    "ScoreAdj": score_adj_out,
-                                    "HistoricallyValid": True
-                                })
+                            # Comisión: solo si cambiamos de modo o de ETF (si se evita recomprar)
+                            commission_effect = commission
+                            if avoid_rebuy_unchanged and last_mode == 'safety' and last_safety_ticker == best['ticker']:
+                                commission_effect = 0.0
+                            
+                            portfolio_return = best['ret'] - commission_effect
+                            new_equity = equity[-1] * (1 + portfolio_return)
+                            equity.append(new_equity)
+                            dates.append(date)
+                            
+                            # Registrar pick (Rank=1)
+                            picks_list.append({
+                                "Date": prev_date.strftime("%Y-%m-%d"),
+                                "Rank": 1,
+                                "Ticker": best['ticker'],
+                                "Inercia": best['inercia'],
+                                "ScoreAdj": best['score_adj'],
+                                "HistoricallyValid": True
+                            })
 
-                                last_mode = 'safety'
-                                last_safety_ticker = best_ticker
-                                prev_selected_set = set([best_ticker])  # para consistencia
-                                continue
+                            last_mode = 'safety'
+                            last_safety_ticker = best['ticker']
+                            prev_selected_set = {best['ticker']}
+                            continue
                     
                     # Si no hay refugio disponible, nos quedamos en cash ese mes
                     equity.append(equity[-1])
@@ -502,7 +494,7 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                     prev_selected_set = set()
                     continue
                 
-                # Seleccionar candidatos
+                # Seleccionar candidatos (universo normal)
                 candidates = []
                 for ticker in valid_tickers_for_date:
                     if ticker not in all_indicators:
@@ -525,7 +517,6 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                     equity.append(equity[-1])
                     dates.append(date)
                     last_mode = 'normal'
-                    # NO cambiamos prev_selected_set para que el próximo turnover se mida desde la última cartera real
                     continue
                 
                 # Ordenar por score ajustado y seleccionar
@@ -586,7 +577,6 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                         old_set = set(prev_selected_set)
                         entries = len(new_set - old_set)
                         exits = len(old_set - new_set)
-                        # Aproximación: comisiones proporcionales al número de operaciones sobre el total de posiciones
                         turnover_ratio = (entries + exits) / max(1, len(new_set))
                         commission_effect = commission * turnover_ratio
                 
