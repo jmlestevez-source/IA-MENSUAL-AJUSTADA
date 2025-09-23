@@ -10,6 +10,10 @@ warnings.filterwarnings('ignore')
 
 FORCE_UPDATE = '--force' in sys.argv
 
+def normalize_symbol(ticker: str) -> str:
+    """Normaliza el símbolo a formato Yahoo y de nombre de archivo (BRK.B -> BRK-B)."""
+    return str(ticker).strip().upper().replace('.', '-')
+
 def normalize_adjusted_dataframe(df):
     """Normaliza el DataFrame con datos ajustados"""
     expected_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
@@ -41,7 +45,7 @@ def normalize_adjusted_dataframe(df):
     return df
 
 def get_existing_tickers():
-    """Obtiene tickers existentes"""
+    """Obtiene tickers existentes (por nombre de archivo en data/)."""
     csv_files = glob.glob("data/*.csv")
     tickers = []
     for file_path in csv_files:
@@ -55,15 +59,97 @@ def load_extra_tickers(path="data/extra_tickers.txt"):
     """Carga tickers extra declarados (uno por línea) para crear/actualizar."""
     if os.path.exists(path):
         with open(path, "r") as f:
-            return sorted(list({line.strip().upper() for line in f if line.strip()}))
+            return sorted(list({normalize_symbol(line) for line in f if line.strip()}))
     return []
 
-def regenerate_full_history(ticker):
-    """Regenera historial completo"""
+def save_extra_tickers(tickers, path="data/extra_tickers.txt"):
+    """Guarda el conjunto de tickers extra (uno por línea) de forma ordenada."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    unique_sorted = sorted(list({normalize_symbol(t) for t in tickers}))
+    with open(path, "w") as f:
+        for t in unique_sorted:
+            f.write(f"{t}\n")
+    return unique_sorted
+
+def append_extra_tickers(new_tickers, path="data/extra_tickers.txt"):
+    """Añade tickers al archivo extra_tickers.txt evitando duplicados y devolviendo los nuevos realmente añadidos."""
+    existing = set(load_extra_tickers(path))
+    normalized_new = {normalize_symbol(t) for t in new_tickers if str(t).strip()}
+    to_add = normalized_new - existing
+    if to_add:
+        updated = sorted(list(existing | to_add))
+        save_extra_tickers(updated, path)
+    return sorted(list(to_add))
+
+def read_changes_csv(file_path):
+    """
+    Lee un CSV de cambios y lo normaliza a columnas: Date, Ticker, Action.
+    Maneja delimitadores inferidos (coma, tab, etc.).
+    """
     try:
-        print(f"  🔄 Regenerando {ticker}...")
+        df = pd.read_csv(file_path, sep=None, engine='python')
+        if df.empty:
+            return pd.DataFrame(columns=['Date', 'Ticker', 'Action'])
         
-        yticker = yf.Ticker(ticker)
+        # Normalizar nombres de columnas a minúsculas para detectar equivalencias
+        cols = {c.lower().strip(): c for c in df.columns}
+        
+        # Detectar columnas base
+        ticker_col = cols.get('ticker') or cols.get('symbol') or cols.get('símbolo') or cols.get('simbolo')
+        action_col = cols.get('action') or cols.get('accion') or cols.get('change') or cols.get('evento')
+        date_col = cols.get('date') or cols.get('fecha') or cols.get('effective date') or cols.get('effective')
+        
+        if not ticker_col or not action_col:
+            return pd.DataFrame(columns=['Date', 'Ticker', 'Action'])
+        
+        work = df.copy()
+        work.rename(columns={
+            ticker_col: 'Ticker',
+            action_col: 'Action',
+            **({date_col: 'Date'} if date_col else {})
+        }, inplace=True)
+        
+        work['Ticker'] = work['Ticker'].astype(str).str.strip().str.upper()
+        work['Ticker'] = work['Ticker'].str.replace('.', '-', regex=False)  # Normalizar tipo BRK.B
+        work['Action'] = work['Action'].astype(str).str.strip()
+        if 'Date' in work.columns:
+            work['Date'] = pd.to_datetime(work['Date'], errors='coerce')
+        else:
+            work['Date'] = pd.NaT
+        
+        work = work[['Date', 'Ticker', 'Action']].dropna(subset=['Ticker', 'Action'])
+        return work
+    except Exception:
+        return pd.DataFrame(columns=['Date', 'Ticker', 'Action'])
+
+def get_added_tickers_from_changes():
+    """
+    Busca archivos de cambios en raíz o en data/ y devuelve el conjunto de tickers añadidos ('Added').
+    """
+    candidates = [
+        "sp500_changes.csv", "ndx_changes.csv",
+        "data/sp500_changes.csv", "data/ndx_changes.csv"
+    ]
+    added = set()
+    for p in candidates:
+        if os.path.exists(p):
+            df = read_changes_csv(p)
+            if not df.empty:
+                mask_added = df['Action'].str.lower().str.contains('add')
+                added |= set(df.loc[mask_added, 'Ticker'].dropna().astype(str))
+    # Normalizar formateo
+    added = {normalize_symbol(t) for t in added}
+    # Evitar símbolos raros que no sean de Yahoo
+    added = {t for t in added if t and not t.startswith('^')}
+    return sorted(list(added))
+
+def regenerate_full_history(ticker):
+    """Regenera historial completo (auto_adjust=True) usando símbolo normalizado."""
+    try:
+        t_norm = normalize_symbol(ticker)
+        print(f"  🔄 Regenerando {t_norm}...")
+        
+        yticker = yf.Ticker(t_norm)
         data = yticker.history(period="max", auto_adjust=True)
         
         if data.empty:
@@ -79,20 +165,21 @@ def regenerate_full_history(ticker):
         return None
 
 def update_ticker_data(ticker, force_regenerate=False):
-    """Actualiza datos de ticker"""
+    """Actualiza datos de ticker (usa ticker normalizado para Yahoo y nombre de archivo)."""
     try:
-        filename = f"data/{ticker}.csv"
+        t_norm = normalize_symbol(ticker)
+        filename = f"data/{t_norm}.csv"
         
-        # NUEVO: si no existe, crearlo desde cero
+        # Si no existe, crearlo desde cero
         if not os.path.exists(filename):
-            print(f"📄 {ticker}: No existía, descargando historial completo...")
-            data = regenerate_full_history(ticker)
+            print(f"📄 {t_norm}: No existía, descargando historial completo...")
+            data = regenerate_full_history(t_norm)
             if data is not None:
                 data.to_csv(filename)
-                print(f"✅ {ticker}: Creado")
+                print(f"✅ {t_norm}: Creado")
                 return True
             else:
-                print(f"❌ {ticker}: No se pudo crear")
+                print(f"❌ {t_norm}: No se pudo crear")
                 return False
         
         needs_full_regeneration = force_regenerate
@@ -102,21 +189,21 @@ def update_ticker_data(ticker, force_regenerate=False):
                 df_existing = pd.read_csv(filename, index_col="Date", parse_dates=True)
                 
                 if 'Adj Close' in df_existing.columns:
-                    print(f"⚠️ {ticker}: Datos no ajustados detectados")
+                    print(f"⚠️ {t_norm}: Datos no ajustados detectados")
                     needs_full_regeneration = True
                 elif len([c for c in df_existing.columns if c in ['Open','High','Low','Close','Volume']]) != 5:
-                    print(f"⚠️ {ticker}: Estructura incorrecta")
+                    print(f"⚠️ {t_norm}: Estructura incorrecta")
                     needs_full_regeneration = True
                 
-            except Exception as e:
-                print(f"⚠️ {ticker}: Error leyendo archivo")
+            except Exception:
+                print(f"⚠️ {t_norm}: Error leyendo archivo")
                 needs_full_regeneration = True
         
         if needs_full_regeneration:
-            data = regenerate_full_history(ticker)
+            data = regenerate_full_history(t_norm)
             if data is not None:
                 data.to_csv(filename)
-                print(f"✅ {ticker}: Regenerado")
+                print(f"✅ {t_norm}: Regenerado")
                 return True
             else:
                 return False
@@ -130,11 +217,11 @@ def update_ticker_data(ticker, force_regenerate=False):
             today = datetime.now()
             
             if not FORCE_UPDATE and today.weekday() >= 5:
-                print(f"📅 {ticker}: Fin de semana")
+                print(f"📅 {t_norm}: Fin de semana")
                 return True
             
             if last_date.date() >= today.date():
-                print(f"✅ {ticker}: Actualizado")
+                print(f"✅ {t_norm}: Actualizado")
                 return True
             
             est = pytz.timezone('US/Eastern')
@@ -146,12 +233,12 @@ def update_ticker_data(ticker, force_regenerate=False):
                     yesterday = yesterday - timedelta(days=1)
                 
                 if last_date.date() >= yesterday.date():
-                    print(f"⏰ {ticker}: Datos recientes")
+                    print(f"⏰ {t_norm}: Datos recientes")
                     return True
             
-            print(f"📥 {ticker}: Actualizando...")
+            print(f"📥 {t_norm}: Actualizando...")
             
-            yticker = yf.Ticker(ticker)
+            yticker = yf.Ticker(t_norm)
             new_data = yticker.history(period="1mo", auto_adjust=True)
             
             if not new_data.empty:
@@ -166,16 +253,16 @@ def update_ticker_data(ticker, force_regenerate=False):
                     combined = combined.sort_index()
                     
                     combined.to_csv(filename)
-                    print(f"✅ {ticker}: +{len(new_data)} días")
+                    print(f"✅ {t_norm}: +{len(new_data)} días")
                     return True
                 else:
-                    print(f"ℹ️ {ticker}: Sin datos nuevos")
+                    print(f"ℹ️ {t_norm}: Sin datos nuevos")
                     return True
             else:
-                print(f"⚠️ {ticker}: Sin respuesta de Yahoo")
+                print(f"⚠️ {t_norm}: Sin respuesta de Yahoo")
                 return True
         else:
-            data = regenerate_full_history(ticker)
+            data = regenerate_full_history(t_norm)
             if data is not None:
                 data.to_csv(filename)
                 return True
@@ -211,7 +298,7 @@ def check_and_fix_all_csvs():
             else:
                 ok_files.append(ticker)
             
-        except Exception as e:
+        except Exception:
             need_fix.append(ticker)
             print(f"  ❌ {ticker}: Error leyendo")
     
@@ -220,6 +307,24 @@ def check_and_fix_all_csvs():
     print(f"  ⚠️ Necesitan fix: {len(need_fix)}")
     
     return need_fix
+
+def register_new_index_additions_and_update_extra():
+    """
+    Busca nuevas incorporaciones (Action contiene 'add') en los CSVs de cambios,
+    y las añade a data/extra_tickers.txt. Devuelve la lista de tickers realmente añadidos.
+    """
+    added_from_changes = get_added_tickers_from_changes()
+    if not added_from_changes:
+        print("\nℹ️ No se encontraron incorporaciones en CSVs de cambios")
+        return []
+    
+    print("\n🧭 Tickers detectados como 'Added' en cambios:", added_from_changes)
+    newly_added = append_extra_tickers(added_from_changes, path="data/extra_tickers.txt")
+    if newly_added:
+        print("➕ Añadidos a data/extra_tickers.txt:", newly_added)
+    else:
+        print("ℹ️ No había nuevos tickers para añadir a extra_tickers.txt")
+    return newly_added
 
 if __name__ == "__main__":
     print("=" * 60)
@@ -234,20 +339,25 @@ if __name__ == "__main__":
     failed = 0
     updated = 0
     errors = 0
-    
-    # Cargar y crear tickers extra (p.ej. IEF, BIL)
+
+    # 1) Registrar incorporaciones nuevas en extra_tickers.txt (si las hay)
+    newly_added_to_extra = register_new_index_additions_and_update_extra()
+
+    # 2) Cargar y crear tickers extra (p.ej. IEF, BIL y nuevas incorporaciones)
     extra = load_extra_tickers()
     if extra:
         print("\n➕ Tickers extra declarados:", extra)
         for t in extra:
-            if not os.path.exists(f"data/{t}.csv"):
-                data = regenerate_full_history(t)
+            t_norm = normalize_symbol(t)
+            if not os.path.exists(f"data/{t_norm}.csv"):
+                data = regenerate_full_history(t_norm)
                 if data is not None:
-                    data.to_csv(f"data/{t}.csv")
-                    print(f"✅ {t}: CSV creado desde cero")
+                    data.to_csv(f"data/{t_norm}.csv")
+                    print(f"✅ {t_norm}: CSV creado desde cero")
                 else:
-                    print(f"❌ {t}: No se pudo crear CSV inicial")
+                    print(f"❌ {t_norm}: No se pudo crear CSV inicial")
     
+    # 3) Verificar CSVs existentes
     tickers_to_regenerate = check_and_fix_all_csvs()
     
     if tickers_to_regenerate:
@@ -274,6 +384,7 @@ if __name__ == "__main__":
     else:
         print("\n✅ Todos los CSVs están en formato correcto")
     
+    # 4) Actualizar datos de todos los CSVs
     print("\n📊 ACTUALIZANDO DATOS")
     print("=" * 60)
     
