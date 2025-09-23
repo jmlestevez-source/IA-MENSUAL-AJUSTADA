@@ -242,6 +242,7 @@ use_historical_verification = st.sidebar.checkbox("🕐 Usar verificación hist�
 
 st.sidebar.subheader("⚙️ Opciones de Estrategia")
 fixed_allocation = st.sidebar.checkbox("💰 Asignar 10% capital a cada acción", value=False)
+avoid_rebuy_unchanged = st.sidebar.checkbox("⛽ No recomprar picks que se mantienen (evitar comisiones)", value=True)
 
 st.sidebar.subheader("🛡️ Filtros de Mercado")
 use_roc_filter = st.sidebar.checkbox("📉 ROC 12 meses del SPY < 0", value=False)
@@ -292,7 +293,8 @@ if run_button:
             'fixed_alloc': fixed_allocation,
             'roc_filter': use_roc_filter,
             'sma_filter': use_sma_filter,
-            'use_safety_etfs': use_safety_etfs
+            'use_safety_etfs': use_safety_etfs,
+            'avoid_rebuy_unchanged': avoid_rebuy_unchanged
         }
         cache_key = get_cache_key(cache_params)
         cache_file = os.path.join(CACHE_DIR, f"backtest_{cache_key}.pkl")
@@ -434,7 +436,8 @@ if run_button:
                 progress_callback=lambda p: progress_bar.progress(70 + int(p * 0.3)),
                 use_safety_etfs=use_safety_etfs,
                 safety_prices=safety_prices,
-                safety_ohlc=safety_ohlc
+                safety_ohlc=safety_ohlc,
+                avoid_rebuy_unchanged=avoid_rebuy_unchanged
             )
             
             # Guardar en session state
@@ -510,6 +513,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     fixed_allocation = False
     corte = 680
     top_n = 10
+    commission = st.session_state.backtest_params.get('commission', 0.003) if st.session_state.backtest_params else 0.003
     
     if st.session_state.backtest_params:
         index_choice = st.session_state.backtest_params.get('index', 'SP500')
@@ -521,17 +525,10 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
         start_date = st.session_state.backtest_params.get('start')
         end_date = st.session_state.backtest_params.get('end')
     
-    # Debug info
-    if spy_df is not None:
-        st.sidebar.success(f"✅ Datos SPY disponibles: {len(spy_df)} registros")
-    else:
-        st.sidebar.warning("⚠️ No hay datos del SPY")
-    
     st.sidebar.info(f"🔍 Filtros activos: ROC={use_roc_filter}, SMA={use_sma_filter}")
-    
     st.success("✅ Backtest completado exitosamente")
     
-    # Calcular métricas
+    # Calcular métricas de la estrategia
     final_equity = float(bt_results["Equity"].iloc[-1])
     initial_equity = float(bt_results["Equity"].iloc[0])
     total_return = (final_equity / initial_equity) - 1
@@ -560,92 +557,42 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     col4.metric("Max Drawdown (Mensual)", f"{max_drawdown:.2%}")
     col5.metric("Sharpe Ratio (RF=2%)", f"{sharpe_ratio:.2f}")
     
-    # Max drawdown diario REAL de la estrategia (reconstruyendo equity diario a partir de picks)
-    strategy_daily_mdd = None
-    try:
-        picks_all = picks_df.copy()
-        picks_all['Date'] = pd.to_datetime(picks_all['Date'])
-        sel_dates = sorted(picks_all['Date'].unique())
-
-        equity = float(bt_results['Equity'].iloc[0])
-        equity_points = []
-
-        for i, sel_dt in enumerate(sel_dates):
-            next_dt = sel_dates[i+1] if i+1 < len(sel_dates) else prices_df.index.max()
-            window = prices_df.loc[(prices_df.index > sel_dt) & (prices_df.index <= next_dt)]
-            if window.empty:
-                continue
-
-            period_tickers = picks_all.loc[picks_all['Date'] == sel_dt, 'Ticker'].tolist()
-            period_tickers = [t for t in period_tickers if t in prices_df.columns]
-            if not period_tickers:
-                continue
-
-            port_daily_ret = window[period_tickers].pct_change().fillna(0).mean(axis=1)
-
-            # Aplicar una sola comisión el primer día del período
-            if len(port_daily_ret) > 0:
-                port_daily_ret.iloc[0] = port_daily_ret.iloc[0] - commission
-
-            for d, r in port_daily_ret.items():
-                equity *= (1 + r)
-                equity_points.append((d, equity))
-
-        if equity_points:
-            strat_eq_daily = pd.Series([v for _, v in equity_points], index=[d for d, _ in equity_points]).sort_index()
-            dd_daily = (strat_eq_daily / strat_eq_daily.cummax()) - 1
-            strategy_daily_mdd = float(dd_daily.min())
-        else:
-            strategy_daily_mdd = None
-
-    except Exception:
-        strategy_daily_mdd = None
-    
-    col_row = st.columns(2)
-    col_row[0].metric("Max DD Diario Estrategia", f"{strategy_daily_mdd:.2%}" if strategy_daily_mdd is not None else "N/D")
-    
-    # Benchmark (usar mensual para coherencia con la estrategia) + Max DD diario SPY
-    bench_equity = None
-    bench_drawdown = None
-    bench_sharpe = 0
+    # Benchmark (corregido para evitar NaNs cuando faltan datos al inicio)
     bench_final = initial_equity
-    bench_total_return = 0
-    bench_cagr = 0
-    bench_max_dd = 0
-    
-    # Max DD Diario SPY
-    spy_daily_mdd = None
-    if spy_df is not None and hasattr(spy_df, 'columns') and 'SPY' in spy_df.columns:
-        try:
-            spy_daily_returns = spy_df['SPY'].pct_change().fillna(0)
-            spy_daily_equity = initial_equity * (1 + spy_daily_returns).cumprod()
-            spy_daily_dd = (spy_daily_equity / spy_daily_equity.cummax()) - 1
-            spy_daily_mdd = float(spy_daily_dd.min())
-        except Exception:
-            spy_daily_mdd = None
+    bench_total_return = 0.0
+    bench_cagr = 0.0
+    bench_max_dd = 0.0
+    bench_sharpe = 0.0
+    bench_equity_m = None
+    bench_drawdown_m = None
     
     if benchmark_series is not None and not benchmark_series.empty:
         try:
             bench_prices_m = benchmark_series.resample('ME').last()
-            bench_returns_m = bench_prices_m.pct_change().fillna(0)
-            bench_equity = initial_equity * (1 + bench_returns_m).cumprod()
-            bench_drawdown = (bench_equity / bench_equity.cummax() - 1)
-            
-            bench_final = float(bench_equity.reindex(bt_results.index).ffill().iloc[-1])
-            bench_initial = float(bench_equity.reindex(bt_results.index).ffill().iloc[0]) if bench_equity.iloc[0] != 0 else initial_equity
-            bench_total_return = (bench_final / bench_initial) - 1
-            
-            if years > 0:
-                bench_cagr = (bench_final / bench_initial) ** (1/years) - 1
-            
-            bench_max_dd = float(bench_drawdown.reindex(bt_results.index).ffill().min())
-            
-            bench_excess_returns = bench_returns_m - risk_free_rate_monthly
-            bench_sharpe = (bench_excess_returns.mean() * 12) / (bench_excess_returns.std() * np.sqrt(12)) if bench_excess_returns.std() != 0 else 0
-                
+            bench_prices_aligned = bench_prices_m.reindex(bt_results.index)
+            valid_idx = bench_prices_aligned.dropna().index
+
+            if len(valid_idx) > 1:
+                bench_returns_valid = bench_prices_aligned.loc[valid_idx].pct_change().fillna(0)
+                bench_equity_valid = initial_equity * (1 + bench_returns_valid).cumprod()
+                bench_final = float(bench_equity_valid.iloc[-1])
+                bench_initial_valid = float(bench_equity_valid.iloc[0])
+                bench_total_return = (bench_final / bench_initial_valid) - 1
+
+                bench_years = (valid_idx[-1] - valid_idx[0]).days / 365.25
+                bench_cagr = (bench_final / bench_initial_valid) ** (1/bench_years) - 1 if bench_years > 0 else 0
+
+                bench_drawdown_valid = (bench_equity_valid / bench_equity_valid.cummax()) - 1
+                bench_max_dd = float(bench_drawdown_valid.min())
+
+                bench_excess_returns = bench_returns_valid - risk_free_rate_monthly
+                bench_sharpe = (bench_excess_returns.mean() * 12) / (bench_excess_returns.std() * np.sqrt(12)) if bench_excess_returns.std() != 0 else 0
+
+                # Series mensuales para gráficas, alineadas al índice del backtest
+                bench_equity_m = bench_equity_valid.reindex(bt_results.index).ffill()
+                bench_drawdown_m = bench_drawdown_valid.reindex(bt_results.index).ffill()
         except Exception as e:
             st.warning(f"Error calculando benchmark: {e}")
-            bench_sharpe = 0
     
     benchmark_name = "SPY" if index_choice != "NDX" else "QQQ"
     
@@ -656,9 +603,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     col3b.metric("CAGR", f"{bench_cagr:.2%}")
     col4b.metric("Max Drawdown (Mensual)", f"{bench_max_dd:.2%}")
     col5b.metric("Sharpe Ratio (RF=2%)", f"{bench_sharpe:.2f}")
-    
-    col_row_b = st.columns(2)
-    col_row_b[0].metric("Max DD Diario SPY", f"{spy_daily_mdd:.2%}" if spy_daily_mdd is not None else "N/D")
     
     # Comparación
     st.subheader("⚖️ Comparación Estrategia vs Benchmark")
@@ -672,6 +616,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     
     dd_diff = max_drawdown - bench_max_dd
     col3c.metric("DD Difference", f"{dd_diff:.2%}", delta=f"{dd_diff:.2%}")
+    
     return_diff = total_return - bench_total_return
     col4c.metric("Return Diff", f"{return_diff:.2%}", delta=f"{return_diff:.2%}")
     
@@ -684,14 +629,13 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
         st.warning("⚠️ Este backtest NO incluye verificación histórica (posible sesgo de supervivencia)")
     
     # ==============================
-    # Series mensuales alineadas para gráficas (NUEVO)
+    # Series mensuales alineadas para gráficas
     # ==============================
-    bench_equity_m = None
-    bench_drawdown_m = None
     spy_equity_m = None
     spy_drawdown_m = None
     try:
-        if benchmark_series is not None and not benchmark_series.empty:
+        if bench_equity_m is None and benchmark_series is not None and not benchmark_series.empty:
+            # Si por cualquier motivo no se calculó arriba, construimos una serie segura
             bench_prices_m = benchmark_series.resample('ME').last()
             bench_returns_m = bench_prices_m.pct_change().fillna(0)
             bench_equity_m = initial_equity * (1 + bench_returns_m).cumprod()
@@ -704,7 +648,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     except Exception as e:
         st.warning(f"No se pudieron preparar series mensuales para gráficas: {e}")
     
-    # GRÁFICOS PRINCIPALES CON SUBPLOTS COMPARTIDOS - CORREGIDO PARA MOSTRAR SIEMPRE SPY
+    # GRÁFICOS PRINCIPALES CON SUBPLOTS COMPARTIDOS
     st.subheader("📈 Gráficos de Rentabilidad")
     
     # Mostrar información de debug si hay filtros activos
@@ -738,7 +682,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
         row=1, col=1
     )
     
-    # Benchmark mensual y alineado (sin gris/dashed)
+    # Benchmark mensual y alineado
     if bench_equity_m is not None:
         bench_aligned = bench_equity_m.reindex(bt_results.index).ffill()
         bench_line = dict(width=2.5, color='#50C878') if (index_choice != "NDX") else dict(width=2.5, color='#9467BD')
@@ -754,7 +698,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             row=1, col=1
         )
     
-    # SPY mensual y alineado (solo si el benchmark no es SPY) en verde esmeralda
+    # SPY mensual y alineado (solo si el benchmark no es SPY)
     if spy_equity_m is not None and index_choice == "NDX":
         spy_aligned = spy_equity_m.reindex(bt_results.index).ffill()
         fig.add_trace(
@@ -785,7 +729,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             row=2, col=1
         )
         
-        # Drawdown benchmark mensual y alineado (sin gris/dashed)
+        # Drawdown benchmark mensual y alineado
         if bench_drawdown_m is not None:
             bench_dd_aligned = (bench_drawdown_m.reindex(bt_results.index).ffill() * 100)
             bench_dd_line = dict(color='#FF7F0E', width=2) if (index_choice != "NDX") else dict(color='#9467BD', width=2)
@@ -936,23 +880,11 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                         # El retorno del mes es el retorno de la estrategia
                         monthly_return = bt_results['Returns'].iloc[current_idx + 1]
                         
-                        # Obtener comisión para mostrar el desglose
-                        commission = st.session_state.backtest_params.get('commission', 0.003) if st.session_state.backtest_params else 0.003
-                        
                         st.metric(
                             "📈 Retorno del Mes",
                             f"{monthly_return:.2%}",
                             delta=f"{monthly_return:.2%}" if monthly_return != 0 else None
                         )
-                        
-                        # Mostrar desglose
-                        with st.expander("🔍 Desglose del Retorno", expanded=False):
-                            st.write(f"Fecha picks: {selected_date}")
-                            st.write(f"Equity inicial: ${bt_results['Equity'].iloc[current_idx]:,.2f}")
-                            st.write(f"Equity final: ${bt_results['Equity'].iloc[current_idx + 1]:,.2f}")
-                            st.write(f"**Retorno neto: {monthly_return:.4%}**")
-                            st.write(f"Comisión aplicada: -{commission:.2%}")
-                            st.write(f"Retorno bruto estimado: {monthly_return + commission:.4%}")
                     else:
                         st.warning("📅 Último mes del backtest (sin retorno futuro)")
                         monthly_return = 0.0
@@ -1098,39 +1030,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                         col2.metric("Tasa de Éxito", f"{win_rate:.1f}%")
                         col3.metric("Mejor Pick", f"{max(valid_returns):.2%}")
                         
-                        # Verificación de consistencia mejorada
-                        commission = st.session_state.backtest_params.get('commission', 0.003) if st.session_state.backtest_params else 0.003
-                        
-                        # Calcular retorno teórico con comisión
-                        theoretical_return_with_commission = avg_return - commission
-                        difference = abs(monthly_return - theoretical_return_with_commission)
-                        
-                        st.info(f"""
-                        📊 **Análisis de Retornos:**
-                        - Retorno promedio picks (bruto): {avg_return:.2%}
-                        - Menos comisión: -{commission:.2%}
-                        - Retorno teórico neto: {theoretical_return_with_commission:.2%}
-                        - Retorno real estrategia: {monthly_return:.2%}
-                        - Diferencia: {difference:.2%}
-                        """)
-                        
-                        # Explicación de diferencias
-                        if difference > 0.005:  # Más de 0.5% de diferencia
-                            with st.expander("ℹ️ Análisis de diferencias", expanded=True):
-                                st.write(f"""
-                                **Diferencia de {difference:.2%} puede deberse a:**
-                                
-                                1. **Ponderación**: La estrategia usa {len(valid_returns)} de {len(date_picks)} picks
-                                2. **Validación histórica**: Algunos tickers podrían no estar disponibles
-                                3. **Redondeo y precisión**: Pequeñas diferencias en cálculos
-                                
-                                **Cálculo detallado:**
-                                - Suma de retornos: {sum(valid_returns):.4%}
-                                - Dividido entre {len(valid_returns)} = {avg_return:.4%}
-                                - Menos comisión {commission:.2%} = {theoretical_return_with_commission:.4%}
-                                - Retorno backtest = {monthly_return:.4%}
-                                """)
-                        
                         # Gráfico de barras de retornos individuales
                         fig_returns = go.Figure()
                         fig_returns.add_trace(go.Bar(
@@ -1164,7 +1063,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
         # Sección adicional: Resumen general de todos los picks
         st.markdown("### 📊 Resumen General de Todos los Picks")
         
-        # Tabs para diferentes vistas - CORREGIR DEFINICIÓN
+        # Tabs para diferentes vistas
         tabs = st.tabs(["📈 Por Fecha", "🏆 Top Tickers", "📉 Distribución"])
         
         with tabs[0]:  # Tab 1: Por Fecha
@@ -1226,229 +1125,10 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             mime="text/csv",
             help="Descarga todos los picks del backtest con sus métricas"
         )
-    
-    # TOP 5 MEJORES Y PEORES TRADES - NUEVA SECCIÓN
-    st.subheader("🏆 Top 5 Mejores y Peores Trades")
-    
-    try:
-        # Calcular todos los retornos individuales de todos los picks
-        all_trades = []
-        
-        for date in picks_df['Date'].unique():
-            date_picks = picks_df[picks_df['Date'] == date]
-            selected_dt = pd.Timestamp(date)
-            
-            for _, pick in date_picks.iterrows():
-                ticker = pick['Ticker']
-                
-                if ticker in prices_df.columns:
-                    try:
-                        # Usar la misma lógica que el backtest
-                        ticker_monthly = prices_df[ticker].resample('ME').last()
-                        
-                        if selected_dt in ticker_monthly.index:
-                            current_idx = ticker_monthly.index.get_loc(selected_dt)
-                            
-                            if current_idx < len(ticker_monthly) - 1:
-                                entry_date = ticker_monthly.index[current_idx]
-                                exit_date = ticker_monthly.index[current_idx + 1]
-                                
-                                entry_price = ticker_monthly.iloc[current_idx]
-                                exit_price = ticker_monthly.iloc[current_idx + 1]
-                                
-                                if pd.notna(entry_price) and pd.notna(exit_price) and entry_price != 0:
-                                    trade_return = (exit_price / entry_price) - 1
-                                    
-                                    all_trades.append({
-                                        'Date': date,
-                                        'Ticker': ticker,
-                                        'Entry': entry_date.strftime('%Y-%m-%d'),
-                                        'Exit': exit_date.strftime('%Y-%m-%d'),
-                                        'Entry Price': entry_price,
-                                        'Exit Price': exit_price,
-                                        'Return': trade_return,
-                                        'Inercia': pick['Inercia'],
-                                        'ScoreAdj': pick['ScoreAdj']
-                                    })
-                    except:
-                        continue
-        
-        if all_trades:
-            trades_df = pd.DataFrame(all_trades)
-            trades_df = trades_df.sort_values('Return', ascending=False)
-            
-            # Top 5 mejores
-            top_5_best = trades_df.head(5)
-            
-            # Top 5 peores
-            top_5_worst = trades_df.tail(5).sort_values('Return')
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 🎯 Top 5 Mejores Trades")
-                best_display = top_5_best[['Date', 'Ticker', 'Return', 'Entry Price', 'Exit Price']].copy()
-                best_display['Return'] = best_display['Return'].apply(lambda x: f"{x:.2%}")
-                best_display['Entry Price'] = best_display['Entry Price'].apply(lambda x: f"${x:.2f}")
-                best_display['Exit Price'] = best_display['Exit Price'].apply(lambda x: f"${x:.2f}")
-                
-                st.dataframe(
-                    best_display.style.set_properties(**{'background-color': '#d4edda', 'color': '#155724'}),
-                    use_container_width=True
-                )
-                
-                avg_best = top_5_best['Return'].mean()
-                st.success(f"📈 Retorno promedio Top 5: {avg_best:.2%}")
-            
-            with col2:
-                st.markdown("### 📉 Top 5 Peores Trades")
-                worst_display = top_5_worst[['Date', 'Ticker', 'Return', 'Entry Price', 'Exit Price']].copy()
-                worst_display['Return'] = worst_display['Return'].apply(lambda x: f"{x:.2%}")
-                worst_display['Entry Price'] = worst_display['Entry Price'].apply(lambda x: f"${x:.2f}")
-                worst_display['Exit Price'] = worst_display['Exit Price'].apply(lambda x: f"${x:.2f}")
-                
-                st.dataframe(
-                    worst_display.style.set_properties(**{'background-color': '#f8d7da', 'color': '#721c24'}),
-                    use_container_width=True
-                )
-                
-                avg_worst = top_5_worst['Return'].mean()
-                st.error(f"📉 Retorno promedio Bottom 5: {avg_worst:.2%}")
-            
-            # Estadísticas generales
-            st.markdown("### 📊 Estadísticas Generales de Trades")
-            col1, col2, col3, col4 = st.columns(4)
-            
-            col1.metric("Total Trades", len(trades_df))
-            col2.metric("Win Rate", f"{(trades_df['Return'] > 0).mean():.1%}")
-            col3.metric("Avg Return", f"{trades_df['Return'].mean():.2%}")
-            col4.metric("Max DD Trade", f"{trades_df['Return'].min():.2%}")
-            
-        else:
-            st.warning("No se pudieron calcular trades individuales")
-            
-    except Exception as e:
-        st.error(f"Error calculando top trades: {e}")
-    
-    # SEÑALES ACTUALES (VELA EN FORMACIÓN)
-    with st.expander("🔮 Señales Actuales - Vela en Formación", expanded=True):
-        st.subheader("📊 Picks Prospectivos para el Próximo Mes")
-        st.warning("""
-        ⚠️ **IMPORTANTE**: Estas señales usan datos hasta HOY (vela en formación).
-        - Son **preliminares** y pueden cambiar hasta el cierre del mes
-        - En un sistema real, tomarías estas posiciones al inicio del próximo mes
-        """)
-        
-        try:
-            # Verificar que tenemos los datos necesarios
-            if prices_df is not None and not prices_df.empty:
-                # Intentar calcular señales actuales
-                if ohlc_data is not None:
-                    current_scores = inertia_score(prices_df, corte=corte, ohlc_data=ohlc_data)
-                else:
-                    st.warning("⚠️ Calculando sin datos OHLC (menos preciso)")
-                    current_scores = inertia_score(prices_df, corte=corte, ohlc_data=None)
-                
-                if current_scores and "ScoreAdjusted" in current_scores and "InerciaAlcista" in current_scores:
-                    score_df = current_scores["ScoreAdjusted"]
-                    inercia_df = current_scores["InerciaAlcista"]
-                    
-                    if not score_df.empty and not inercia_df.empty:
-                        # Obtener últimos valores
-                        last_scores = score_df.iloc[-1].dropna()
-                        last_inercia = inercia_df.iloc[-1]
-                        
-                        if len(last_scores) > 0:
-                            # Filtrar tickers válidos
-                            valid_picks = []
-                            for ticker in last_scores.index:
-                                if ticker in last_inercia.index:
-                                    inercia_val = last_inercia[ticker]
-                                    score_adj = last_scores[ticker]
-                                    
-                                    if inercia_val >= corte and score_adj > 0 and not np.isnan(score_adj):
-                                        valid_picks.append({
-                                            'ticker': ticker,
-                                            'inercia': float(inercia_val),
-                                            'score_adj': float(score_adj)
-                                        })
-                            
-                            if valid_picks:
-                                valid_picks = sorted(valid_picks, key=lambda x: x['score_adj'], reverse=True)
-                                final_picks = valid_picks[:min(top_n, len(valid_picks))]
-                                
-                                current_picks = []
-                                for rank, pick in enumerate(final_picks, 1):
-                                    ticker = pick['ticker']
-                                    precio_actual = prices_df[ticker].iloc[-1] if ticker in prices_df.columns else 0
-                                    
-                                    current_picks.append({
-                                        'Rank': rank,
-                                        'Ticker': ticker,
-                                        'Inercia Alcista': pick['inercia'],
-                                        'Score Ajustado': pick['score_adj'],
-                                        'Precio Actual': precio_actual
-                                    })
-                                
-                                current_picks_df = pd.DataFrame(current_picks)
-                                
-                                data_date = prices_df.index[-1].strftime('%Y-%m-%d')
-                                st.info(f"📅 **Datos hasta**: {data_date}")
-                                
-                                st.subheader(f"🔥 Top {len(current_picks_df)} Picks Actuales")
-                                
-                                display_df = current_picks_df.copy()
-                                display_df['Precio Actual'] = display_df['Precio Actual'].apply(lambda x: f"${x:.2f}" if x > 0 else "N/A")
-                                display_df['Inercia Alcista'] = display_df['Inercia Alcista'].round(2)
-                                display_df['Score Ajustado'] = display_df['Score Ajustado'].round(2)
-                                
-                                st.dataframe(display_df, use_container_width=True)
-                                
-                                col1, col2, col3 = st.columns(3)
-                                col1.metric("Picks Actuales", len(current_picks_df))
-                                col2.metric("Inercia Promedio", f"{current_picks_df['Inercia Alcista'].mean():.2f}")
-                                col3.metric("Score Promedio", f"{current_picks_df['Score Ajustado'].mean():.2f}")
-                                
-                                st.subheader("📋 Cómo Usar Estas Señales")
-                                
-                                # Recuperar fixed_allocation del estado
-                                if st.session_state.backtest_params:
-                                    fixed_allocation = st.session_state.backtest_params.get('fixed_alloc', False)
-                                
-                                if fixed_allocation:
-                                    capital_info = f"Cada posición: 10% del capital"
-                                else:
-                                    capital_info = f"Distribución equitativa: {100/len(current_picks_df):.1f}% por posición"
-                                
-                                st.info(f"""
-                                **Para Trading Real:**
-                                1. 📅 Espera al cierre del mes para señales definitivas
-                                2. 🔄 Recalcula el último día del mes
-                                3. 📈 Toma posiciones el primer día del próximo mes
-                                4. ⏰ Mantén posiciones todo el mes
-                                
-                                **{capital_info}**
-                                """)
-                            else:
-                                st.warning("⚠️ No hay tickers que pasen el corte de inercia actualmente")
-                        else:
-                            st.warning("⚠️ No se encontraron scores válidos")
-                    else:
-                        st.warning("⚠️ No hay suficientes datos para calcular señales")
-                else:
-                    st.error("❌ No se pudieron calcular indicadores. Verifica los datos.")
-            else:
-                st.error("❌ No hay datos de precios disponibles para calcular señales actuales")
-                
-        except Exception as e:
-            st.error(f"Error calculando señales actuales: {str(e)}")
-            import traceback
-            st.code(traceback.format_exc())
 
-# Al final del archivo, antes del else final, agrega:
+# Sidebar info extra
 if st.session_state.spy_df is not None:
     st.sidebar.success(f"✅ SPY en memoria: {len(st.session_state.spy_df)} registros")
-    
 else:
     if not st.session_state.backtest_completed:
         st.info("👈 Configura los parámetros y haz clic en 'Ejecutar backtest'")
@@ -1475,7 +1155,6 @@ else:
         - ✅ SPY siempre visible en gráficas
         - ✅ Cálculo correcto de retornos mensuales
         - ✅ Sharpe Ratio calculado correctamente con RF=2% anual
-        - ✅ Análisis detallado de diferencias entre retornos
         """)
         
         cache_files = glob.glob(os.path.join(CACHE_DIR, "backtest_*.pkl"))
