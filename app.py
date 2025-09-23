@@ -1086,7 +1086,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                                 st.info(f"📅 Datos hasta: {data_date}")
                                 st.subheader(f"🔥 Top {len(current_picks_df)} Picks Actuales")
                                 display_df = current_picks_df.copy()
-                                display_df['Precio Actual'] = display_df['Precio Actual'].apply(lambda x: f\"${x:.2f}\" if x > 0 else "N/A")
+                                display_df['Precio Actual'] = display_df['Precio Actual'].apply(lambda x: f"${x:.2f}" if x > 0 else "N/A")
                                 display_df['Inercia Alcista'] = display_df['Inercia Alcista'].round(2)
                                 display_df['Score Ajustado'] = display_df['Score Ajustado'].round(2)
                                 st.dataframe(display_df, use_container_width=True)
