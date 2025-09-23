@@ -246,6 +246,7 @@ fixed_allocation = st.sidebar.checkbox("💰 Asignar 10% capital a cada acción"
 st.sidebar.subheader("🛡️ Filtros de Mercado")
 use_roc_filter = st.sidebar.checkbox("📉 ROC 12 meses del SPY < 0", value=False)
 use_sma_filter = st.sidebar.checkbox("📊 Precio SPY < SMA 10 meses", value=False)
+use_safety_etfs = st.sidebar.checkbox("🛡️ Usar IEF/BIL cuando el filtro mande a cash", value=False)
 
 run_button = st.sidebar.button("🏃 Ejecutar backtest", type="primary")
 
@@ -290,7 +291,8 @@ if run_button:
             'historical': use_historical_verification,
             'fixed_alloc': fixed_allocation,
             'roc_filter': use_roc_filter,
-            'sma_filter': use_sma_filter
+            'sma_filter': use_sma_filter,
+            'use_safety_etfs': use_safety_etfs
         }
         cache_key = get_cache_key(cache_params)
         cache_file = os.path.join(CACHE_DIR, f"backtest_{cache_key}.pkl")
@@ -321,7 +323,7 @@ if run_button:
             status_text.text("📥 Obteniendo constituyentes...")
             progress_bar.progress(10)
             
-            all_tickers_data, error = get_constituents_cached(index_choice, start_date, end_date)
+            all_tickers_data, error = get_constituents_cached(index_name=index_choice, start_date=start_date, end_date=end_date)
             if error:
                 st.warning(f"Advertencia: {error}")
             
@@ -406,6 +408,13 @@ if run_button:
                     st.info("💡 Tip: Asegúrate de que sp500_changes.csv y ndx_changes.csv estén en la raíz del repositorio")
                     historical_info = None
             
+            # ETFs de refugio si procede
+            safety_prices = pd.DataFrame()
+            safety_ohlc = {}
+            if use_safety_etfs:
+                status_text.text("🛡️ Cargando ETFs de refugio (IEF, BIL)...")
+                safety_prices, safety_ohlc = load_prices_from_csv_parallel(['IEF', 'BIL'], start_date, end_date, load_full_data=True)
+            
             # Ejecutar backtest
             status_text.text("🚀 Ejecutando backtest optimizado...")
             progress_bar.progress(70)
@@ -422,14 +431,23 @@ if run_button:
                 use_roc_filter=use_roc_filter,
                 use_sma_filter=use_sma_filter,
                 spy_data=spy_df,
-                progress_callback=lambda p: progress_bar.progress(70 + int(p * 0.3))
+                progress_callback=lambda p: progress_bar.progress(70 + int(p * 0.3)),
+                use_safety_etfs=use_safety_etfs,
+                safety_prices=safety_prices,
+                safety_ohlc=safety_ohlc
             )
             
             # Guardar en session state
             st.session_state.bt_results = bt_results
             st.session_state.picks_df = picks_df
             st.session_state.spy_df = spy_df
-            st.session_state.prices_df = prices_df
+            
+            # Importante: añadir IEF/BIL a precios para mostrar retornos individuales si están activados
+            prices_df_display = prices_df.copy()
+            if use_safety_etfs and not safety_prices.empty:
+                prices_df_display = prices_df_display.join(safety_prices, how='outer')
+            
+            st.session_state.prices_df = prices_df_display
             st.session_state.benchmark_series = benchmark_series
             st.session_state.ohlc_data = ohlc_data
             st.session_state.historical_info = historical_info
@@ -446,7 +464,7 @@ if run_button:
                         'bt_results': bt_results,
                         'picks_df': picks_df,
                         'historical_info': historical_info,
-                        'prices_df': prices_df,
+                        'prices_df': prices_df_display,
                         'ohlc_data': ohlc_data,
                         'benchmark_series': benchmark_series,
                         'spy_df': spy_df,
@@ -654,7 +672,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     
     dd_diff = max_drawdown - bench_max_dd
     col3c.metric("DD Difference", f"{dd_diff:.2%}", delta=f"{dd_diff:.2%}")
-    
     return_diff = total_return - bench_total_return
     col4c.metric("Return Diff", f"{return_diff:.2%}", delta=f"{return_diff:.2%}")
     
