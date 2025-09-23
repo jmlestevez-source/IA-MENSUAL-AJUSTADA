@@ -445,7 +445,7 @@ if run_button:
             st.session_state.picks_df = picks_df
             st.session_state.spy_df = spy_df
             
-            # Importante: añadir IEF/BIL a precios para mostrar retornos individuales si están activados
+            # Importante: añadir IEF/BIL a precios para mostrar retornos individuales si están activados (solo para mostrar)
             prices_df_display = prices_df.copy()
             if use_safety_etfs and not safety_prices.empty:
                 prices_df_display = prices_df_display.join(safety_prices, how='outer')
@@ -604,30 +604,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     col4b.metric("Max Drawdown (Mensual)", f"{bench_max_dd:.2%}")
     col5b.metric("Sharpe Ratio (RF=2%)", f"{bench_sharpe:.2f}")
     
-    # Comparación
-    st.subheader("⚖️ Comparación Estrategia vs Benchmark")
-    col1c, col2c, col3c, col4c = st.columns(4)
-    
-    alpha = cagr - bench_cagr
-    col1c.metric("Alpha (CAGR diff)", f"{alpha:.2%}", delta=f"{alpha:.2%}")
-    
-    sharpe_diff = sharpe_ratio - bench_sharpe
-    col2c.metric("Sharpe Diff", f"{sharpe_diff:.2f}", delta=f"{sharpe_diff:.2f}")
-    
-    dd_diff = max_drawdown - bench_max_dd
-    col3c.metric("DD Difference", f"{dd_diff:.2%}", delta=f"{dd_diff:.2%}")
-    
-    return_diff = total_return - bench_total_return
-    col4c.metric("Return Diff", f"{return_diff:.2%}", delta=f"{return_diff:.2%}")
-    
-    # Información sobre verificación histórica
-    if historical_info and historical_info.get('has_historical_data', False):
-        st.info("✅ Este backtest incluye verificación histórica de constituyentes")
-    elif st.session_state.backtest_params and st.session_state.backtest_params.get('historical', False):
-        st.warning("⚠️ Verificación histórica solicitada pero no se encontraron datos históricos")
-    else:
-        st.warning("⚠️ Este backtest NO incluye verificación histórica (posible sesgo de supervivencia)")
-    
     # ==============================
     # Series mensuales alineadas para gráficas
     # ==============================
@@ -635,7 +611,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     spy_drawdown_m = None
     try:
         if bench_equity_m is None and benchmark_series is not None and not benchmark_series.empty:
-            # Si por cualquier motivo no se calculó arriba, construimos una serie segura
             bench_prices_m = benchmark_series.resample('ME').last()
             bench_returns_m = bench_prices_m.pct_change().fillna(0)
             bench_equity_m = initial_equity * (1 + bench_returns_m).cumprod()
@@ -828,7 +803,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 col2.metric("Retorno Anual Promedio", f"{avg_annual_return:.1f}%")
                 col3.metric("Tasa de Éxito Anual", f"{win_rate:.0f}%")
     
-    # PICKS HISTÓRICOS - Con cálculo corregido de retornos
+    # PICKS HISTÓRICOS
     if picks_df is not None and not picks_df.empty:
         st.subheader("📊 Picks Históricos")
         
@@ -842,19 +817,12 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             col2.metric("Picks Válidos", valid_picks)
             col3.metric("% Validez Histórica", f"{validity_rate:.1f}%")
         
-        # Crear columnas para la interfaz
+        # Navegación por fechas y detalle
         col_sidebar, col_main = st.columns([1, 3])
-        
-        # Variable global para el retorno del mes
-        monthly_return = 0.0
         
         with col_sidebar:
             st.markdown("### 📅 Navegación por Fechas")
-            
-            # Obtener fechas únicas ordenadas
             unique_dates = sorted(picks_df['Date'].unique(), reverse=True)
-            
-            # Selector de fecha con key único para mantener estado
             selected_date = st.selectbox(
                 "Selecciona una fecha:",
                 unique_dates,
@@ -862,269 +830,146 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 help="Muestra los picks seleccionados en esta fecha",
                 key="historical_date_selector"
             )
-            
-            # Mostrar información de la fecha seleccionada
             date_picks = picks_df[picks_df['Date'] == selected_date]
             st.info(f"🎯 {len(date_picks)} picks seleccionados el {selected_date}")
-            
-            # Calcular rentabilidad del mes - VERSIÓN CORREGIDA
-            try:
-                selected_dt = pd.Timestamp(selected_date)
-                bt_index = pd.to_datetime(bt_results.index)
-                
-                # Buscar la posición exacta de selected_date en el índice
-                if selected_dt in bt_index:
-                    current_idx = bt_index.get_loc(selected_dt)
-                    
-                    if current_idx < len(bt_index) - 1:
-                        # El retorno del mes es el retorno de la estrategia
-                        monthly_return = bt_results['Returns'].iloc[current_idx + 1]
-                        
-                        st.metric(
-                            "📈 Retorno del Mes",
-                            f"{monthly_return:.2%}",
-                            delta=f"{monthly_return:.2%}" if monthly_return != 0 else None
-                        )
-                    else:
-                        st.warning("📅 Último mes del backtest (sin retorno futuro)")
-                        monthly_return = 0.0
-                else:
-                    # Si no hay coincidencia exacta, buscar el más cercano
-                    closest_idx = bt_index.get_indexer([selected_dt], method='nearest')[0]
-                    if closest_idx < len(bt_index) - 1:
-                        monthly_return = bt_results['Returns'].iloc[closest_idx + 1]
-                        st.metric(
-                            "📈 Retorno del Mes (aprox)",
-                            f"{monthly_return:.2%}",
-                            delta=f"{monthly_return:.2%}" if monthly_return != 0 else None
-                        )
-                        st.caption(f"⚠️ Fecha aproximada: {bt_index[closest_idx].strftime('%Y-%m-%d')}")
-                    else:
-                        monthly_return = 0.0
-                        
-            except Exception as e:
-                st.error(f"Error calculando retorno: {e}")
-                monthly_return = 0.0
-            
-            # Estadísticas rápidas de la fecha
-            if not date_picks.empty:
-                avg_inercia = date_picks['Inercia'].mean()
-                avg_score = date_picks['ScoreAdj'].mean()
-                
-                st.markdown("### 📊 Estadísticas del Mes")
-                st.metric("Inercia Promedio", f"{avg_inercia:.2f}")
-                st.metric("Score Ajustado Promedio", f"{avg_score:.2f}")
         
         with col_main:
-            # Mostrar picks de la fecha seleccionada
             st.markdown(f"### 🎯 Picks Seleccionados el {selected_date}")
-            
             date_picks_display = date_picks.copy()
             
-            # Calcular rentabilidad individual - VERSIÓN CORREGIDA
+            # Calcular rentabilidad individual con lógica del backtest
             try:
-                # Convertir fechas a datetime para comparación
                 selected_dt = pd.Timestamp(selected_date)
-                
-                # Calcular retorno individual para cada ticker
-                # IMPORTANTE: Usar la misma lógica que el backtest
                 returns_data = []
                 for _, row in date_picks.iterrows():
                     ticker = row['Ticker']
-                    
                     try:
                         if ticker in prices_df.columns:
-                            # Convertir a mensual como hace el backtest
                             ticker_monthly = prices_df[ticker].resample('ME').last()
-                            
-                            # Buscar las fechas correctas
                             if selected_dt in ticker_monthly.index:
-                                current_idx = ticker_monthly.index.get_loc(selected_dt)
-                                
-                                if current_idx < len(ticker_monthly) - 1:
-                                    # Precio al final del mes de selección
-                                    entry_price = ticker_monthly.iloc[current_idx]
-                                    # Precio al final del siguiente mes
-                                    exit_price = ticker_monthly.iloc[current_idx + 1]
-                                    
-                                    # Calcular retorno
+                                idx = ticker_monthly.index.get_loc(selected_dt)
+                                if idx < len(ticker_monthly) - 1:
+                                    entry_price = ticker_monthly.iloc[idx]
+                                    exit_price = ticker_monthly.iloc[idx + 1]
                                     if pd.notna(entry_price) and pd.notna(exit_price) and entry_price != 0:
-                                        individual_return = (exit_price / entry_price) - 1
-                                        returns_data.append(individual_return)
+                                        returns_data.append((exit_price / entry_price) - 1)
                                     else:
                                         returns_data.append(None)
                                 else:
                                     returns_data.append(None)
                             else:
-                                # Buscar fecha más cercana
                                 closest_idx = ticker_monthly.index.get_indexer([selected_dt], method='nearest')[0]
-                                if closest_idx >= 0 and closest_idx < len(ticker_monthly) - 1:
+                                if 0 <= closest_idx < len(ticker_monthly) - 1:
                                     entry_price = ticker_monthly.iloc[closest_idx]
                                     exit_price = ticker_monthly.iloc[closest_idx + 1]
-                                    
                                     if pd.notna(entry_price) and pd.notna(exit_price) and entry_price != 0:
-                                        individual_return = (exit_price / entry_price) - 1
-                                        returns_data.append(individual_return)
+                                        returns_data.append((exit_price / entry_price) - 1)
                                     else:
                                         returns_data.append(None)
-                                else:
-                                    returns_data.append(None)
+                               
                         else:
                             returns_data.append(None)
-                    except Exception as e:
-                        print(f"Error con {ticker}: {e}")
+                    except Exception:
                         returns_data.append(None)
                 
-                # Agregar columna de retornos individuales
                 date_picks_display['Retorno Individual'] = returns_data
                 
-                # Formatear retornos
                 def format_return(val):
                     if pd.isna(val):
                         return "N/A"
-                    elif val >= 0:
-                        return f"+{val:.2%}"
-                    else:
-                        return f"{val:.2%}"
+                    return f"{val:+.2%}"
                 
-                # Aplicar formato condicional
-                def color_returns(val):
-                    if isinstance(val, str) and val != "N/A":
-                        try:
-                            num_val = float(val.replace('%', '').replace('+', '')) / 100
-                            if num_val > 0:
-                                return 'color: green; font-weight: bold'
-                            elif num_val < 0:
-                                return 'color: red; font-weight: bold'
-                        except:
-                            pass
-                    return ''
-                
-                # Mostrar tabla con retornos individuales
-                display_columns = ['Rank', 'Ticker', 'Inercia', 'ScoreAdj', 'Retorno Individual']
-                if 'HistoricallyValid' in date_picks_display.columns:
-                    display_columns.append('HistoricallyValid')
-                
-                styled_df = date_picks_display[display_columns].style.applymap(
-                    color_returns, 
-                    subset=['Retorno Individual']
-                ).format({
-                    'Inercia': '{:.2f}',
-                    'ScoreAdj': '{:.2f}',
-                    'Retorno Individual': format_return
-                })
-                
-                st.dataframe(styled_df, use_container_width=True)
-                
-                # Resumen de retornos y verificación
-                if any(pd.notna(r) for r in returns_data):
-                    valid_returns = [r for r in returns_data if pd.notna(r)]
-                    if valid_returns:
-                        avg_return = sum(valid_returns) / len(valid_returns)
-                        positive_count = sum(1 for r in valid_returns if r > 0)
-                        win_rate = positive_count / len(valid_returns) * 100
-                        
-                        st.markdown("### 📈 Resumen de Rentabilidad")
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Retorno Promedio Picks", f"{avg_return:.2%}")
-                        col2.metric("Tasa de Éxito", f"{win_rate:.1f}%")
-                        col3.metric("Mejor Pick", f"{max(valid_returns):.2%}")
-                        
-                        # Gráfico de barras de retornos individuales
-                        fig_returns = go.Figure()
-                        fig_returns.add_trace(go.Bar(
-                            x=date_picks_display['Ticker'],
-                            y=[r if pd.notna(r) else 0 for r in returns_data],
-                            marker_color=['green' if pd.notna(r) and r > 0 else 'red' if pd.notna(r) and r < 0 else 'gray' for r in returns_data],
-                            text=[format_return(r) for r in returns_data],
-                            textposition='auto'
-                        ))
-                        fig_returns.update_layout(
-                            title="Rentabilidad Individual por Ticker",
-                            xaxis_title="Ticker",
-                            yaxis_title="Retorno",
-                            yaxis_tickformat=".1%",
-                            height=400
-                        )
-                        st.plotly_chart(fig_returns, use_container_width=True)
-                else:
-                    st.warning("📅 No se pudieron calcular retornos individuales para esta fecha")
-                    
+                st.dataframe(
+                    date_picks_display[['Rank', 'Ticker', 'Inercia', 'ScoreAdj', 'Retorno Individual']].style.format({
+                        'Inercia': '{:.2f}',
+                        'ScoreAdj': '{:.2f}',
+                        'Retorno Individual': format_return
+                    }),
+                    use_container_width=True
+                )
             except Exception as e:
                 st.error(f"Error calculando retornos individuales: {e}")
-                # Mostrar tabla básica sin retornos
-                display_columns = ['Rank', 'Ticker', 'Inercia', 'ScoreAdj']
-                styled_df = date_picks_display[display_columns].style.format({
-                    'Inercia': '{:.2f}',
-                    'ScoreAdj': '{:.2f}'
-                })
-                st.dataframe(styled_df, use_container_width=True)
+    
+    # SEÑALES ACTUALES (VELA EN FORMACIÓN) - Excluyendo IEF/BIL SIEMPRE
+    with st.expander("🔮 Señales Actuales - Vela en Formación", expanded=True):
+        st.subheader("📊 Picks Prospectivos para el Próximo Mes")
+        st.warning("""
+        ⚠️ Estas señales usan datos hasta HOY (vela en formación).
+        - Son preliminares y pueden cambiar hasta el cierre del mes.
+        """)
         
-        # Sección adicional: Resumen general de todos los picks
-        st.markdown("### 📊 Resumen General de Todos los Picks")
-        
-        # Tabs para diferentes vistas
-        tabs = st.tabs(["📈 Por Fecha", "🏆 Top Tickers", "📉 Distribución"])
-        
-        with tabs[0]:  # Tab 1: Por Fecha
-            # Picks por fecha
-            picks_by_date = picks_df.groupby('Date').size().reset_index(name='Count')
-            fig_picks = px.bar(
-                picks_by_date, 
-                x='Date', 
-                y='Count', 
-                title="Número de Picks por Fecha",
-                labels={'Date': 'Fecha', 'Count': 'Número de Picks'}
-            )
-            fig_picks.update_layout(height=400)
-            st.plotly_chart(fig_picks, use_container_width=True)
-        
-        with tabs[1]:  # Tab 2: Top Tickers
-            # Top tickers más seleccionados
-            top_tickers = picks_df['Ticker'].value_counts().head(20).reset_index()
-            top_tickers.columns = ['Ticker', 'Count']
-            fig_top = px.bar(
-                top_tickers, 
-                x='Ticker', 
-                y='Count', 
-                title="Top 20 Tickers Más Seleccionados",
-                labels={'Ticker': 'Ticker', 'Count': 'Veces Seleccionado'}
-            )
-            fig_top.update_layout(height=400)
-            st.plotly_chart(fig_top, use_container_width=True)
-        
-        with tabs[2]:  # Tab 3: Distribución
-            # Distribución de Score Adjusted
-            fig_score = px.histogram(
-                picks_df, 
-                x='ScoreAdj', 
-                nbins=50, 
-                title="Distribución de Score Ajustado",
-                labels={'ScoreAdj': 'Score Ajustado'}
-            )
-            fig_score.update_layout(height=400)
-            st.plotly_chart(fig_score, use_container_width=True)
-            
-            # Distribución de Inercia
-            fig_inercia = px.histogram(
-                picks_df, 
-                x='Inercia', 
-                nbins=50, 
-                title="Distribución de Inercia Alcista",
-                labels={'Inercia': 'Inercia Alcista'}
-            )
-            fig_inercia.update_layout(height=400)
-            st.plotly_chart(fig_inercia, use_container_width=True)
-        
-        # Botón para descargar todos los picks
-        csv = picks_df.to_csv(index=False)
-        st.download_button(
-            label="📥 Descargar todos los picks (CSV)",
-            data=csv,
-            file_name=f"picks_completos_{start_date}_{end_date}.csv",
-            mime="text/csv",
-            help="Descarga todos los picks del backtest con sus métricas"
-        )
+        try:
+            if prices_df is not None and not prices_df.empty:
+                safety_set = {'IEF', 'BIL'}
+                # Usar solo los constituyentes (excluyendo IEF/BIL) para señales
+                cols_for_signals = [c for c in prices_df.columns if c not in safety_set]
+                if not cols_for_signals:
+                    st.warning("⚠️ No hay tickers válidos para generar señales")
+                else:
+                    prices_for_signals = prices_df[cols_for_signals]
+                    ohlc_for_signals = {k: v for k, v in (ohlc_data or {}).items() if k in cols_for_signals}
+                    
+                    current_scores = inertia_score(prices_for_signals, corte=corte, ohlc_data=ohlc_for_signals)
+                    
+                    if current_scores and "ScoreAdjusted" in current_scores and "InerciaAlcista" in current_scores:
+                        score_df = current_scores["ScoreAdjusted"]
+                        inercia_df = current_scores["InerciaAlcista"]
+                        
+                        if not score_df.empty and not inercia_df.empty:
+                            last_scores = score_df.iloc[-1].dropna()
+                            last_inercia = inercia_df.iloc[-1]
+                            
+                            valid_picks = []
+                            for ticker in last_scores.index:
+                                if ticker in last_inercia.index:
+                                    inercia_val = last_inercia[ticker]
+                                    score_adj = last_scores[ticker]
+                                    if inercia_val >= corte and score_adj > 0 and not np.isnan(score_adj):
+                                        valid_picks.append({
+                                            'ticker': ticker,
+                                            'inercia': float(inercia_val),
+                                            'score_adj': float(score_adj)
+                                        })
+                            
+                            if valid_picks:
+                                valid_picks = sorted(valid_picks, key=lambda x: x['score_adj'], reverse=True)
+                                final_picks = valid_picks[:min(top_n, len(valid_picks))]
+                                
+                                current_picks = []
+                                for rank, pick in enumerate(final_picks, 1):
+                                    ticker = pick['ticker']
+                                    precio_actual = prices_for_signals[ticker].iloc[-1] if ticker in prices_for_signals.columns else 0
+                                    current_picks.append({
+                                        'Rank': rank,
+                                        'Ticker': ticker,
+                                        'Inercia Alcista': pick['inercia'],
+                                        'Score Ajustado': pick['score_adj'],
+                                        'Precio Actual': precio_actual
+                                    })
+                                
+                                current_picks_df = pd.DataFrame(current_picks)
+                                data_date = prices_for_signals.index[-1].strftime('%Y-%m-%d')
+                                st.info(f"📅 Datos hasta: {data_date}")
+                                display_df = current_picks_df.copy()
+                                display_df['Precio Actual'] = display_df['Precio Actual'].apply(lambda x: f"${x:.2f}" if x > 0 else "N/A")
+                                display_df['Inercia Alcista'] = display_df['Inercia Alcista'].round(2)
+                                display_df['Score Ajustado'] = display_df['Score Ajustado'].round(2)
+                                st.dataframe(display_df, use_container_width=True)
+                                
+                                col1, col2, col3 = st.columns(3)
+                                col1.metric("Picks Actuales", len(current_picks_df))
+                                col2.metric("Inercia Promedio", f"{current_picks_df['Inercia Alcista'].mean():.2f}")
+                                col3.metric("Score Promedio", f"{current_picks_df['Score Ajustado'].mean():.2f}")
+                            else:
+                                st.warning("⚠️ No hay tickers que pasen el corte de inercia actualmente")
+                        else:
+                            st.warning("⚠️ No se encontraron scores válidos")
+                    else:
+                        st.error("❌ No se pudieron calcular indicadores. Verifica los datos.")
+            else:
+                st.error("❌ No hay datos de precios disponibles para calcular señales actuales")
+        except Exception as e:
+            st.error(f"Error calculando señales actuales: {str(e)}")
 
 # Sidebar info extra
 if st.session_state.spy_df is not None:
@@ -1150,11 +995,6 @@ else:
         - ⚡ Carga paralela de CSVs
         - ⚡ Precálculo de indicadores
         - ⚡ Caché persistente de resultados
-        
-        **Correcciones aplicadas:**
-        - ✅ SPY siempre visible en gráficas
-        - ✅ Cálculo correcto de retornos mensuales
-        - ✅ Sharpe Ratio calculado correctamente con RF=2% anual
         """)
         
         cache_files = glob.glob(os.path.join(CACHE_DIR, "backtest_*.pkl"))
