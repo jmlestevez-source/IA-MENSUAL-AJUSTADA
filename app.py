@@ -71,6 +71,10 @@ if "historical_info" not in st.session_state:
     st.session_state.historical_info = None
 if "backtest_params" not in st.session_state:
     st.session_state.backtest_params = None
+if "universe_tickers" not in st.session_state:
+    st.session_state.universe_tickers = set()
+if "robust_cache" not in st.session_state:
+    st.session_state.robust_cache = {}
 
 @st.cache_data(ttl=3600)
 def load_historical_changes_cached(index_name, force_reload=False):
@@ -297,6 +301,7 @@ if st.session_state.backtest_completed:
         st.session_state.ohlc_data = None
         st.session_state.historical_info = None
         st.session_state.backtest_params = None
+        st.session_state.universe_tickers = set()
         st.rerun()
 
 # Constantes
@@ -339,6 +344,7 @@ if run_button:
                         ohlc_data = cached_data.get("ohlc_data")
                         benchmark_series = cached_data.get("benchmark_series")
                         spy_df = cached_data.get("spy_df")
+                        st.session_state.universe_tickers = set(cached_data.get("universe_tickers", []))
             except Exception:
                 use_cache = False
 
@@ -355,6 +361,7 @@ if run_button:
                 st.error("No se encontraron tickers válidos")
                 st.stop()
             tickers = list(dict.fromkeys(all_tickers_data["tickers"]))
+            st.session_state.universe_tickers = set(tickers)
             st.success(f"✅ Obtenidos {len(tickers)} tickers únicos")
 
             status_text.text("📊 Cargando precios en paralelo...")
@@ -452,6 +459,7 @@ if run_button:
                             "ohlc_data": ohlc_data,
                             "benchmark_series": benchmark_series,
                             "spy_df": spy_df,
+                            "universe_tickers": list(st.session_state.universe_tickers),
                             "timestamp": datetime.now(),
                         },
                         f,
@@ -485,6 +493,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     benchmark_series = st.session_state.benchmark_series
     ohlc_data = st.session_state.ohlc_data
     historical_info = st.session_state.historical_info
+    universe_tickers = st.session_state.universe_tickers or set()
 
     use_roc_filter = st.session_state.backtest_params.get("roc_filter", False) if st.session_state.backtest_params else False
     use_sma_filter = st.session_state.backtest_params.get("sma_filter", False) if st.session_state.backtest_params else False
@@ -593,8 +602,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     fig.update_xaxes(title_text="Fecha", row=2, col=1)
     fig.update_yaxes(title_text="Equity ($)", type="log", row=1, col=1)
     fig.update_yaxes(title_text="Drawdown (%)", row=2, col=1)
-    fig.update_layout(height=700, showlegend=True, hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Tabla retornos mensuales
     st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
@@ -613,7 +621,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             except Exception:
                 return ""
         styled_table = monthly_table.style.applymap(style_returns)
-        st.dataframe(styled_table, use_container_width=True)
+        st.dataframe(styled_table, width="stretch")
 
     # Picks históricos (retorno mensual y comisión)
     if picks_df is not None and not picks_df.empty:
@@ -688,7 +696,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                     date_picks_display[["Rank", "Ticker", "Inercia", "ScoreAdj", "Retorno Individual"]].style.format(
                         {"Inercia": "{:.2f}", "ScoreAdj": "{:.2f}", "Retorno Individual": fmt_ret}
                     ),
-                    use_container_width=True,
+                    width="stretch",
                 )
             except Exception as e:
                 st.error(f"Error calculando retornos individuales: {e}")
@@ -702,9 +710,12 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 safety_set = {"IEF", "BIL"}
                 filter_active = is_filter_active_for_next_month(spy_df, use_roc_filter, use_sma_filter) if (use_roc_filter or use_sma_filter) else False
 
+                # Limitar universo a constituyentes actuales (evita BIL/IEF y cualquier ticker fuera del índice)
+                valid_universe = [t for t in prices_df.columns if t in universe_tickers and t not in safety_set]
+
                 if use_safety_etfs and filter_active:
                     # Refugio IEF/BIL
-                    safety_prices_now, _ = load_prices_from_csv_parallel(list(safety_set), start_date, end_date, load_full_data=False)
+                    safety_prices_now, _ = load_prices_from_csv_parallel(list(safety_set), bt_results.index[0].date(), bt_results.index[-1].date(), load_full_data=False)
                     if safety_prices_now.empty:
                         st.warning("⚠️ No hay datos de IEF/BIL para señales actuales.")
                     else:
@@ -723,24 +734,24 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                         candidates = []
                         for stkr in safety_set:
                             if stkr in safety_prices_now.columns:
-                                price_now = safety_prices_now[stkr].iloc[-1]
-                                sc = float(last_scores.get(stkr)) if stkr in last_scores.index else np.nan
-                                ine = float(last_inercia.get(stkr)) if stkr in last_inercia.index else np.nan
+                                price_now = float(safety_prices_now[stkr].iloc[-1]) if pd.notna(safety_prices_now[stkr].iloc[-1]) else 0.0
+                                sc = float(last_scores.get(stkr)) if stkr in last_scores.index else 0.0
+                                ine = float(last_inercia.get(stkr)) if stkr in last_inercia.index else 0.0
                                 candidates.append(
                                     {
                                         "Rank": 1,
                                         "Ticker": stkr,
                                         "Nombre": safety_name_map.get(stkr, stkr),
-                                        "Inercia Alcista": 0.0 if np.isnan(ine) else ine,
-                                        "Score Ajustado": 0.0 if np.isnan(sc) else sc,
-                                        "Precio Actual": 0.0 if pd.isna(price_now) else float(price_now),
+                                        "Inercia Alcista": ine,
+                                        "Score Ajustado": sc,
+                                        "Precio Actual": price_now,
                                     }
                                 )
                         if candidates:
                             candidates = sorted(candidates, key=lambda x: (x["Score Ajustado"], x["Inercia Alcista"]), reverse=True)
                             df_pros = pd.DataFrame([candidates[0]])
                             df_pros["Rank"] = range(1, len(df_pros) + 1)
-                            st.dataframe(df_pros, use_container_width=True)
+                            st.dataframe(df_pros, width="stretch")
                             if picks_df is not None and not picks_df.empty:
                                 last_date = max(picks_df["Date"])
                                 prev_set = set(picks_df[picks_df["Date"] == last_date]["Ticker"].tolist())
@@ -758,13 +769,12 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                         else:
                             st.warning("⚠️ No hay candidatos válidos de IEF/BIL ahora mismo.")
                 else:
-                    # Universo normal (excluye safety)
-                    cols_for_signals = [c for c in prices_df.columns if c not in {"IEF", "BIL"}]
-                    if not cols_for_signals:
+                    # Universo normal (solo constituyentes actuales, excluye safety)
+                    if not valid_universe:
                         st.warning("⚠️ No hay tickers válidos para generar señales")
                     else:
-                        prices_for_signals = prices_df[cols_for_signals]
-                        ohlc_for_signals = {k: v for k, v in (ohlc_data or {}).items() if k in cols_for_signals}
+                        prices_for_signals = prices_df[valid_universe]
+                        ohlc_for_signals = {k: v for k, v in (ohlc_data or {}).items() if k in valid_universe}
                         current_scores = inertia_score(prices_for_signals, corte=corte, ohlc_data=ohlc_for_signals)
                         if current_scores and "ScoreAdjusted" in current_scores and "InerciaAlcista" in current_scores:
                             score_df = current_scores["ScoreAdjusted"]
@@ -781,7 +791,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                                             valid_picks.append(
                                                 {
                                                     "ticker": ticker,
-                                                    "name": name_map.get(ticker, ""),
+                                                    "name": get_name_map_for_index(index_choice).get(ticker, ticker),
                                                     "inercia": float(inercia_val),
                                                     "score_adj": float(score_adj),
                                                     "price": float(prices_for_signals[ticker].iloc[-1]),
@@ -803,7 +813,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                                             for i, p in enumerate(final_picks)
                                         ]
                                     )
-                                    st.dataframe(df_pros, use_container_width=True)
+                                    st.dataframe(df_pros, width="stretch")
                                     if picks_df is not None and not picks_df.empty:
                                         last_date = max(picks_df["Date"])
                                         prev_set = set(picks_df[picks_df["Date"] == last_date]["Ticker"].tolist())
@@ -830,30 +840,36 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             st.error(f"Error calculando señales actuales: {str(e)}")
 
     # ==============================
-    # Robustez por número de posiciones (3 a 10)
+    # Robustez por número de posiciones (3 a 10) - rápido (1 solo backtest base)
     # ==============================
     st.subheader("🧪 Robustez por número de posiciones (3 → 10)")
-    do_robust = st.checkbox("Calcular matriz de robustez 3-10 posiciones (CAGR y Max DD)", value=False, help="Ejecuta backtests rápidos para top_n = 3..10 con los mismos parámetros actuales")
+    do_robust = st.checkbox(
+        "Calcular matriz de robustez 3-10 posiciones (CAGR y Max DD)",
+        value=False,
+        help="Ejecuta un backtest base con top_n=10 y reconstruye k=3..10 sin recalcular todo"
+    )
 
     if do_robust:
         with st.spinner("Calculando robustez..."):
-            # (Opcional) precios de refugio para robustez, si está activo
-            safety_prices_k = pd.DataFrame()
-            safety_ohlc_k = {}
-            if use_safety_etfs:
-                sd = st.session_state.backtest_params.get("start")
-                ed = st.session_state.backtest_params.get("end")
-                sd = pd.to_datetime(sd).date() if isinstance(sd, str) else sd
-                ed = pd.to_datetime(ed).date() if isinstance(ed, str) else ed
-                safety_prices_k, safety_ohlc_k = load_prices_from_csv_parallel(['IEF','BIL'], sd, ed, load_full_data=True)
+            # Clave de robustez basada en mismos parámetros pero con top_n=10
+            r_params = st.session_state.backtest_params.copy()
+            r_params["top_n"] = 10
+            robust_key = get_cache_key({"robust": True, **r_params})
 
-            results = []
-            for k in range(3, 11):
-                bt_k, _ = run_backtest_optimized(
+            if robust_key not in st.session_state.robust_cache:
+                # Ejecutar backtest base top_n=10 una sola vez
+                safety_prices_k = pd.DataFrame()
+                safety_ohlc_k = {}
+                if use_safety_etfs:
+                    sd = pd.to_datetime(st.session_state.backtest_params.get("start")).date()
+                    ed = pd.to_datetime(st.session_state.backtest_params.get("end")).date()
+                    safety_prices_k, safety_ohlc_k = load_prices_from_csv_parallel(['IEF','BIL'], sd, ed, load_full_data=True)
+
+                bt10, picks10 = run_backtest_optimized(
                     prices=prices_df,
                     benchmark=benchmark_series,
                     commission=commission,
-                    top_n=k,
+                    top_n=10,
                     corte=corte,
                     ohlc_data=ohlc_data,
                     historical_info=historical_info,
@@ -867,25 +883,65 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                     safety_ohlc=safety_ohlc_k if safety_ohlc_k else None,
                     avoid_rebuy_unchanged=avoid_rebuy_unchanged
                 )
-                if not bt_k.empty:
-                    eq = bt_k["Equity"]
-                    years_k = (eq.index[-1] - eq.index[0]).days / 365.25 if len(eq) > 1 else 0
-                    cagr_k = (eq.iloc[-1] / eq.iloc[0]) ** (1/years_k) - 1 if years_k > 0 else 0
-                    maxdd_k = float(bt_k["Drawdown"].min()) if "Drawdown" in bt_k.columns else 0.0
-                    results.append({"Posiciones": k, "CAGR": cagr_k, "Max DD": maxdd_k})
+                st.session_state.robust_cache[robust_key] = {"bt": bt10, "picks": picks10}
+
+            bt10 = st.session_state.robust_cache[robust_key]["bt"]
+            picks10 = st.session_state.robust_cache[robust_key]["picks"].copy() if st.session_state.robust_cache[robust_key]["picks"] is not None else pd.DataFrame()
+
+            # Mensualizar precios (incluye safety si están en prices_df)
+            prices_m = st.session_state.prices_df.resample("ME").last()
+
+            results = []
+            if not bt10.empty and not picks10.empty:
+                # Fechas de selección (prev_date) del backtest base
+                sel_dates = sorted(pd.to_datetime(picks10["Date"].unique()))
+                # Equities para cada k
+                for k in range(3, 11):
+                    equity = 10000.0
+                    equity_series = []
+                    equity_index = []
+                    for i, prev_date in enumerate(sel_dates):
+                        # Fecha fin del período (próxima fecha mensual del bt base o última)
+                        end_date_m = bt10.index[i+1] if i+1 < len(bt10.index) else prices_m.index.max()
+                        # Picks del mes, ordenados por Rank y truncados a k
+                        month_picks = picks10[picks10["Date"] == prev_date.strftime("%Y-%m-%d")].sort_values("Rank")
+                        month_tickers = [t for t in month_picks["Ticker"].tolist() if t in prices_m.columns][:k]
+                        if not month_tickers:
+                            equity_index.append(end_date_m)
+                            equity_series.append(equity)
+                            continue
+                        try:
+                            p0 = prices_m.loc[prev_date, month_tickers]
+                            p1 = prices_m.loc[end_date_m, month_tickers]
+                            valid = (~p0.isna()) & (~p1.isna()) & (p0 != 0)
+                            if valid.any():
+                                rets = (p1[valid] / p0[valid] - 1).values
+                                port_ret = rets.mean() - commission
+                                equity *= (1 + port_ret)
+                        except Exception:
+                            pass
+                        equity_index.append(end_date_m)
+                        equity_series.append(equity)
+                    if equity_index:
+                        eq_s = pd.Series(equity_series, index=pd.to_datetime(equity_index)).sort_index()
+                        dd = (eq_s / eq_s.cummax() - 1).fillna(0)
+                        years_k = (eq_s.index[-1] - eq_s.index[0]).days / 365.25 if len(eq_s) > 1 else 0
+                        cagr_k = (eq_s.iloc[-1] / eq_s.iloc[0]) ** (1/years_k) - 1 if years_k > 0 else 0
+                        maxdd_k = float(dd.min()) if not dd.empty else 0.0
+                        results.append({"Posiciones": k, "CAGR": cagr_k, "Max DD": maxdd_k})
 
             if results:
                 rob_df = pd.DataFrame(results).set_index("Posiciones")
                 rob_show = rob_df.copy()
                 rob_show["CAGR"] = (rob_show["CAGR"]*100).map(lambda x: f"{x:.2f}%")
                 rob_show["Max DD"] = (rob_show["Max DD"]*100).map(lambda x: f"{x:.2f}%")
-                st.dataframe(rob_show, use_container_width=True)
+                st.dataframe(rob_show, width="stretch")
 
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.line_chart(pd.DataFrame({"CAGR": rob_df["CAGR"]}, index=rob_df.index))
+                    st.line_chart(pd.DataFrame({"CAGR": rob_df["CAGR"]}, index=rob_df.index), width="stretch")
                 with c2:
-                    st.bar_chart(pd.DataFrame({"Max DD": rob_df["Max DD"].abs()}, index=rob_df.index), use_container_width=True)
+                    st.bar_chart(pd.DataFrame({"Max DD": rob_df["Max DD"].abs()}, index=rob_df.index), width="stretch")
             else:
                 st.warning("No se pudieron calcular resultados de robustez")
 
