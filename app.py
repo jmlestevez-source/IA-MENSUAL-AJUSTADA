@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date as dt_date
 import numpy as np
 import os
 import base64
@@ -50,7 +50,6 @@ def check_historical_files():
     return found_files
 
 historical_files = check_historical_files()
-
 st.set_page_config(page_title="IA Mensual Ajustada", page_icon="📈", layout="wide")
 
 # Estado
@@ -104,6 +103,7 @@ def get_cache_key(params):
 def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=True):
     prices_data = {}
     ohlc_data = {}
+
     def load_single_ticker(ticker):
         clean_ticker = str(ticker).strip().upper().replace(".", "-")
         csv_path = f"data/{clean_ticker}.csv"
@@ -139,6 +139,7 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
         except Exception as e:
             print(f"⚠️ Error leyendo {ticker}: {e}")
             return ticker, None, None
+
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(load_single_ticker, ticker) for ticker in tickers]
@@ -148,6 +149,7 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
                 prices_data[ticker] = price
             if ohlc is not None:
                 ohlc_data[ticker] = ohlc
+
     if prices_data:
         prices_df = pd.DataFrame(prices_data)
         prices_df = prices_df.fillna(method="ffill").fillna(method="bfill")
@@ -232,7 +234,7 @@ def get_name_map_for_index(index_choice):
         return m
 
 def normalize_symbol(t):
-    return str(t).strip().upper().replace(".", "-")
+    return str(t).strip().upper().replace(".", "-", regex=False)
 
 def is_filter_active_for_next_month(spy_df, use_roc, use_sma):
     try:
@@ -262,7 +264,6 @@ st.title("📈 Estrategia mensual sobre los componentes del S&P 500 y/o Nasdaq-1
 # Sidebar
 st.sidebar.header("Parámetros de backtest")
 index_choice = st.sidebar.selectbox("Selecciona el índice:", ["SP500", "NDX", "Ambos (SP500 + NDX)"])
-
 try:
     default_end = min(datetime.today().date(), datetime(2030, 12, 31).date())
     default_start = default_end - timedelta(days=365 * 5)
@@ -333,7 +334,6 @@ if run_button:
         }
         cache_key = get_cache_key(cache_params)
         cache_file = os.path.join(CACHE_DIR, f"backtest_{cache_key}.pkl")
-
         use_cache = False
         if os.path.exists(cache_file):
             try:
@@ -352,11 +352,9 @@ if run_button:
                         st.session_state.universe_tickers = set(cached_data.get("universe_tickers", []))
             except Exception:
                 use_cache = False
-
         if not use_cache:
             progress_bar = st.progress(0)
             status_text = st.empty()
-
             status_text.text("📥 Obteniendo constituyentes...")
             progress_bar.progress(10)
             all_tickers_data, error = get_constituents_cached(index_name=index_choice, start_date=start_date, end_date=end_date)
@@ -368,7 +366,6 @@ if run_button:
             tickers = list(dict.fromkeys(all_tickers_data["tickers"]))
             st.session_state.universe_tickers = set(tickers)
             st.success(f"✅ Obtenidos {len(tickers)} tickers únicos")
-
             status_text.text("📊 Cargando precios en paralelo...")
             progress_bar.progress(30)
             prices_df, ohlc_data = load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=True)
@@ -376,7 +373,6 @@ if run_button:
                 st.error("❌ No se pudieron cargar precios")
                 st.stop()
             st.success(f"✅ Cargados {len(prices_df.columns)} tickers con datos")
-
             status_text.text("📈 Cargando benchmark...")
             progress_bar.progress(40)
             benchmark_ticker = "SPY" if index_choice != "NDX" else "QQQ"
@@ -386,7 +382,6 @@ if run_button:
                 benchmark_series = prices_df.mean(axis=1)
             else:
                 benchmark_series = benchmark_df[benchmark_ticker]
-
             spy_df = None
             status_text.text("📈 Cargando SPY...")
             spy_result, _ = load_prices_from_csv_parallel(["SPY"], start_date, end_date, load_full_data=False)
@@ -396,7 +391,6 @@ if run_button:
             else:
                 st.sidebar.warning("⚠️ No se pudo cargar SPY")
                 spy_df = None
-
             historical_info = None
             if use_historical_verification:
                 status_text.text("🕐 Cargando datos históricos...")
@@ -408,13 +402,11 @@ if run_button:
                 else:
                     st.warning("⚠️ No se encontraron datos históricos, continuando sin verificación")
                     historical_info = None
-
             safety_prices = pd.DataFrame()
             safety_ohlc = {}
             if use_safety_etfs:
                 status_text.text("🛡️ Cargando ETFs de refugio (IEF, BIL)...")
                 safety_prices, safety_ohlc = load_prices_from_csv_parallel(["IEF", "BIL"], start_date, end_date, load_full_data=True)
-
             status_text.text("🚀 Ejecutando backtest optimizado...")
             progress_bar.progress(70)
             bt_results, picks_df = run_backtest_optimized(
@@ -435,22 +427,18 @@ if run_button:
                 safety_ohlc=safety_ohlc,
                 avoid_rebuy_unchanged=avoid_rebuy_unchanged,
             )
-
             st.session_state.bt_results = bt_results
             st.session_state.picks_df = picks_df
             st.session_state.spy_df = spy_df
-
             prices_df_display = prices_df.copy()
             if use_safety_etfs and not safety_prices.empty:
                 prices_df_display = prices_df_display.join(safety_prices, how="outer")
-
             st.session_state.prices_df = prices_df_display
             st.session_state.benchmark_series = benchmark_series
             st.session_state.ohlc_data = ohlc_data
             st.session_state.historical_info = historical_info
             st.session_state.backtest_params = cache_params
             st.session_state.backtest_completed = True
-
             status_text.text("💾 Guardando resultados en caché...")
             progress_bar.progress(100)
             try:
@@ -484,7 +472,6 @@ if run_button:
             st.session_state.historical_info = historical_info
             st.session_state.backtest_params = cache_params
             st.session_state.backtest_completed = True
-
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
         st.exception(e)
@@ -499,7 +486,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     ohlc_data = st.session_state.ohlc_data
     historical_info = st.session_state.historical_info
     universe_tickers = st.session_state.universe_tickers or set()
-
     use_roc_filter = st.session_state.backtest_params.get("roc_filter", False) if st.session_state.backtest_params else False
     use_sma_filter = st.session_state.backtest_params.get("sma_filter", False) if st.session_state.backtest_params else False
     index_choice = st.session_state.backtest_params.get("index", "SP500") if st.session_state.backtest_params else "SP500"
@@ -511,14 +497,12 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     avoid_rebuy_unchanged = st.session_state.backtest_params.get("avoid_rebuy_unchanged", True) if st.session_state.backtest_params else True
 
     st.success("✅ Backtest completado exitosamente")
-
     final_equity = float(bt_results["Equity"].iloc[-1])
     initial_equity = float(bt_results["Equity"].iloc[0])
     total_return = (final_equity / initial_equity) - 1
     years = (bt_results.index[-1] - bt_results.index[0]).days / 365.25
     cagr = (final_equity / initial_equity) ** (1 / years) - 1 if years > 0 else 0
     max_drawdown = float(bt_results["Drawdown"].min())
-
     monthly_returns = bt_results["Returns"]
     risk_free_rate_annual = 0.02
     risk_free_rate_monthly = (1 + risk_free_rate_annual) ** (1 / 12) - 1
@@ -629,14 +613,12 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     if picks_df is not None and not picks_df.empty:
         st.subheader("📊 Picks Históricos")
         col_sidebar, col_main = st.columns([1, 3])
-
         with col_sidebar:
             st.markdown("### 📅 Navegación por Fechas")
             unique_dates = sorted(picks_df["Date"].unique(), reverse=True)
             selected_date = st.selectbox("Selecciona una fecha:", unique_dates, index=0, key="historical_date_selector")
             date_picks = picks_df[picks_df["Date"] == selected_date]
             st.info(f"🎯 {len(date_picks)} picks seleccionados el {selected_date}")
-
             # Retorno neto del mes
             monthly_return = 0.0
             try:
@@ -662,7 +644,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                         st.caption(f"⚠️ Fecha aproximada: {bt_index[closest_idx].strftime('%Y-%m-%d')}")
             except Exception as e:
                 st.warning(f"No se pudo calcular retorno del mes: {e}")
-
         with col_main:
             st.markdown(f"### 🎯 Picks Seleccionados el {selected_date}")
             date_picks_display = date_picks.copy()
@@ -714,12 +695,19 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                     name_map.update(tmp)
                 else:
                     name_map = get_name_map_for_index(index_choice)
-
                 safety_set = {"IEF", "BIL"}
                 filter_active = is_filter_active_for_next_month(spy_df, use_roc_filter, use_sma_filter) if (use_roc_filter or use_sma_filter) else False
 
+                # 🔒 BLINDAJE: usar la misma lógica que en el backtest para obtener constituyentes HOY
+                today = dt_date.today()
+                constituents_result, _ = get_constituents_at_date(index_choice, start_date=start_date, end_date=today)
+                if constituents_result and "tickers" in constituents_result:
+                    current_valid_tickers = set(constituents_result["tickers"])
+                else:
+                    current_valid_tickers = st.session_state.universe_tickers or set()
+
                 # Limitar universo a constituyentes actuales (evita safety y ajenos al índice)
-                valid_universe = [t for t in prices_df.columns if t in universe_tickers and t not in safety_set]
+                valid_universe = [t for t in prices_df.columns if t in current_valid_tickers and t not in safety_set]
 
                 if use_safety_etfs and filter_active:
                     # Refugio IEF/BIL
@@ -864,7 +852,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
         value=False,
         help="Ejecuta backtests para top_n = 3..10 con los mismos parámetros actuales"
     )
-
     if do_robust:
         with st.spinner("Calculando robustez..."):
             results = []
@@ -875,7 +862,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 sd = pd.to_datetime(st.session_state.backtest_params.get("start")).date()
                 ed = pd.to_datetime(st.session_state.backtest_params.get("end")).date()
                 safety_prices_k, safety_ohlc_k = load_prices_from_csv_parallel(['IEF','BIL'], sd, ed, load_full_data=True)
-
             # Cache por combinación de parámetros+k
             base_params_key = get_cache_key({
                 "index": index_choice, "start": str(st.session_state.backtest_params.get("start")),
@@ -887,7 +873,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 "use_safety_etfs": use_safety_etfs,
                 "avoid_rebuy_unchanged": avoid_rebuy_unchanged
             })
-
             for k in range(3, 11):
                 key_k = f"{base_params_key}_k{k}"
                 if key_k in st.session_state.robust_cache:
@@ -918,7 +903,6 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                     cagr_k = (eq.iloc[-1] / eq.iloc[0]) ** (1/years_k) - 1 if years_k > 0 else 0
                     maxdd_k = float(bt_k["Drawdown"].min()) if "Drawdown" in bt_k.columns else 0.0
                     results.append({"Posiciones": k, "CAGR": cagr_k, "Max DD": maxdd_k})
-
             if results:
                 rob_df = pd.DataFrame(results).set_index("Posiciones")
                 rob_show = rob_df.copy()
