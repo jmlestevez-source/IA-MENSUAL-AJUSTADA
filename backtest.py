@@ -44,57 +44,54 @@ def convertir_a_mensual_con_ohlc(ohlc_data):
 
 def precalculate_valid_tickers_by_date(monthly_dates, historical_changes_data, current_tickers):
     """
-    VERSIÓN CORREGIDA: Filtra correctamente los tickers según cambios históricos
+    EXACTO a la regla:
+    - Universo SIEMPRE = current_tickers (constituyentes actuales hoy).
+    - Para cada fecha (prev_date) y cada ticker actual:
+        * Si aparece en changes: incluir si (existe Added <= fecha) y (NO existe Removed < fecha).
+        * Si NO aparece en changes: se asume histórico y se incluye siempre.
     """
+    # Normalizar universo actual
+    def _norm_t(t):
+        return str(t).strip().upper().replace('.', '-')
+    current_set = set(_norm_t(t) for t in current_tickers if t)
+
+    # Sin datos históricos -> incluir todos los actuales en todas las fechas
     if historical_changes_data is None or historical_changes_data.empty:
-        return {date: set(current_tickers) for date in monthly_dates}
-    
-    historical_changes_data = historical_changes_data.copy()
-    historical_changes_data['Date'] = pd.to_datetime(historical_changes_data['Date'])
-    
-    all_historical_tickers = set(current_tickers)
-    removed_tickers = historical_changes_data[
-        historical_changes_data['Action'].str.lower() == 'removed'
-    ]['Ticker'].unique()
-    all_historical_tickers.update(removed_tickers)
-    
+        return {date: set(current_set) for date in monthly_dates}
+
+    ch = historical_changes_data.copy()
+    if 'Date' not in ch.columns or 'Ticker' not in ch.columns or 'Action' not in ch.columns:
+        return {date: set(current_set) for date in monthly_dates}
+
+    # Normalizar cambios
+    ch['Ticker'] = ch['Ticker'].astype(str).str.upper().str.replace('.', '-', regex=False)
+    ch['Date'] = pd.to_datetime(ch['Date'], errors='coerce')
+    ch = ch.dropna(subset=['Date', 'Ticker', 'Action'])
+    ch['Action'] = ch['Action'].astype(str).str.lower()
+
+    # Índice por ticker con listas de fechas de add/remove
+    changes_by_ticker = {}
+    for t, tdf in ch.groupby('Ticker'):
+        add_dates = sorted(pd.to_datetime(tdf.loc[tdf['Action'].str.contains('add', na=False), 'Date']).dt.normalize())
+        rem_dates = sorted(pd.to_datetime(tdf.loc[tdf['Action'].str.contains('remov', na=False), 'Date']).dt.normalize())
+        changes_by_ticker[t] = {'add': add_dates, 'rem': rem_dates}
+
     valid_by_date = {}
     for target_date in monthly_dates:
-        target_dt = pd.Timestamp(target_date)
-        valid_tickers = set(current_tickers)
-        all_changes = historical_changes_data.copy()
-        for ticker in all_historical_tickers:
-            ticker_changes = all_changes[all_changes['Ticker'] == ticker].sort_values('Date')
-            if len(ticker_changes) == 0:
-                if ticker not in current_tickers:
-                    valid_tickers.discard(ticker)
+        td = pd.to_datetime(target_date).normalize()
+        valids = set()
+        for t in current_set:
+            info = changes_by_ticker.get(t)
+            if info is None:
+                # No aparece en changes -> se asume histórico
+                valids.add(t)
                 continue
-            changes_before = ticker_changes[ticker_changes['Date'] <= target_dt]
-            if len(changes_before) > 0:
-                last_change = changes_before.iloc[-1]
-                last_action = str(last_change['Action']).lower()
-                if last_action == 'added':
-                    valid_tickers.add(ticker)
-                elif last_action == 'removed':
-                    valid_tickers.discard(ticker)
-            else:
-                changes_after = ticker_changes[ticker_changes['Date'] > target_dt]
-                if len(changes_after) > 0:
-                    first_future_change = changes_after.iloc[0]
-                    first_future_action = str(first_future_change['Action']).lower()
-                    if first_future_action == 'added':
-                        valid_tickers.discard(ticker)
-                    elif first_future_action == 'removed':
-                        valid_tickers.add(ticker)
-        # Remociones conocidas de seguridad
-        known_removals = {
-            'RIG': pd.Timestamp('2016-08-31'),
-            'OI': pd.Timestamp('2021-06-30'),
-        }
-        for ticker, removal_date in known_removals.items():
-            if target_dt >= removal_date:
-                valid_tickers.discard(ticker)
-        valid_by_date[target_date] = valid_tickers
+            added_before_or_on = any(d <= td for d in info['add'])
+            removed_before = any(d < td for d in info['rem'])
+            if added_before_or_on and not removed_before:
+                valids.add(t)
+        valid_by_date[target_date] = valids
+
     return valid_by_date
 
 def precalculate_all_indicators(prices_df_m, ohlc_data, corte=680):
@@ -104,7 +101,6 @@ def precalculate_all_indicators(prices_df_m, ohlc_data, corte=680):
     try:
         all_indicators = {}
         monthly_ohlc = convertir_a_mensual_con_ohlc(ohlc_data) if ohlc_data else None
-        total_tickers = len(prices_df_m.columns)
         
         for i, ticker in enumerate(prices_df_m.columns):
             try:
