@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import numpy as np
@@ -10,6 +9,8 @@ import base64
 import pickle
 import hashlib
 import glob
+import requests
+from io import StringIO
 
 # Importar módulos propios
 from data_loader import (
@@ -154,66 +155,69 @@ def load_prices_from_csv_parallel(tickers, start_date, end_date, load_full_data=
     else:
         return pd.DataFrame(), {}
 
-# Mapa de nombres (Wikipedia) usando la tabla id='constituents' + fallback robusto
+# Lectura robusta de Wikipedia con User-Agent para evitar 403
+def _read_html_with_ua(url, attrs=None):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/122.0 Safari/537.36"
+        }
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        html = resp.text
+        return pd.read_html(StringIO(html), attrs=attrs)
+    except Exception as e:
+        print(f"read_html UA error ({url}): {e}")
+        return []
+
 @st.cache_data(ttl=3600 * 12)
 def get_sp500_name_map():
-    try:
-        # Intento 1: tabla con id='constituents'
-        tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", attrs={"id": "constituents"})
-        if tables:
-            df = tables[0]
-        else:
-            # Fallback: buscar tabla con columnas Symbol y Security
-            tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
-            df = None
-            for t in tables:
-                cols = [str(c).strip().lower() for c in t.columns]
-                if any(c in ("symbol", "ticker") for c in cols) and any(c in ("security", "company", "company name") for c in cols):
-                    df = t
-                    break
-            if df is None:
-                return {}
-        sym_col = next((c for c in df.columns if str(c).strip().lower() in ("symbol", "ticker")), None)
-        sec_col = next((c for c in df.columns if str(c).strip().lower() in ("security", "company", "company name")), None)
-        if not sym_col or not sec_col:
-            return {}
-        s = df[[sym_col, sec_col]].copy()
-        s.columns = ["Symbol", "Name"]
-        s["Symbol"] = s["Symbol"].astype(str).str.upper().str.replace(".", "-", regex=False)
-        return dict(zip(s["Symbol"], s["Name"]))
-    except Exception as e:
-        print("SP500 name map error:", e)
-    return {}
+    # 1) Intentar id=constituents
+    tables = _read_html_with_ua("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", attrs={"id": "constituents"})
+    df = tables[0] if tables else None
+    if df is None:
+        # 2) Fallback: buscar tabla con Symbol/Ticker + Security/Company
+        tables = _read_html_with_ua("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+        for t in tables:
+            cols = [str(c).strip().lower() for c in t.columns]
+            if any(c in ("symbol", "ticker") for c in cols) and any(c in ("security", "company", "company name") for c in cols):
+                df = t
+                break
+    if df is None:
+        return {}
+    sym_col = next((c for c in df.columns if str(c).strip().lower() in ("symbol", "ticker")), None)
+    sec_col = next((c for c in df.columns if str(c).strip().lower() in ("security", "company", "company name")), None)
+    if not sym_col or not sec_col:
+        return {}
+    s = df[[sym_col, sec_col]].copy()
+    s.columns = ["Symbol", "Name"]
+    s["Symbol"] = s["Symbol"].astype(str).str.upper().str.replace(".", "-", regex=False)
+    return dict(zip(s["Symbol"], s["Name"]))
 
 @st.cache_data(ttl=3600 * 12)
 def get_ndx_name_map():
-    try:
-        # Intento 1: tabla con id='constituents'
-        tables = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100", attrs={"id": "constituents"})
-        if tables:
-            df = tables[0]
-        else:
-            # Fallback: buscar tabla con Ticker/Symbol y Company
-            tables = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100")
-            df = None
-            for t in tables:
-                cols = [str(c).strip().lower() for c in t.columns]
-                if any(("ticker" in c or "symbol" in c) for c in cols) and any("company" in c for c in cols):
-                    df = t
-                    break
-            if df is None:
-                return {}
-        sym_col = next((c for c in df.columns if "ticker" in str(c).lower() or "symbol" in str(c).lower()), None)
-        name_col = next((c for c in df.columns if "company" in str(c).lower()), None)
-        if not sym_col or not name_col:
-            return {}
-        s = df[[sym_col, name_col]].copy()
-        s.columns = ["Symbol", "Name"]
-        s["Symbol"] = s["Symbol"].astype(str).str.upper().str.replace(".", "-", regex=False)
-        return dict(zip(s["Symbol"], s["Name"]))
-    except Exception as e:
-        print("NDX name map error:", e)
-    return {}
+    # 1) Intentar id=constituents
+    tables = _read_html_with_ua("https://en.wikipedia.org/wiki/Nasdaq-100", attrs={"id": "constituents"})
+    df = tables[0] if tables else None
+    if df is None:
+        # 2) Fallback: buscar Ticker/Symbol + Company
+        tables = _read_html_with_ua("https://en.wikipedia.org/wiki/Nasdaq-100")
+        for t in tables:
+            cols = [str(c).strip().lower() for c in t.columns]
+            if any(("ticker" in c or "symbol" in c) for c in cols) and any("company" in c for c in cols):
+                df = t
+                break
+    if df is None:
+        return {}
+    sym_col = next((c for c in df.columns if "ticker" in str(c).lower() or "symbol" in str(c).lower()), None)
+    name_col = next((c for c in df.columns if "company" in str(c).lower()), None)
+    if not sym_col or not name_col:
+        return {}
+    s = df[[sym_col, name_col]].copy()
+    s.columns = ["Symbol", "Name"]
+    s["Symbol"] = s["Symbol"].astype(str).str.upper().str.replace(".", "-", regex=False)
+    return dict(zip(s["Symbol"], s["Name"]))
 
 @st.cache_data(ttl=3600)
 def get_name_map_for_index(index_choice):
@@ -302,6 +306,7 @@ if st.session_state.backtest_completed:
         st.session_state.historical_info = None
         st.session_state.backtest_params = None
         st.session_state.universe_tickers = set()
+        st.session_state.robust_cache = {}
         st.rerun()
 
 # Constantes
@@ -531,7 +536,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     col4.metric("Max Drawdown (Mensual)", f"{max_drawdown:.2%}")
     col5.metric("Sharpe Ratio (RF=2%)", f"{sharpe_ratio:.2f}")
 
-    # Benchmark seguro (evitar NaNs)
+    # Benchmark (seguro)
     bench_final = initial_equity
     bench_total_return = 0.0
     bench_cagr = 0.0
@@ -570,7 +575,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     col4b.metric("Max Drawdown (Mensual)", f"{bench_max_dd:.2%}")
     col5b.metric("Sharpe Ratio (RF=2%)", f"{bench_sharpe:.2f}")
 
-    # Gráficos
+    # Gráficos (sin width/use_container_width para evitar errores)
     st.subheader("📈 Gráficos de Rentabilidad")
     fig = make_subplots(
         rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3],
@@ -599,10 +604,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 go.Scatter(x=bench_dd_aligned.index, y=bench_dd_aligned.values, mode="lines", name=f'DD {("SPY" if index_choice != "NDX" else "QQQ")}', line=bench_dd_line),
                 row=2, col=1,
             )
-    fig.update_xaxes(title_text="Fecha", row=2, col=1)
-    fig.update_yaxes(title_text="Equity ($)", type="log", row=1, col=1)
-    fig.update_yaxes(title_text="Drawdown (%)", row=2, col=1)
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig)
 
     # Tabla retornos mensuales
     st.subheader("📅 RENDIMIENTOS MENSUALES POR AÑO")
@@ -621,7 +623,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             except Exception:
                 return ""
         styled_table = monthly_table.style.applymap(style_returns)
-        st.dataframe(styled_table, width="stretch")
+        st.dataframe(styled_table)
 
     # Picks históricos (retorno mensual y comisión)
     if picks_df is not None and not picks_df.empty:
@@ -695,8 +697,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                 st.dataframe(
                     date_picks_display[["Rank", "Ticker", "Inercia", "ScoreAdj", "Retorno Individual"]].style.format(
                         {"Inercia": "{:.2f}", "ScoreAdj": "{:.2f}", "Retorno Individual": fmt_ret}
-                    ),
-                    width="stretch",
+                    )
                 )
             except Exception as e:
                 st.error(f"Error calculando retornos individuales: {e}")
@@ -706,11 +707,18 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
         st.subheader("📊 Picks Prospectivos para el Próximo Mes")
         try:
             if prices_df is not None and not prices_df.empty:
-                name_map = get_name_map_for_index(index_choice)
+                # Mapa de nombres robusto
+                if index_choice == "Ambos (SP500 + NDX)":
+                    name_map = get_sp500_name_map()
+                    tmp = get_ndx_name_map()
+                    name_map.update(tmp)
+                else:
+                    name_map = get_name_map_for_index(index_choice)
+
                 safety_set = {"IEF", "BIL"}
                 filter_active = is_filter_active_for_next_month(spy_df, use_roc_filter, use_sma_filter) if (use_roc_filter or use_sma_filter) else False
 
-                # Limitar universo a constituyentes actuales (evita BIL/IEF y cualquier ticker fuera del índice)
+                # Limitar universo a constituyentes actuales (evita safety y ajenos al índice)
                 valid_universe = [t for t in prices_df.columns if t in universe_tickers and t not in safety_set]
 
                 if use_safety_etfs and filter_active:
@@ -751,7 +759,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                             candidates = sorted(candidates, key=lambda x: (x["Score Ajustado"], x["Inercia Alcista"]), reverse=True)
                             df_pros = pd.DataFrame([candidates[0]])
                             df_pros["Rank"] = range(1, len(df_pros) + 1)
-                            st.dataframe(df_pros, width="stretch")
+                            st.dataframe(df_pros)
                             if picks_df is not None and not picks_df.empty:
                                 last_date = max(picks_df["Date"])
                                 prev_set = set(picks_df[picks_df["Date"] == last_date]["Ticker"].tolist())
@@ -769,7 +777,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                         else:
                             st.warning("⚠️ No hay candidatos válidos de IEF/BIL ahora mismo.")
                 else:
-                    # Universo normal (solo constituyentes actuales, excluye safety)
+                    # Universo normal
                     if not valid_universe:
                         st.warning("⚠️ No hay tickers válidos para generar señales")
                     else:
@@ -788,10 +796,18 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                                         inercia_val = last_inercia[ticker]
                                         score_adj = last_scores[ticker]
                                         if inercia_val >= corte and score_adj > 0 and not np.isnan(score_adj):
+                                            # Nombre robusto: intenta en ambos mapas si el actual no lo trae
+                                            name = name_map.get(ticker)
+                                            if not name and index_choice != "SP500":
+                                                name = get_sp500_name_map().get(ticker)
+                                            if not name and index_choice != "NDX":
+                                                name = get_ndx_name_map().get(ticker)
+                                            if not name:
+                                                name = ticker  # último recurso
                                             valid_picks.append(
                                                 {
                                                     "ticker": ticker,
-                                                    "name": get_name_map_for_index(index_choice).get(ticker, ticker),
+                                                    "name": name,
                                                     "inercia": float(inercia_val),
                                                     "score_adj": float(score_adj),
                                                     "price": float(prices_for_signals[ticker].iloc[-1]),
@@ -813,7 +829,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                                             for i, p in enumerate(final_picks)
                                         ]
                                     )
-                                    st.dataframe(df_pros, width="stretch")
+                                    st.dataframe(df_pros)
                                     if picks_df is not None and not picks_df.empty:
                                         last_date = max(picks_df["Date"])
                                         prev_set = set(picks_df[picks_df["Date"] == last_date]["Ticker"].tolist())
@@ -840,108 +856,75 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
             st.error(f"Error calculando señales actuales: {str(e)}")
 
     # ==============================
-    # Robustez por número de posiciones (3 a 10) - rápido (1 solo backtest base)
+    # Robustez por número de posiciones (3 a 10) - ejecución fiable (re-ejecuta por k)
     # ==============================
     st.subheader("🧪 Robustez por número de posiciones (3 → 10)")
     do_robust = st.checkbox(
         "Calcular matriz de robustez 3-10 posiciones (CAGR y Max DD)",
         value=False,
-        help="Ejecuta un backtest base con top_n=10 y reconstruye k=3..10 sin recalcular todo"
+        help="Ejecuta backtests para top_n = 3..10 con los mismos parámetros actuales"
     )
 
     if do_robust:
         with st.spinner("Calculando robustez..."):
-            # Clave de robustez basada en mismos parámetros pero con top_n=10
-            r_params = st.session_state.backtest_params.copy()
-            r_params["top_n"] = 10
-            robust_key = get_cache_key({"robust": True, **r_params})
-
-            if robust_key not in st.session_state.robust_cache:
-                # Ejecutar backtest base top_n=10 una sola vez
-                safety_prices_k = pd.DataFrame()
-                safety_ohlc_k = {}
-                if use_safety_etfs:
-                    sd = pd.to_datetime(st.session_state.backtest_params.get("start")).date()
-                    ed = pd.to_datetime(st.session_state.backtest_params.get("end")).date()
-                    safety_prices_k, safety_ohlc_k = load_prices_from_csv_parallel(['IEF','BIL'], sd, ed, load_full_data=True)
-
-                bt10, picks10 = run_backtest_optimized(
-                    prices=prices_df,
-                    benchmark=benchmark_series,
-                    commission=commission,
-                    top_n=10,
-                    corte=corte,
-                    ohlc_data=ohlc_data,
-                    historical_info=historical_info,
-                    fixed_allocation=fixed_allocation,
-                    use_roc_filter=use_roc_filter,
-                    use_sma_filter=use_sma_filter,
-                    spy_data=spy_df,
-                    progress_callback=None,
-                    use_safety_etfs=use_safety_etfs,
-                    safety_prices=safety_prices_k if not safety_prices_k.empty else None,
-                    safety_ohlc=safety_ohlc_k if safety_ohlc_k else None,
-                    avoid_rebuy_unchanged=avoid_rebuy_unchanged
-                )
-                st.session_state.robust_cache[robust_key] = {"bt": bt10, "picks": picks10}
-
-            bt10 = st.session_state.robust_cache[robust_key]["bt"]
-            picks10 = st.session_state.robust_cache[robust_key]["picks"].copy() if st.session_state.robust_cache[robust_key]["picks"] is not None else pd.DataFrame()
-
-            # Mensualizar precios (incluye safety si están en prices_df)
-            prices_m = st.session_state.prices_df.resample("ME").last()
-
             results = []
-            if not bt10.empty and not picks10.empty:
-                # Fechas de selección (prev_date) del backtest base
-                sel_dates = sorted(pd.to_datetime(picks10["Date"].unique()))
-                # Equities para cada k
-                for k in range(3, 11):
-                    equity = 10000.0
-                    equity_series = []
-                    equity_index = []
-                    for i, prev_date in enumerate(sel_dates):
-                        # Fecha fin del período (próxima fecha mensual del bt base o última)
-                        end_date_m = bt10.index[i+1] if i+1 < len(bt10.index) else prices_m.index.max()
-                        # Picks del mes, ordenados por Rank y truncados a k
-                        month_picks = picks10[picks10["Date"] == prev_date.strftime("%Y-%m-%d")].sort_values("Rank")
-                        month_tickers = [t for t in month_picks["Ticker"].tolist() if t in prices_m.columns][:k]
-                        if not month_tickers:
-                            equity_index.append(end_date_m)
-                            equity_series.append(equity)
-                            continue
-                        try:
-                            p0 = prices_m.loc[prev_date, month_tickers]
-                            p1 = prices_m.loc[end_date_m, month_tickers]
-                            valid = (~p0.isna()) & (~p1.isna()) & (p0 != 0)
-                            if valid.any():
-                                rets = (p1[valid] / p0[valid] - 1).values
-                                port_ret = rets.mean() - commission
-                                equity *= (1 + port_ret)
-                        except Exception:
-                            pass
-                        equity_index.append(end_date_m)
-                        equity_series.append(equity)
-                    if equity_index:
-                        eq_s = pd.Series(equity_series, index=pd.to_datetime(equity_index)).sort_index()
-                        dd = (eq_s / eq_s.cummax() - 1).fillna(0)
-                        years_k = (eq_s.index[-1] - eq_s.index[0]).days / 365.25 if len(eq_s) > 1 else 0
-                        cagr_k = (eq_s.iloc[-1] / eq_s.iloc[0]) ** (1/years_k) - 1 if years_k > 0 else 0
-                        maxdd_k = float(dd.min()) if not dd.empty else 0.0
-                        results.append({"Posiciones": k, "CAGR": cagr_k, "Max DD": maxdd_k})
+            # Pre-carga opcional de safety para todos los k si procede
+            safety_prices_k = pd.DataFrame()
+            safety_ohlc_k = {}
+            if use_safety_etfs:
+                sd = pd.to_datetime(st.session_state.backtest_params.get("start")).date()
+                ed = pd.to_datetime(st.session_state.backtest_params.get("end")).date()
+                safety_prices_k, safety_ohlc_k = load_prices_from_csv_parallel(['IEF','BIL'], sd, ed, load_full_data=True)
+
+            # Cache por combinación de parámetros+k
+            base_params_key = get_cache_key({
+                "index": index_choice, "start": str(st.session_state.backtest_params.get("start")),
+                "end": str(st.session_state.backtest_params.get("end")),
+                "corte": corte, "commission": commission,
+                "historical": bool(historical_info),
+                "fixed_alloc": fixed_allocation,
+                "roc_filter": use_roc_filter, "sma_filter": use_sma_filter,
+                "use_safety_etfs": use_safety_etfs,
+                "avoid_rebuy_unchanged": avoid_rebuy_unchanged
+            })
+
+            for k in range(3, 11):
+                key_k = f"{base_params_key}_k{k}"
+                if key_k in st.session_state.robust_cache:
+                    bt_k = st.session_state.robust_cache[key_k]
+                else:
+                    bt_k, _ = run_backtest_optimized(
+                        prices=prices_df,
+                        benchmark=benchmark_series,
+                        commission=commission,
+                        top_n=k,
+                        corte=corte,
+                        ohlc_data=ohlc_data,
+                        historical_info=historical_info,
+                        fixed_allocation=fixed_allocation,
+                        use_roc_filter=use_roc_filter,
+                        use_sma_filter=use_sma_filter,
+                        spy_data=spy_df,
+                        progress_callback=None,
+                        use_safety_etfs=use_safety_etfs,
+                        safety_prices=safety_prices_k if not safety_prices_k.empty else None,
+                        safety_ohlc=safety_ohlc_k if safety_ohlc_k else None,
+                        avoid_rebuy_unchanged=avoid_rebuy_unchanged
+                    )
+                    st.session_state.robust_cache[key_k] = bt_k
+                if not bt_k.empty:
+                    eq = bt_k["Equity"]
+                    years_k = (eq.index[-1] - eq.index[0]).days / 365.25 if len(eq) > 1 else 0
+                    cagr_k = (eq.iloc[-1] / eq.iloc[0]) ** (1/years_k) - 1 if years_k > 0 else 0
+                    maxdd_k = float(bt_k["Drawdown"].min()) if "Drawdown" in bt_k.columns else 0.0
+                    results.append({"Posiciones": k, "CAGR": cagr_k, "Max DD": maxdd_k})
 
             if results:
                 rob_df = pd.DataFrame(results).set_index("Posiciones")
                 rob_show = rob_df.copy()
                 rob_show["CAGR"] = (rob_show["CAGR"]*100).map(lambda x: f"{x:.2f}%")
                 rob_show["Max DD"] = (rob_show["Max DD"]*100).map(lambda x: f"{x:.2f}%")
-                st.dataframe(rob_show, width="stretch")
-
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.line_chart(pd.DataFrame({"CAGR": rob_df["CAGR"]}, index=rob_df.index), width="stretch")
-                with c2:
-                    st.bar_chart(pd.DataFrame({"Max DD": rob_df["Max DD"].abs()}, index=rob_df.index), width="stretch")
+                st.dataframe(rob_show)
             else:
                 st.warning("No se pudieron calcular resultados de robustez")
 
