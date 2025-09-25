@@ -1,0 +1,71 @@
+name: Send Telegram Signals (Monthly)
+
+on:
+  schedule:
+    # Ejecutar dos veces al día; el script comprueba último día mes ≥ 23:00 Madrid
+    - cron: "55 21 * * *"   # 23:55 CEST aprox (verano)
+    - cron: "55 22 * * *"   # 23:55 CET aprox (invierno)
+  workflow_dispatch:
+    inputs:
+      send_now:
+        description: 'Enviar ahora (ignorar comprobación de último día/hora Madrid)'
+        required: false
+        default: false
+        type: boolean
+      index:
+        description: 'Índice: SP500 | NDX | BOTH'
+        required: false
+        default: 'BOTH'
+      top:
+        description: 'Número de picks'
+        required: false
+        default: '5'
+      corte:
+        description: 'Corte de inercia'
+        required: false
+        default: '680'
+
+permissions:
+  contents: read
+
+jobs:
+  send-signals:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Usa requirements.txt si existe; sino instala mínimos
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install pandas numpy requests lxml html5lib pytz
+          fi
+
+      - name: Send signals to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || vars.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || vars.TELEGRAM_CHAT_ID }}
+        run: |
+          IDX="${{ github.event.inputs.index }}"
+          TOP="${{ github.event.inputs.top }}"
+          CORTE="${{ github.event.inputs.corte }}"
+          SEND_NOW="${{ github.event.inputs.send_now }}"
+          [ -z "$IDX" ] && IDX="BOTH"
+          [ -z "$TOP" ] && TOP="5"
+          [ -z "$CORTE" ] && CORTE="680"
+
+          echo "🔔 Enviando señales (index=$IDX, top=$TOP, corte=$CORTE) ..."
+          if [ "$SEND_NOW" = "true" ]; then
+            python telegram_signals.py --index "$IDX" --top "$TOP" --corte "$CORTE" --force
+          else
+            python telegram_signals.py --index "$IDX" --top "$TOP" --corte "$CORTE"
+          fi
