@@ -11,6 +11,23 @@ on:
         required: false
         default: false
         type: boolean
+      send_now:
+        description: 'Enviar picks a Telegram ahora (ignorar fin de mes)'
+        required: false
+        default: false
+        type: boolean
+      index:
+        description: 'Índice: SP500 | NDX | BOTH'
+        required: false
+        default: 'BOTH'
+      top:
+        description: 'Número de picks a enviar'
+        required: false
+        default: '5'
+      corte:
+        description: 'Corte de inercia'
+        required: false
+        default: '680'
 
 permissions:
   contents: write
@@ -35,7 +52,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance pandas requests lxml html5lib pytz
+          # Si tienes requirements.txt úsalo; si no, instala lo básico
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install yfinance pandas requests lxml html5lib pytz
+          fi
 
       # Importante: usamos el update_csv.py del repo (no lo sobrescribimos)
       - name: Run update script
@@ -49,49 +71,32 @@ jobs:
       - name: Clean up delisted tickers
         run: |
           python -c "
-          import os
-          import glob
-          import pandas as pd
-          
-          # Lista de tickers que sabemos están dados de baja
-          delisted_tickers = ['ABK', 'ANR', 'AYE', 'BMC', 'CBE', 'COV', 'EVHC', 'FMCN', 'GAS', 'MEE', 'NCC', 'NFX', 'SBL', 'VIP', 'VMED']
-          
+          import os, glob
+          delisted_tickers = ['ABK','ANR','AYE','BMC','CBE','COV','EVHC','FMCN','GAS','MEE','NCC','NFX','SBL','VIP','VMED']
           print('🧹 Limpiando tickers dados de baja...')
-          
           removed_count = 0
-          for ticker in delisted_tickers:
-              file_path = f'data/{ticker}.csv'
-              if os.path.exists(file_path):
+          for t in delisted_tickers:
+              fp = f'data/{t}.csv'
+              if os.path.exists(fp):
                   try:
-                      os.remove(file_path)
-                      print(f'  ❌ Eliminado: {ticker}.csv')
-                      removed_count += 1
+                      os.remove(fp); print(f'  ❌ Eliminado: {t}.csv'); removed_count += 1
                   except Exception as e:
-                      print(f'  ⚠️ Error eliminando {ticker}: {e}')
-          
-          print(f'\n✅ Eliminados {removed_count} archivos de tickers dados de baja')
-          
-          # Verificar cuántos archivos quedan
-          remaining_files = len(glob.glob('data/*.csv'))
-          print(f'📁 Archivos restantes: {remaining_files}')
+                      print(f'  ⚠️ Error eliminando {t}: {e}')
+          print(f'✅ Eliminados {removed_count} archivos')
+          print(f'📁 Archivos restantes: {len(glob.glob(\"data/*.csv\"))}')
           "
 
       - name: Final verification
         run: |
           python -c "
-          import pandas as pd
-          import glob
-          
+          import pandas as pd, glob
           print('🔍 Verificación final...')
-          
           samples = glob.glob('data/*.csv')[:10]
           issues = []
-          
           for file in samples:
               try:
                   df = pd.read_csv(file, index_col='Date', parse_dates=True)
-                  ticker = file.split('/')[-1].replace('.csv', '')
-                  
+                  ticker = file.split('/')[-1].replace('.csv','')
                   if 'Adj Close' in df.columns:
                       issues.append(f'{ticker}: TIENE Adj Close')
                   elif len(df.columns) != 5:
@@ -100,22 +105,55 @@ jobs:
                       print(f'  ✅ {ticker}: OK')
               except Exception as e:
                   issues.append(f'{file}: {e}')
-          
           if issues:
-              print('\n⚠️ Problemas:')
-              for issue in issues:
-                  print(f'  - {issue}')
+              print('\\n⚠️ Problemas:')
+              for issue in issues: print('  -', issue)
           else:
-              print('\n✅ Todos los archivos OK')
+              print('\\n✅ Todos los archivos OK')
           "
+
+      # Enviar picks a Telegram SOLO el último día de mes (UTC) o si se lanza manualmente con send_now=true
+      - name: Send Telegram picks (last day UTC or manual)
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -e
+          # ¿Es último día de mes en UTC?
+          if [ "$(date -u -d tomorrow +%d)" = "01" ]; then LAST_DAY=1; else LAST_DAY=0; fi
+
+          # Inputs manuales
+          SEND_NOW="${{ github.event.inputs.send_now }}"
+          IDX="${{ github.event.inputs.index }}"
+          TOP="${{ github.event.inputs.top }}"
+          CORTE="${{ github.event.inputs.corte }}"
+          [ -z "$IDX" ] && IDX="BOTH"
+          [ -z "$TOP" ] && TOP="5"
+          [ -z "$CORTE" ] && CORTE="680"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$SEND_NOW" = "true" ]; then
+            SHOULD_SEND=1
+            echo "🔔 Envío manual forzado"
+          elif [ "$LAST_DAY" = "1" ]; then
+            SHOULD_SEND=1
+            echo "📆 Último día de mes (UTC): se enviará"
+          else
+            SHOULD_SEND=0
+            echo "📆 No es último día de mes (UTC): no se enviará"
+          fi
+
+          if [ "$SHOULD_SEND" = "1" ]; then
+            echo "✉️ Enviando picks a Telegram (index=$IDX, top=$TOP, corte=$CORTE)..."
+            python send_picks_telegram.py --index "$IDX" --top "$TOP" --corte "$CORTE"
+          fi
 
       - name: Commit and push changes
         run: |
           # Configurar git
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # IMPORTANTE: Hacer pull primero para obtener cambios remotos
+
+          # Pull antes de push
           echo "📥 Obteniendo cambios remotos..."
           git pull origin main --rebase || {
               echo "⚠️ Error en pull, intentando merge..."
@@ -125,22 +163,18 @@ jobs:
                   exit 1
               }
           }
-          
-          # Añadir todos los cambios
+
+          # Añadir cambios (p.ej., estado last_picks_*.json)
           git add .
-          
-          # Verificar si hay cambios staged
+
+          # Commit/push si hay cambios
           if ! git diff --staged --quiet; then
             echo "📊 Hay cambios para commitear, procediendo..."
-            
-            # Commit
             COMMIT_MSG="📊 Update CSVs $(date -u +'%Y-%m-%d %H:%M') UTC - Auto update"
             git commit -m "$COMMIT_MSG"
-            
-            # Push con reintentos
+
             MAX_RETRIES=3
             RETRY_COUNT=0
-            
             while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
               if git push origin main; then
                 echo "✅ Cambios pusheados exitosamente"
@@ -148,7 +182,6 @@ jobs:
               else
                 RETRY_COUNT=$((RETRY_COUNT + 1))
                 echo "⚠️ Push fallido, intento $RETRY_COUNT de $MAX_RETRIES"
-                
                 if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
                   echo "📥 Haciendo pull antes de reintentar..."
                   git pull origin main --rebase
@@ -171,7 +204,5 @@ jobs:
           echo "Fecha: $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
           echo "Archivos CSV: $(ls -1 data/*.csv 2>/dev/null | wc -l)"
           echo ""
-          
-          # Mostrar últimos commits
           echo "📝 Últimos 3 commits:"
           git log --oneline -3
