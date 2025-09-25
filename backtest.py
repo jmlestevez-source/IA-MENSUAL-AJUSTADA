@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-# backtest.py (warm-up sólido y fallback opcional; evita meses 0 al inicio)
+# backtest.py (warm-up + returns calculados ANTES del recorte para evitar meses 0 al inicio)
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, date
 import warnings
 warnings.filterwarnings('ignore')
 
-from data_loader import download_prices  # para recargar con warm-up
+from data_loader import download_prices
 
 def calcular_atr_optimizado(high, low, close, periods=14):
     prev_close = close.shift(1)
@@ -240,14 +240,13 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                           warmup_months=24,
                           user_start_date=None):
     """
-    Backtest mensual con warm-up sólido (24m) y recorte desde start.
-    Si no hay candidatos por corte, enable_fallback=True permite usar RawScoreAdjusted (evita meses 0 al inicio).
+    Backtest con warm-up y cálculo de returns antes del recorte para evitar meses 0 al inicio.
     """
     try:
         if prices is None or (isinstance(prices, (pd.DataFrame, pd.Series)) and prices.empty):
             return pd.DataFrame(), pd.DataFrame()
 
-        # Detectar rango recibido (para recorte final)
+        # Rango recibido
         if isinstance(prices, pd.Series):
             idx_all = pd.to_datetime(prices.index)
             user_start = user_start_date or idx_all.min().date()
@@ -259,7 +258,7 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
             user_end = idx_all.max().date()
             tickers_list = list(prices.columns)
 
-        # Warm-up: recargar universo desde (start - warmup_months)
+        # Warm-up de universo
         warmup_start_dt = (pd.Timestamp(user_start) - pd.DateOffset(months=warmup_months)).date()
         if tickers_list:
             try:
@@ -272,18 +271,14 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
 
         # Mensualizar
         if isinstance(prices, pd.Series):
-            prices_m = prices.resample('ME').last()
-            prices_df_m = pd.DataFrame({'Close': prices_m})
+            prices_df_m = pd.DataFrame({'Close': prices.resample('ME').last()})
         else:
             prices_df_m = prices.resample('ME').last()
 
         # Benchmark mensual
-        if isinstance(benchmark, pd.Series):
-            bench_m = benchmark.resample('ME').last()
-        else:
-            bench_m = benchmark.resample('ME').last()
+        bench_m = benchmark.resample('ME').last() if isinstance(benchmark, (pd.Series, pd.DataFrame)) else None
 
-        # SPY mensual para filtros (recarga con warm-up si es posible)
+        # SPY mensual (warm-up si es posible)
         spy_monthly = None
         if use_roc_filter or use_sma_filter:
             try:
@@ -296,7 +291,7 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                     s = spy_data.iloc[:, 0] if isinstance(spy_data, pd.DataFrame) else spy_data
                     spy_monthly = s.resample('ME').last()
 
-        # ETFs refugio (warm-up)
+        # Safety ETFs (warm-up)
         safety_prices_m = None
         monthly_safety_ohlc = None
         if use_safety_etfs:
@@ -316,29 +311,29 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
         current_tickers = list(prices_df_m.columns)
         monthly_index = prices_df_m.index
 
-        # Arranque en el primer mes cuya prev_date >= fin de mes de user_start
-        crop_start_mend = (pd.Timestamp(user_start) + pd.offsets.MonthEnd(0)).normalize()
+        # Arranque con prev_date >= fin de mes del MES ANTERIOR a user_start (para que el primer mes tenga retorno)
+        prev_threshold = (pd.Timestamp(user_start) - pd.offsets.MonthEnd(1)).normalize()
         i_start = 1
         for i in range(1, len(monthly_index)):
-            if monthly_index[i - 1] >= crop_start_mend:
+            if monthly_index[i - 1] >= prev_threshold:
                 i_start = i
                 break
 
-        # Mapa de válidos por fecha
+        # Válidos por fecha
         monthly_dates_for_map = monthly_index[1:]
         if historical_info and 'changes_data' in historical_info:
             valid_tickers_by_date = precalculate_valid_tickers_by_date(monthly_dates_for_map, historical_info['changes_data'], current_tickers)
         else:
             valid_tickers_by_date = {dt: set(current_tickers) for dt in monthly_dates_for_map}
 
-        equity = [10000.0]
-        dates = [monthly_index[max(0, i_start - 1)]]
+        # Loop en versión "full" (antes del recorte)
+        equity_full = [10000.0]
+        dates_full = [monthly_index[max(0, i_start - 1)]]
         picks_list = []
-        total_months = len(monthly_index) - 1
-
         prev_selected_set = set()
         last_mode = 'none'
         last_safety_ticker = None
+        total_months = len(monthly_index) - 1
 
         for i in range(i_start, len(monthly_index)):
             try:
@@ -379,7 +374,6 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                                     pr1 = safety_prices_m.loc[date_i, st]
                                     if pd.notna(pr0) and pd.notna(pr1) and pr0 != 0:
                                         ret_1m = (pr1 / pr0) - 1
-                                        # score raw simple = ret_1m (sin corte)
                                         candidates.append({'ticker': st, 'ret': float(ret_1m), 'inercia': 0.0, 'score_adj': float(ret_1m)})
                             except Exception:
                                 continue
@@ -390,18 +384,13 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                             if avoid_rebuy_unchanged and last_mode == 'safety' and last_safety_ticker == best['ticker']:
                                 commission_effect = 0.0
                             portfolio_return = best['ret'] - commission_effect
-                            new_equity = equity[-1] * (1 + portfolio_return)
-                            equity.append(new_equity)
-                            dates.append(date_i)
-                            picks_list.append({
-                                "Date": prev_date.strftime("%Y-%m-%d"),
-                                "Rank": 1, "Ticker": best['ticker'],
-                                "Inercia": best['inercia'], "ScoreAdj": best['score_adj'],
-                                "HistoricallyValid": True
-                            })
+                            new_equity = equity_full[-1] * (1 + portfolio_return)
+                            equity_full.append(new_equity)
+                            dates_full.append(date_i)
+                            picks_list.append({"Date": prev_date.strftime("%Y-%m-%d"), "Rank": 1, "Ticker": best['ticker'], "Inercia": best['inercia'], "ScoreAdj": best['score_adj'], "HistoricallyValid": True})
                             last_mode = 'safety'; last_safety_ticker = best['ticker']; prev_selected_set = {best['ticker']}
                             continue
-                    equity.append(equity[-1]); dates.append(date_i); last_mode = 'safety'; last_safety_ticker = None; prev_selected_set = set()
+                    equity_full.append(equity_full[-1]); dates_full.append(date_i); last_mode = 'safety'; last_safety_ticker = None; prev_selected_set = set()
                     continue
 
                 # Selección normal
@@ -418,7 +407,7 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                     except Exception:
                         continue
 
-                # Fallback si no hay candidatos (evita meses en 0)
+                # Fallback si no hay candidatos
                 used_fallback = False
                 if not candidates and enable_fallback:
                     fb = []
@@ -439,7 +428,7 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                         used_fallback = True
 
                 if not candidates:
-                    equity.append(equity[-1]); dates.append(date_i); last_mode = 'normal'
+                    equity_full.append(equity_full[-1]); dates_full.append(date_i); last_mode = 'normal'
                     continue
 
                 candidates = sorted(candidates, key=lambda x: x['score_adj'], reverse=True)
@@ -459,14 +448,12 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                         ticker_returns.append(ret)
 
                 if not valid_tickers:
-                    equity.append(equity[-1]); dates.append(date_i); last_mode = 'normal'
+                    equity_full.append(equity_full[-1]); dates_full.append(date_i); last_mode = 'normal'
                     continue
 
+                weight = 0.1 if fixed_allocation else (1.0 / len(valid_tickers))
                 if fixed_allocation:
-                    valid_tickers = valid_tickers[:10]; ticker_returns = ticker_returns[:10]; weight = 0.1
-                else:
-                    weight = 1.0 / len(valid_tickers)
-
+                    valid_tickers = valid_tickers[:10]; ticker_returns = ticker_returns[:10]
                 portfolio_return = sum(r * weight for r in ticker_returns)
 
                 # Comisión dinámica
@@ -475,17 +462,15 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                     if last_mode != 'normal':
                         commission_effect = commission
                     else:
-                        new_set = set(valid_tickers)
-                        old_set = set(prev_selected_set)
-                        entries = len(new_set - old_set)
-                        exits = len(old_set - new_set)
+                        new_set = set(valid_tickers); old_set = set(prev_selected_set)
+                        entries = len(new_set - old_set); exits = len(old_set - new_set)
                         turnover_ratio = (entries + exits) / max(1, len(new_set))
                         commission_effect = commission * turnover_ratio
 
                 portfolio_return -= commission_effect
-                new_equity = equity[-1] * (1 + portfolio_return)
-                equity.append(new_equity)
-                dates.append(date_i)
+                new_equity = equity_full[-1] * (1 + portfolio_return)
+                equity_full.append(new_equity)
+                dates_full.append(date_i)
 
                 for rank, ticker in enumerate(valid_tickers, 1):
                     pdict = next((p for p in selected_picks if p['ticker'] == ticker), None)
@@ -502,22 +487,29 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                 last_mode = 'normal'; last_safety_ticker = None
 
             except Exception:
-                equity.append(equity[-1]); dates.append(date_i)
+                equity_full.append(equity_full[-1]); dates_full.append(date_i)
                 continue
 
-        equity_series = pd.Series(equity, index=dates)
-        # Recorte a partir de start (fin de mes)
-        crop_start_mend = (pd.Timestamp(user_start) + pd.offsets.MonthEnd(0)).normalize()
-        equity_series = equity_series[equity_series.index >= crop_start_mend]
+        # Construcción de resultados: returns ANTES del recorte
+        equity_series_full = pd.Series(equity_full, index=dates_full)
+        returns_full = equity_series_full.pct_change().fillna(0)
+        drawdown_full = (equity_series_full / equity_series_full.cummax() - 1).fillna(0)
 
-        returns = equity_series.pct_change().fillna(0)
-        drawdown = (equity_series / equity_series.cummax() - 1).fillna(0)
+        # Recorte para mostrar desde el fin de mes de user_start
+        show_start = (pd.Timestamp(user_start) + pd.offsets.MonthEnd(0)).normalize()
+        mask = equity_series_full.index >= show_start
+        equity_series = equity_series_full[mask]
+        returns = returns_full[mask]        # mantiene retorno del primer mes mostrado (no 0)
+        drawdown = drawdown_full[mask]
+
         bt_results = pd.DataFrame({"Equity": equity_series, "Returns": returns, "Drawdown": drawdown})
 
         picks_df = pd.DataFrame(picks_list) if picks_list else pd.DataFrame()
         if not picks_df.empty:
             picks_df['Date'] = pd.to_datetime(picks_df['Date'])
-            picks_df = picks_df[picks_df['Date'] >= crop_start_mend]
+            # muestra picks cuyo prev_date >= mes anterior al inicio (para ver picks del primer mes mostrado)
+            prev_limit = (pd.Timestamp(user_start) - pd.offsets.MonthEnd(1)).normalize()
+            picks_df = picks_df[picks_df['Date'] >= prev_limit]
             picks_df['Date'] = picks_df['Date'].dt.strftime('%Y-%m-%d')
 
         return bt_results, picks_df
