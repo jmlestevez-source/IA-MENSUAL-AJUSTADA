@@ -4,7 +4,7 @@
 # - Universo = (constituyentes actuales SP500/NDX via Wikipedia) ∩ CSVs locales
 # - Si Wikipedia falla -> fallback a snapshots del repo:
 #       data/constituents_sp500.csv y/o data/constituents_ndx.csv (Symbol,Name)
-# - Warm-up 24m; indicadores = backtest.precalculate_all_indicators
+# - Warm-up 24m; indicadores = backtest.precalculate_all_indicators con OHLC diario real
 # - Filtros ACTIVOS (ROC12<0 o Precio<SMA10). Si se activan -> fallback IEF/BIL
 # - Si NO hay picks que pasen corte: “No hay candidatos”
 # - COMPRAR / VENDER / MANTENER: mes actual vs mes anterior
@@ -124,9 +124,24 @@ def load_constituents_snapshot(index_choice):
         s, n = load_csv("data/constituents_ndx.csv"); total |= s; names_total.update(n)
     return total, names_total
 
-# ===================== Helpers: CSV locales, warm-up, filtros =====================
-def _dl_prices_single(objs, start, end, full=False):
-    out = download_prices(objs, start, end, load_full_data=full)
+# ===================== Helpers de precios / fechas =====================
+def _dl_prices_full(objs, start, end):
+    """
+    Descarga con load_full_data=True para obtener OHLC diario real.
+    Devuelve (prices_df, ohlc_data). Acepta lista de tickers o set.
+    """
+    out = download_prices(list(objs), start, end, load_full_data=True)
+    if isinstance(out, tuple):
+        return out[0], out[1]
+    # fallback muy defensivo
+    return out, None
+
+def _dl_prices_close(objs, start, end):
+    """
+    Descarga cierre ajustado sin OHLC.
+    Devuelve DataFrame.
+    """
+    out = download_prices(list(objs), start, end, load_full_data=False)
     if isinstance(out, tuple):
         return out[0]
     return out
@@ -200,7 +215,7 @@ def picks_for_date(prices_m, indicators, at_date, corte, top_n, filter_active, s
     candidates = sorted(candidates, key=lambda x: x["score_adj"], reverse=True)[:top_n]
     return candidates
 
-# ===================== Señales (actual y mes anterior), con snapshots =====================
+# ===================== Señales (actual y mes anterior) =====================
 def compute_signals_with_prev(index_choice="BOTH", top_n=5, corte=680, start=None, end=None, warmup_months=24, verbose=True):
     if end is None:
         end = date.today()
@@ -209,7 +224,7 @@ def compute_signals_with_prev(index_choice="BOTH", top_n=5, corte=680, start=Non
     warmup_start = (pd.Timestamp(start) - pd.DateOffset(months=warmup_months)).date()
     month_end = _month_end(end)
 
-    # 1) Intentar universo y nombres desde Wikipedia
+    # 1) Universo y nombres desde Wikipedia; si falla, snapshots
     ic = index_choice.upper()
     wanted = set(); names = {}
     try:
@@ -220,13 +235,12 @@ def compute_signals_with_prev(index_choice="BOTH", top_n=5, corte=680, start=Non
     except Exception:
         wanted = set()
 
-    # 2) Intersección con CSV locales
     csv_tickers = set(os.path.basename(p)[:-4].upper().replace('.', '-') for p in glob.glob('data/*.csv'))
     exclude = {"SPY", "QQQ", "IEF", "BIL"}
     universe = sorted(((wanted & csv_tickers) if wanted else set()) - exclude)
 
-    # 3) Si Wikipedia falló o devolvió 0, usar snapshots limpios del repo
     if not universe:
+        # snapshots limpios
         snap_syms, snap_names = load_constituents_snapshot(index_choice)
         names.update(snap_names)
         universe = sorted((snap_syms & csv_tickers) - exclude)
@@ -237,11 +251,10 @@ def compute_signals_with_prev(index_choice="BOTH", top_n=5, corte=680, start=Non
         print(f"Universo usado: {len(universe)} tickers")
 
     if not universe:
-        # SIEMPRE devolvemos 5 valores
         return [], [], [], [], {"prev_date": None, "filter": False, "reason": "Universo vacío", "name_map": names}
 
-    # Precios (warm-up)
-    prices_df = _dl_prices_single(universe, warmup_start, end, full=False)
+    # 2) Precios y OHLC (warm-up, load_full_data=True)
+    prices_df, ohlc_data = _dl_prices_full(universe, warmup_start, end)
     if prices_df is None or prices_df.empty:
         return [], [], [], [], {"prev_date": None, "filter": False, "reason": "Sin precios universo", "name_map": names}
 
@@ -261,14 +274,14 @@ def compute_signals_with_prev(index_choice="BOTH", top_n=5, corte=680, start=Non
         current_me = idx[pos]
     prev_me = idx[pos - 1] if pos >= 1 else None
 
-    # SPY y Safety
-    spy_df = _dl_prices_single(["SPY"], warmup_start, end, full=False)
+    # SPY y Safety (no hace falta OHLC para filtros ni safety)
+    spy_df = _dl_prices_close(["SPY"], warmup_start, end)
     spy_m = spy_df["SPY"].resample("ME").last().dropna() if isinstance(spy_df, pd.DataFrame) and "SPY" in spy_df.columns else None
-    safety_df = _dl_prices_single(["IEF", "BIL"], warmup_start, end, full=False)
+    safety_df = _dl_prices_close(["IEF", "BIL"], warmup_start, end)
     safety_m = safety_df.resample("ME").last() if isinstance(safety_df, pd.DataFrame) else None
 
-    # Indicadores del backtest
-    indicators = precalculate_all_indicators(prices_m, ohlc_data=None, corte=corte)
+    # 3) Indicadores del backtest con OHLC real
+    indicators = precalculate_all_indicators(prices_m, ohlc_data=ohlc_data, corte=corte)
     if not indicators:
         return [], [], [], [], {"prev_date": current_me, "filter": False, "reason": "Indicadores vacíos", "name_map": names}
 
@@ -286,6 +299,11 @@ def compute_signals_with_prev(index_choice="BOTH", top_n=5, corte=680, start=Non
     comprar = sorted(now_set - prev_set)
     vender = sorted(prev_set - now_set)
     mantener = sorted(now_set & prev_set)
+
+    # Logs útiles
+    if verbose:
+        passed = len(picks_now)
+        print(f"Fecha mensual: {current_me.date()} | Picks que pasan corte: {passed} | Filtro activo: {filt_now}")
 
     return picks_now, comprar, vender, mantener, {"prev_date": current_me, "filter": filt_now, "name_map": names}
 
@@ -361,7 +379,7 @@ def es_ultimo_dia_mes_y_despues_23_madrid():
 
 # ===================== Main =====================
 def main():
-    parser = argparse.ArgumentParser(description="Enviar señales prospectivas por Telegram (snapshots limpios)")
+    parser = argparse.ArgumentParser(description="Enviar señales prospectivas por Telegram (snapshots limpios, OHLC real)")
     parser.add_argument("--index", default="BOTH", choices=["SP500", "NDX", "BOTH"], help="Índice: SP500 | NDX | BOTH")
     parser.add_argument("--top", type=int, default=5, help="Número de picks (default 5)")
     parser.add_argument("--corte", type=int, default=680, help="Corte de inercia (default 680)")
@@ -400,31 +418,6 @@ def main():
     except Exception as e:
         print(f"❌ Error enviando a Telegram: {e}")
         sys.exit(1)
-
-# Snapshots loader
-def load_constituents_snapshot(index_choice):
-    def load_csv(path):
-        if os.path.exists(path):
-            try:
-                df = pd.read_csv(path)
-                if 'Symbol' in df.columns:
-                    syms = df['Symbol'].astype(str).str.upper().str.replace(".", "-", regex=False).tolist()
-                    names = {}
-                    if 'Name' in df.columns:
-                        tmp = df[['Symbol', 'Name']].copy()
-                        tmp['Symbol'] = tmp['Symbol'].astype(str).str.upper().str.replace(".", "-", regex=False)
-                        names = dict(zip(tmp['Symbol'], tmp['Name']))
-                    return set(syms), names
-            except Exception:
-                pass
-        return set(), {}
-    ic = index_choice.upper()
-    total = set(); names_total = {}
-    if ic in ("SP500", "S&P500", "S&P 500", "BOTH", "SP500 + NDX", "AMBOS", "AMBOS (SP500 + NDX)"):
-        s, n = load_csv("data/constituents_sp500.csv"); total |= s; names_total.update(n)
-    if ic in ("NDX", "NASDAQ-100", "NASDAQ100", "BOTH", "SP500 + NDX", "AMBOS", "AMBOS (SP500 + NDX)"):
-        s, n = load_csv("data/constituents_ndx.csv"); total |= s; names_total.update(n)
-    return total, names_total
 
 if __name__ == "__main__":
     main()
