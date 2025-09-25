@@ -11,23 +11,6 @@ on:
         required: false
         default: false
         type: boolean
-      send_now:
-        description: 'Enviar picks a Telegram ahora (ignorar fin de mes)'
-        required: false
-        default: false
-        type: boolean
-      index:
-        description: 'Índice: SP500 | NDX | BOTH'
-        required: false
-        default: 'BOTH'
-      top:
-        description: 'Número de picks a enviar'
-        required: false
-        default: '5'
-      corte:
-        description: 'Corte de inercia'
-        required: false
-        default: '680'
 
 permissions:
   contents: write
@@ -52,15 +35,15 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Si tienes requirements.txt úsalo; si no, instala lo básico
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
             pip install yfinance pandas requests lxml html5lib pytz
           fi
 
-      # Importante: usamos el update_csv.py del repo (no lo sobrescribimos)
+      # Actualiza CSVs SOLO en planificado o si forces manualmente
       - name: Run update script
+        if: github.event_name == 'schedule' || github.event.inputs.force_update == 'true'
         run: |
           if [[ "${{ github.event.inputs.force_update }}" == "true" ]]; then
             python update_csv.py --force
@@ -69,6 +52,7 @@ jobs:
           fi
 
       - name: Clean up delisted tickers
+        if: github.event_name == 'schedule' || github.event.inputs.force_update == 'true'
         run: |
           python -c "
           import os, glob
@@ -85,6 +69,12 @@ jobs:
           print(f'✅ Eliminados {removed_count} archivos')
           print(f'📁 Archivos restantes: {len(glob.glob(\"data/*.csv\"))}')
           "
+
+      # Refresca snapshots limpios de constituyentes (para el workflow de señales)
+      - name: Refresh constituents snapshots
+        if: github.event_name == 'schedule' || github.event.inputs.force_update == 'true'
+        run: |
+          python generate_constituents_snapshot.py
 
       - name: Final verification
         run: |
@@ -112,41 +102,6 @@ jobs:
               print('\\n✅ Todos los archivos OK')
           "
 
-      # Enviar picks a Telegram SOLO el último día de mes (UTC) o si se lanza manualmente con send_now=true
-      - name: Send Telegram picks (last day UTC or manual)
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          set -e
-          # ¿Es último día de mes en UTC?
-          if [ "$(date -u -d tomorrow +%d)" = "01" ]; then LAST_DAY=1; else LAST_DAY=0; fi
-
-          # Inputs manuales
-          SEND_NOW="${{ github.event.inputs.send_now }}"
-          IDX="${{ github.event.inputs.index }}"
-          TOP="${{ github.event.inputs.top }}"
-          CORTE="${{ github.event.inputs.corte }}"
-          [ -z "$IDX" ] && IDX="BOTH"
-          [ -z "$TOP" ] && TOP="5"
-          [ -z "$CORTE" ] && CORTE="680"
-
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$SEND_NOW" = "true" ]; then
-            SHOULD_SEND=1
-            echo "🔔 Envío manual forzado"
-          elif [ "$LAST_DAY" = "1" ]; then
-            SHOULD_SEND=1
-            echo "📆 Último día de mes (UTC): se enviará"
-          else
-            SHOULD_SEND=0
-            echo "📆 No es último día de mes (UTC): no se enviará"
-          fi
-
-          if [ "$SHOULD_SEND" = "1" ]; then
-            echo "✉️ Enviando picks a Telegram (index=$IDX, top=$TOP, corte=$CORTE)..."
-            python send_picks_telegram.py --index "$IDX" --top "$TOP" --corte "$CORTE"
-          fi
-
       - name: Commit and push changes
         run: |
           # Configurar git
@@ -164,7 +119,7 @@ jobs:
               }
           }
 
-          # Añadir cambios (p.ej., estado last_picks_*.json)
+          # Añadir cambios (p.ej., snapshots y limpieza)
           git add .
 
           # Commit/push si hay cambios
