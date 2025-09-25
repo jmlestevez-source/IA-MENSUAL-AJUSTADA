@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
 # send_picks_telegram.py
-# Señales prospectivas calculadas igual que el backtest:
+# Señales prospectivas EXACTAMENTE como el backtest:
 # - Universo = constituyentes actuales (SP500/NDX/BOTH) ∩ CSVs locales
-# - Warm-up de 24 meses para indicadores
-# - Indicadores = backtest.precalculate_all_indicators (ScoreAdjusted / InerciaAlcista)
-# - Filtros de mercado ACTIVOS (ROC12<0 o Precio<SMA10). Si se activan -> fallback IEF/BIL
-# - Si no hay picks por corte, fallback blando al Top por ScoreAdjusted (sin exigir corte)
-# - Envío a Telegram con ENTRAN / SALEN / MANTIENEN
+# - Warm-up (24m) para que los indicadores estén listos
+# - Usa run_backtest_optimized con filtros ROC/SMA ACTIVOS y fallback IEF/BIL
+# - Extrae el último set de picks del backtest y lo envía a Telegram
 import os
 import sys
 import json
@@ -20,15 +18,12 @@ from io import StringIO
 import glob
 
 from data_loader import download_prices
-from backtest import precalculate_all_indicators  # usamos exactamente el mismo cálculo de indicadores que el backtest
+from backtest import run_backtest_optimized  # usamos el mismo motor que la app
 
 # ===================== Utilidades Wikipedia (nombres) =====================
 def _read_html_with_ua(url, attrs=None):
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0 Safari/537.36"}
         resp = requests.get(url, headers=headers, timeout=30)
         resp.raise_for_status()
         return pd.read_html(StringIO(resp.text), attrs=attrs)
@@ -120,154 +115,103 @@ def send_telegram(token, chat_id, text):
     except Exception as e:
         return False, str(e)
 
-# ===================== Utilidades de precios/fechas =====================
-def _dl_prices_single(objs, start, end):
-    """
-    Descarga robusta desde data_loader.download_prices:
-    - Si devuelve (df, ohlc), extrae df.
-    - Si devuelve df directo, lo retorna.
-    """
-    out = download_prices(objs, start, end, load_full_data=False)
-    if isinstance(out, tuple):
-        return out[0]
-    return out
+# ===================== Señales vía backtest =====================
+def _dl_prices(objs, start, end, full=True):
+    out = download_prices(objs, start, end, load_full_data=full)
+    if full:
+        return out  # (df, ohlc)
+    return out  # df o (df,ohlc) según wrapper
 
-def _month_end(d):
-    return (pd.Timestamp(d) + pd.offsets.MonthEnd(0)).normalize()
-
-def _latest_month_end_available(df_m, target_me):
-    """
-    Devuelve el último índice mensual <= target_me. Si no hay, None.
-    """
-    if df_m is None or df_m.empty:
-        return None
-    idx = df_m.index
-    idx = idx[idx <= target_me]
-    return idx[-1] if len(idx) else None
-
-# ===================== Señales con filtros + indicadores del backtest =====================
-def compute_signals_with_filters(index_choice="BOTH", top_n=5, corte=680, start=None, end=None, warmup_months=24):
+def compute_picks_via_backtest(index_choice="BOTH", top_n=5, corte=680, start=None, end=None, warmup_months=24):
     # Fechas y warm-up
     if end is None:
         end = date.today()
     if start is None:
         start = date(2007, 1, 1)
     warmup_start = (pd.Timestamp(start) - pd.DateOffset(months=warmup_months)).date()
-    month_end = _month_end(end)
+    month_end = (pd.Timestamp(end) + pd.offsets.MonthEnd(0)).normalize()
 
-    # Universo actual ∩ CSVs disponibles
+    # Universo actual ∩ CSVs locales (excluir safety y benchmarks)
     current_set = get_current_constituents_set(index_choice)
+    exclude = {"SPY", "QQQ", "IEF", "BIL"}
     avail = set(os.path.basename(p)[:-4].upper().replace('.', '-') for p in glob.glob('data/*.csv'))
-    universe = sorted(current_set & avail)
+    universe = sorted((current_set & avail) - exclude)
     if not universe:
-        return [], {"reason": "No hay universo válido", "prev_date": None}, {}
+        return [], {"reason": "Universo vacío", "filter": False, "prev_date": None}, {}
 
-    # Precios universo (warmup)
-    prices_df = _dl_prices_single(universe, warmup_start, end)
+    # Precios universo con OHLC (warm-up)
+    prices_df, ohlc_data = _dl_prices(universe, warmup_start, end, full=True)
     if prices_df is None or prices_df.empty:
-        return [], {"reason": "No se pudieron cargar precios del universo", "prev_date": None}, {}
-    # Filtrar columnas reales
-    universe = [t for t in universe if t in prices_df.columns]
-    prices_df = prices_df[universe]
+        return [], {"reason": "Sin precios universo", "filter": False, "prev_date": None}, {}
+
+    # Benchmark y SPY (filtros) + safety
+    bench_ticker = "QQQ" if index_choice.upper() == "NDX" else "SPY"
+    bench_df = _dl_prices([bench_ticker], warmup_start, end, full=False)
+    bench = bench_df[bench_ticker] if isinstance(bench_df, pd.DataFrame) and bench_ticker in bench_df.columns else prices_df.mean(axis=1)
+
+    spy_df = _dl_prices(["SPY"], warmup_start, end, full=False)
+    spy_series = spy_df["SPY"] if isinstance(spy_df, pd.DataFrame) and "SPY" in spy_df.columns else None
+
+    saf_df, saf_ohlc = _dl_prices(["IEF", "BIL"], warmup_start, end, full=True)
+    safety_prices = saf_df if isinstance(saf_df, pd.DataFrame) else None
+
+    # Ejecutar backtest con filtros ACTIVOS + safety fallback + warm-up interno
+    bt_results, picks_df = run_backtest_optimized(
+        prices=prices_df,
+        benchmark=bench,
+        commission=0.0,
+        top_n=top_n,
+        corte=corte,
+        ohlc_data=ohlc_data,
+        historical_info=None,             # picks prospectivos sobre los actuales
+        fixed_allocation=False,
+        use_roc_filter=True,              # filtros ACTIVOS
+        use_sma_filter=True,
+        spy_data=spy_series.to_frame() if isinstance(spy_series, pd.Series) else spy_series,
+        progress_callback=None,
+        use_safety_etfs=True,             # fallback IEF/BIL
+        safety_prices=safety_prices,
+        safety_ohlc=saf_ohlc,
+        avoid_rebuy_unchanged=True,
+        enable_fallback=True,             # por si nadie pasa el corte
+        warmup_months=warmup_months,
+        user_start_date=start
+    )
+
+    if picks_df is None or picks_df.empty:
+        # intentar aún así detectar si filtro activo para meta
+        spy_m = spy_series.resample("ME").last() if isinstance(spy_series, pd.Series) else None
+        filter_active = False
+        if spy_m is not None and len(spy_m) >= 13:
+            prev = spy_m.index[-1]
+            roc12 = ((spy_m.iloc[-1] - spy_m.iloc[-13]) / spy_m.iloc[-13]) * 100 if spy_m.iloc[-13] != 0 else 0
+            sma10 = spy_m.iloc[-10:].mean() if len(spy_m) >= 10 else spy_m.iloc[-1]
+            filter_active = (roc12 < 0) or (spy_m.iloc[-1] < sma10)
+        return [], {"reason": "Sin picks", "filter": filter_active, "prev_date": month_end.date()}, {}
+
+    # Último set de picks del backtest (última fecha)
+    last_date = max(pd.to_datetime(picks_df["Date"]))
+    last_rows = picks_df[picks_df["Date"] == last_date.strftime("%Y-%m-%d")].copy()
+    last_rows.sort_values("Rank", inplace=True)
+    # Preparar salida
     prices_m = prices_df.resample("ME").last()
-    prev_date = _latest_month_end_available(prices_m, month_end)
-    if prev_date is None:
-        return [], {"reason": "Sin datos mensuales", "prev_date": None}, {}
+    picks = []
+    for _, r in last_rows.iterrows():
+        t = r["Ticker"]
+        price = float(prices_m.loc[last_date, t]) if (t in prices_m.columns and last_date in prices_m.index) else float("nan")
+        picks.append({
+            "ticker": t,
+            "inercia": float(r.get("Inercia", 0.0)),
+            "score_adj": float(r.get("ScoreAdj", 0.0)),
+            "price": price
+        })
 
-    # SPY y Safety (warmup)
-    spy_prices = _dl_prices_single(["SPY"], warmup_start, end)
-    spy_m = spy_prices["SPY"].resample("ME").last().dropna() if isinstance(spy_prices, pd.DataFrame) and "SPY" in spy_prices.columns else None
-    safety_prices = _dl_prices_single(["IEF", "BIL"], warmup_start, end)
-    safety_m = safety_prices.resample("ME").last() if isinstance(safety_prices, pd.DataFrame) else None
+    # Meta: filtro activo si los picks son safety
+    filter_active = False
+    if len(picks) == 1 and picks[0]["ticker"] in ("IEF", "BIL"):
+        filter_active = True
 
-    # Indicadores del backtest (exactamente igual)
-    indicators = precalculate_all_indicators(prices_m, ohlc_data=None, corte=corte)
-    if not indicators:
-        return [], {"reason": "No se pudieron calcular indicadores", "prev_date": prev_date}, {}
-
-    # Filtro de mercado (ROC12<0 o Precio<SMA10)
-    market_filter_active = False
-    if spy_m is not None:
-        sp = spy_m.loc[:prev_date]
-        if len(sp):
-            roc12_bad = False
-            sma10_bad = False
-            if len(sp) >= 13:
-                base = sp.iloc[-13]
-                if pd.notna(base) and base != 0:
-                    roc12 = ((sp.iloc[-1] - base) / base) * 100
-                    roc12_bad = (roc12 < 0)
-            if len(sp) >= 10:
-                sma10 = sp.iloc[-10:].mean()
-                sma10_bad = (sp.iloc[-1] < sma10)
-            market_filter_active = bool(roc12_bad or sma10_bad)
-
-    # Si filtro activo => fallback safety (elige mejor entre IEF/BIL por retorno 1m)
-    if market_filter_active:
-        safety_candidates = []
-        if safety_m is not None:
-            s_idx = safety_m.index[safety_m.index <= prev_date]
-            if len(s_idx):
-                s_prev = s_idx[-1]
-                for st in ("IEF", "BIL"):
-                    if st in safety_m.columns:
-                        try:
-                            ser = safety_m[st].dropna()
-                            if s_prev in ser.index and len(ser.loc[:s_prev]) >= 2:
-                                pr1 = ser.loc[s_prev]
-                                pr0 = ser.loc[:s_prev].iloc[-2]
-                                ret_1m = (pr1 / pr0) - 1 if pr0 else 0.0
-                            else:
-                                ret_1m = 0.0
-                            safety_candidates.append({
-                                "ticker": st,
-                                "inercia": 0.0,
-                                "score_adj": float(ret_1m),
-                                "price": float(ser.loc[s_prev]) if s_prev in ser.index else float("nan")
-                            })
-                        except Exception:
-                            continue
-        if safety_candidates:
-            best = sorted(safety_candidates, key=lambda x: x["score_adj"], reverse=True)[0]
-            return [best], {"filter": True, "prev_date": prev_date}, {}
-
-        # Si no hay safety, devolvemos vacío (pero marcando filtro)
-        return [], {"filter": True, "reason": "Sin datos safety", "prev_date": prev_date}, {}
-
-    # Sin filtro: picks por corte usando indicadores del backtest
-    candidates = []
-    for tkr, bundle in indicators.items():
-        try:
-            if tkr not in universe:
-                continue
-            if prev_date in bundle['InerciaAlcista'].index:
-                ine = float(bundle['InerciaAlcista'].loc[prev_date])
-                sca = float(bundle['ScoreAdjusted'].loc[prev_date])
-                pr = float(prices_m.loc[prev_date, tkr]) if (tkr in prices_m.columns and prev_date in prices_m.index) else float("nan")
-                if ine >= corte and sca > 0 and np.isfinite(sca):
-                    candidates.append({"ticker": tkr, "inercia": ine, "score_adj": sca, "price": pr})
-        except Exception:
-            continue
-
-    # Fallback blando si nadie pasa el corte: usar Top por ScoreAdjusted (sin exigir corte)
-    if not candidates:
-        pool = []
-        for tkr, bundle in indicators.items():
-            try:
-                if tkr not in universe or prev_date not in bundle['ScoreAdjusted'].index:
-                    continue
-                sca = float(bundle['ScoreAdjusted'].loc[prev_date])
-                ine = float(bundle['InerciaAlcista'].loc[prev_date]) if prev_date in bundle['InerciaAlcista'].index else 0.0
-                pr = float(prices_m.loc[prev_date, tkr]) if (tkr in prices_m.columns and prev_date in prices_m.index) else float("nan")
-                if np.isfinite(sca):
-                    pool.append({"ticker": tkr, "inercia": ine, "score_adj": sca, "price": pr})
-            except Exception:
-                continue
-        if pool:
-            candidates = sorted(pool, key=lambda x: x["score_adj"], reverse=True)[:top_n]
-
-    candidates = sorted(candidates, key=lambda x: x["score_adj"], reverse=True)[:top_n] if candidates else []
-    return candidates, {"filter": False, "prev_date": prev_date}, {}
+    return picks, {"filter": filter_active, "prev_date": last_date}, {"prices": prices_df, "ohlc": ohlc_data}
 
 # ===================== Mensaje a Telegram =====================
 def build_telegram_message(index_choice, picks, meta, name_map):
@@ -335,7 +279,7 @@ def build_telegram_message(index_choice, picks, meta, name_map):
     return msg
 
 def main():
-    parser = argparse.ArgumentParser(description="Enviar picks prospectivos a Telegram (filtros + fallback safety) con indicadores del backtest")
+    parser = argparse.ArgumentParser(description="Enviar picks prospectivos a Telegram (vía backtest, filtros activos y fallback safety)")
     parser.add_argument("--index", default="BOTH", choices=["SP500", "NDX", "BOTH"], help="Índice: SP500 | NDX | BOTH")
     parser.add_argument("--top", type=int, default=5, help="Número de picks (default 5)")
     parser.add_argument("--corte", type=int, default=680, help="Corte de inercia (default 680)")
@@ -352,7 +296,7 @@ def main():
     start = pd.to_datetime(args.start).date()
     end = pd.to_datetime(args.end).date() if args.end else date.today()
 
-    picks, meta, _ = compute_signals_with_filters(
+    picks, meta, _ = compute_picks_via_backtest(
         index_choice=args.index,
         top_n=args.top,
         corte=args.corte,
