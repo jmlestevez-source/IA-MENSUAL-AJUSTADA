@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 # send_picks_telegram.py
-# Señales prospectivas con filtros de mercado ACTIVOS (ROC12<0 o Precio<SMA10)
-# y fallback a IEF/BIL si el filtro está activo. Envía a Telegram una tabla de picks.
+# Señales prospectivas calculadas igual que el backtest:
+# - Universo = constituyentes actuales (SP500/NDX/BOTH) ∩ CSVs locales
+# - Warm-up de 24 meses para indicadores
+# - Indicadores = backtest.precalculate_all_indicators (ScoreAdjusted / InerciaAlcista)
+# - Filtros de mercado ACTIVOS (ROC12<0 o Precio<SMA10). Si se activan -> fallback IEF/BIL
+# - Si no hay picks por corte, fallback blando al Top por ScoreAdjusted (sin exigir corte)
+# - Envío a Telegram con ENTRAN / SALEN / MANTIENEN
 import os
 import sys
 import json
@@ -15,7 +20,7 @@ from io import StringIO
 import glob
 
 from data_loader import download_prices
-from backtest import inertia_score  # reutiliza la lógica de indicadores (adaptativa)
+from backtest import precalculate_all_indicators  # usamos exactamente el mismo cálculo de indicadores que el backtest
 
 # ===================== Utilidades Wikipedia (nombres) =====================
 def _read_html_with_ua(url, attrs=None):
@@ -115,7 +120,7 @@ def send_telegram(token, chat_id, text):
     except Exception as e:
         return False, str(e)
 
-# ===================== Señales con filtros + fallback safety =====================
+# ===================== Utilidades de precios/fechas =====================
 def _dl_prices_single(objs, start, end):
     """
     Descarga robusta desde data_loader.download_prices:
@@ -127,10 +132,12 @@ def _dl_prices_single(objs, start, end):
         return out[0]
     return out
 
+def _month_end(d):
+    return (pd.Timestamp(d) + pd.offsets.MonthEnd(0)).normalize()
+
 def _latest_month_end_available(df_m, target_me):
     """
-    Devuelve el último índice mensual <= target_me.
-    Si no hay, None.
+    Devuelve el último índice mensual <= target_me. Si no hay, None.
     """
     if df_m is None or df_m.empty:
         return None
@@ -138,27 +145,28 @@ def _latest_month_end_available(df_m, target_me):
     idx = idx[idx <= target_me]
     return idx[-1] if len(idx) else None
 
+# ===================== Señales con filtros + indicadores del backtest =====================
 def compute_signals_with_filters(index_choice="BOTH", top_n=5, corte=680, start=None, end=None, warmup_months=24):
-    # Fechas y warmup
+    # Fechas y warm-up
     if end is None:
         end = date.today()
     if start is None:
         start = date(2007, 1, 1)
     warmup_start = (pd.Timestamp(start) - pd.DateOffset(months=warmup_months)).date()
-    month_end = (pd.Timestamp(end) + pd.offsets.MonthEnd(0)).normalize()
+    month_end = _month_end(end)
 
-    # Universo actual ∩ CSV disponibles
+    # Universo actual ∩ CSVs disponibles
     current_set = get_current_constituents_set(index_choice)
     avail = set(os.path.basename(p)[:-4].upper().replace('.', '-') for p in glob.glob('data/*.csv'))
     universe = sorted(current_set & avail)
     if not universe:
         return [], {"reason": "No hay universo válido", "prev_date": None}, {}
 
-    # Precios universo (warmup) y mensual
+    # Precios universo (warmup)
     prices_df = _dl_prices_single(universe, warmup_start, end)
     if prices_df is None or prices_df.empty:
         return [], {"reason": "No se pudieron cargar precios del universo", "prev_date": None}, {}
-    # Filtra columnas reales por seguridad
+    # Filtrar columnas reales
     universe = [t for t in universe if t in prices_df.columns]
     prices_df = prices_df[universe]
     prices_m = prices_df.resample("ME").last()
@@ -169,48 +177,35 @@ def compute_signals_with_filters(index_choice="BOTH", top_n=5, corte=680, start=
     # SPY y Safety (warmup)
     spy_prices = _dl_prices_single(["SPY"], warmup_start, end)
     spy_m = spy_prices["SPY"].resample("ME").last().dropna() if isinstance(spy_prices, pd.DataFrame) and "SPY" in spy_prices.columns else None
-
     safety_prices = _dl_prices_single(["IEF", "BIL"], warmup_start, end)
     safety_m = safety_prices.resample("ME").last() if isinstance(safety_prices, pd.DataFrame) else None
 
-    # Scores (mensuales) y sincronización a prev_date
-    scores = inertia_score(prices_m, corte=corte, ohlc_data=None)
-    if not scores or "ScoreAdjusted" not in scores or "InerciaAlcista" not in scores:
-        return [], {"reason": "No se pudieron calcular scores", "prev_date": prev_date}, {}
-    score_df = scores["ScoreAdjusted"]
-    inercia_df = scores["InerciaAlcista"]
-    # Si prev_date no está (p. ej., todos NaN en ese mes), retrocede al mes anterior con datos
-    if prev_date not in score_df.index:
-        # buscar el último índice <= prev_date
-        idx = score_df.index[score_df.index <= prev_date]
-        if len(idx):
-            prev_date = idx[-1]
-        else:
-            return [], {"reason": "Scores vacíos en rango", "prev_date": None}, {}
+    # Indicadores del backtest (exactamente igual)
+    indicators = precalculate_all_indicators(prices_m, ohlc_data=None, corte=corte)
+    if not indicators:
+        return [], {"reason": "No se pudieron calcular indicadores", "prev_date": prev_date}, {}
 
-    # Filtro de mercado: ROC12<0 o Precio<SMA10 (con SPY)
+    # Filtro de mercado (ROC12<0 o Precio<SMA10)
     market_filter_active = False
     if spy_m is not None:
-        # usar último mes completo con datos de SPY <= prev_date
-        spy_prev = spy_m.loc[:prev_date]
-        if len(spy_prev):
+        sp = spy_m.loc[:prev_date]
+        if len(sp):
             roc12_bad = False
             sma10_bad = False
-            if len(spy_prev) >= 13:
-                base = spy_prev.iloc[-13]
+            if len(sp) >= 13:
+                base = sp.iloc[-13]
                 if pd.notna(base) and base != 0:
-                    roc12 = ((spy_prev.iloc[-1] - base) / base) * 100
+                    roc12 = ((sp.iloc[-1] - base) / base) * 100
                     roc12_bad = (roc12 < 0)
-            if len(spy_prev) >= 10:
-                sma10 = spy_prev.iloc[-10:].mean()
-                sma10_bad = (spy_prev.iloc[-1] < sma10)
+            if len(sp) >= 10:
+                sma10 = sp.iloc[-10:].mean()
+                sma10_bad = (sp.iloc[-1] < sma10)
             market_filter_active = bool(roc12_bad or sma10_bad)
 
-    # Si filtro activo => fallback safety
+    # Si filtro activo => fallback safety (elige mejor entre IEF/BIL por retorno 1m)
     if market_filter_active:
         safety_candidates = []
         if safety_m is not None:
-            # mes de referencia safety = último <= prev_date
             s_idx = safety_m.index[safety_m.index <= prev_date]
             if len(s_idx):
                 s_prev = s_idx[-1]
@@ -236,33 +231,45 @@ def compute_signals_with_filters(index_choice="BOTH", top_n=5, corte=680, start=
             best = sorted(safety_candidates, key=lambda x: x["score_adj"], reverse=True)[0]
             return [best], {"filter": True, "prev_date": prev_date}, {}
 
+        # Si no hay safety, devolvemos vacío (pero marcando filtro)
         return [], {"filter": True, "reason": "Sin datos safety", "prev_date": prev_date}, {}
 
-    # Sin filtro: picks por corte (y fallback blando si no hay por corte)
-    last_scores = score_df.loc[prev_date].dropna() if prev_date in score_df.index else pd.Series(dtype=float)
-    last_inercia = inercia_df.loc[prev_date] if prev_date in inercia_df.index else pd.Series(dtype=float)
-    last_prices_row = prices_m.loc[prev_date] if prev_date in prices_m.index else pd.Series(dtype=float)
-
+    # Sin filtro: picks por corte usando indicadores del backtest
     candidates = []
-    for t in last_scores.index:
-        ine = float(last_inercia.get(t)) if t in last_inercia.index else 0.0
-        sca = float(last_scores.get(t))
-        if ine >= corte and sca > 0 and not np.isnan(sca):
-            pr = float(last_prices_row.get(t)) if t in last_prices_row.index else float("nan")
-            candidates.append({"ticker": t, "inercia": ine, "score_adj": sca, "price": pr})
+    for tkr, bundle in indicators.items():
+        try:
+            if tkr not in universe:
+                continue
+            if prev_date in bundle['InerciaAlcista'].index:
+                ine = float(bundle['InerciaAlcista'].loc[prev_date])
+                sca = float(bundle['ScoreAdjusted'].loc[prev_date])
+                pr = float(prices_m.loc[prev_date, tkr]) if (tkr in prices_m.columns and prev_date in prices_m.index) else float("nan")
+                if ine >= corte and sca > 0 and np.isfinite(sca):
+                    candidates.append({"ticker": tkr, "inercia": ine, "score_adj": sca, "price": pr})
+        except Exception:
+            continue
 
+    # Fallback blando si nadie pasa el corte: usar Top por ScoreAdjusted (sin exigir corte)
     if not candidates:
-        # fallback: top por ScoreAdjusted (sin exigir corte)
-        last_raw_sorted = last_scores.sort_values(ascending=False)
-        for t in list(last_raw_sorted.index)[:top_n]:
-            ine = float(last_inercia.get(t)) if t in last_inercia.index else 0.0
-            sca = float(last_raw_sorted.get(t))
-            pr = float(last_prices_row.get(t)) if t in last_prices_row.index else float("nan")
-            candidates.append({"ticker": t, "inercia": ine, "score_adj": sca, "price": pr})
+        pool = []
+        for tkr, bundle in indicators.items():
+            try:
+                if tkr not in universe or prev_date not in bundle['ScoreAdjusted'].index:
+                    continue
+                sca = float(bundle['ScoreAdjusted'].loc[prev_date])
+                ine = float(bundle['InerciaAlcista'].loc[prev_date]) if prev_date in bundle['InerciaAlcista'].index else 0.0
+                pr = float(prices_m.loc[prev_date, tkr]) if (tkr in prices_m.columns and prev_date in prices_m.index) else float("nan")
+                if np.isfinite(sca):
+                    pool.append({"ticker": tkr, "inercia": ine, "score_adj": sca, "price": pr})
+            except Exception:
+                continue
+        if pool:
+            candidates = sorted(pool, key=lambda x: x["score_adj"], reverse=True)[:top_n]
 
     candidates = sorted(candidates, key=lambda x: x["score_adj"], reverse=True)[:top_n] if candidates else []
     return candidates, {"filter": False, "prev_date": prev_date}, {}
 
+# ===================== Mensaje a Telegram =====================
 def build_telegram_message(index_choice, picks, meta, name_map):
     idx_label = "SP500" if index_choice.upper().startswith("SP") else ("NDX" if index_choice.upper().startswith("NDX") else "SP500 + NDX")
     as_of = meta.get("prev_date")
@@ -281,7 +288,7 @@ def build_telegram_message(index_choice, picks, meta, name_map):
         rows.append(f"{i:>2} {p['ticker']:<7} {nm:<28} {p['inercia']:>8.0f} {p['score_adj']:>9.2f} {price_str}")
     table = "\n".join([header] + rows) if rows else "Sin candidatos"
 
-    # ENTRAN/SALEN/MANTIENEN contra estado previo
+    # ENTRAN/SALEN/MANTIENEN
     state_key = "BOTH" if idx_label == "SP500 + NDX" else idx_label
     state_path = f"data/last_picks_{state_key}.json"
     prev_set = set()
@@ -296,7 +303,6 @@ def build_telegram_message(index_choice, picks, meta, name_map):
     comprar = sorted(new_set - prev_set)
     vender = sorted(prev_set - new_set)
     mantener = sorted(prev_set & new_set)
-
     # guardar estado
     try:
         with open(state_path, "w", encoding="utf-8") as f:
@@ -329,7 +335,7 @@ def build_telegram_message(index_choice, picks, meta, name_map):
     return msg
 
 def main():
-    parser = argparse.ArgumentParser(description="Enviar picks prospectivos a Telegram con filtros y fallback safety")
+    parser = argparse.ArgumentParser(description="Enviar picks prospectivos a Telegram (filtros + fallback safety) con indicadores del backtest")
     parser.add_argument("--index", default="BOTH", choices=["SP500", "NDX", "BOTH"], help="Índice: SP500 | NDX | BOTH")
     parser.add_argument("--top", type=int, default=5, help="Número de picks (default 5)")
     parser.add_argument("--corte", type=int, default=680, help="Corte de inercia (default 680)")
