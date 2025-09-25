@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# backtest.py (warm-up fuerte + cálculo de retornos antes del recorte; evita meses 0 al inicio)
+# backtest.py (warm-up fuerte + returns antes del recorte + fallback opcional)
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, date
@@ -168,13 +168,13 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
     except Exception:
         return {}
 
-def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=680,
-                           ohlc_data=None, historical_info=None, fixed_allocation=False,
-                           use_roc_filter=False, use_sma_filter=False, spy_data=None,
-                           progress_callback=None, use_safety_etfs=False,
-                           safety_prices=None, safety_ohlc=None, safety_tickers=('IEF','BIL'),
-                           avoid_rebuy_unchanged=True, enable_fallback=True,
-                           warmup_months=24, user_start_date=None):
+def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=680, 
+                          ohlc_data=None, historical_info=None, fixed_allocation=False,
+                          use_roc_filter=False, use_sma_filter=False, spy_data=None,
+                          progress_callback=None, use_safety_etfs=False,
+                          safety_prices=None, safety_ohlc=None, safety_tickers=('IEF','BIL'),
+                          avoid_rebuy_unchanged=True, enable_fallback=True,
+                          warmup_months=24, user_start_date=None):
     try:
         if prices is None or (isinstance(prices, (pd.DataFrame, pd.Series)) and prices.empty):
             return pd.DataFrame(), pd.DataFrame()
@@ -306,8 +306,7 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                 # Selección normal
                 candidates = []
                 for ticker in valid_tickers_for_date:
-                    indic = precalculate_all_indicators.__globals__  # evitar warning linter
-                    indic = None
+                    indic = precalculate_all_indicators.__globals__; indic = None
                     indic = all_indicators.get(ticker)
                     if not indic: continue
                     try:
@@ -386,7 +385,7 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                 equity_full.append(equity_full[-1]); dates_full.append(date_i)
                 continue
 
-        # Construcción final: returns antes del recorte, luego recorte desde fin de mes de start
+        # Construcción final (returns antes del recorte; luego recorte a partir de fin de mes del start)
         equity_series_full = pd.Series(equity_full, index=dates_full)
         returns_full = equity_series_full.pct_change().fillna(0)
         drawdown_full = (equity_series_full / equity_series_full.cummax() - 1).fillna(0)
