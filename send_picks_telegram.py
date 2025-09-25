@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 # send_picks_telegram.py
-# Señales prospectivas con filtros de mercado activados (ROC12 y SMA10) y fallback IEF/BIL si el filtro está activo.
-# Envía a Telegram una tabla con Rank, Ticker, Nombre, Inercia, Score Ajustado y Precio.
-# Lee TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID de env (secrets o variables del repo).
+# Señales prospectivas con filtros de mercado ACTIVOS (ROC12 < 0 OR Precio < SMA10)
+# y fallback a IEF/BIL si el filtro está activo. Envía a Telegram.
 import os
 import sys
 import json
@@ -16,7 +15,7 @@ from io import StringIO
 import glob
 
 from data_loader import download_prices
-from backtest import inertia_score  # usa la lógica de indicadores del backtest
+from backtest import inertia_score  # reusa indicadores del backtest
 
 # ------------------- Utilidades Wikipedia (nombres) -------------------
 def _read_html_with_ua(url, attrs=None):
@@ -116,134 +115,127 @@ def send_telegram(token, chat_id, text):
         return False, str(e)
 
 # ------------------- Señales con filtros + fallback safety -------------------
+def _dl_prices_single(obj, start, end):
+    """Descarga robusta: maneja retorno DataFrame o (DataFrame, ohlc)."""
+    out = download_prices(obj, start, end, load_full_data=False)
+    if isinstance(out, tuple):
+        return out[0]
+    return out
+
 def compute_signals_with_filters(index_choice="BOTH", top_n=5, corte=680, start=None, end=None, warmup_months=24):
     # Fechas
     if end is None:
         end = date.today()
     if start is None:
         start = date(2007, 1, 1)
-    # Warmup
     warmup_start = (pd.Timestamp(start) - pd.DateOffset(months=warmup_months)).date()
 
     # Universo actual
     current_set = get_current_constituents_set(index_choice)
-    # Intersección con CSVs locales
     avail = set(os.path.basename(p)[:-4].upper().replace('.', '-') for p in glob.glob('data/*.csv'))
     universe = sorted(current_set & avail)
     if not universe:
-        return [], {"reason": "No hay universo válido"}, {"prices": None, "spy_m": None, "safety_m": None}
+        return [], {"reason": "No hay universo válido", "prev_date": None}, {}
 
     # Precios universo (warmup)
-    prices_df, _ = download_prices(universe, warmup_start, end, load_full_data=False)
+    prices_df = _dl_prices_single(universe, warmup_start, end)
     if prices_df is None or prices_df.empty:
-        return [], {"reason": "No se pudieron cargar precios del universo"}, {"prices": None, "spy_m": None, "safety_m": None}
-    # Filtra por columnas reales
+        return [], {"reason": "No se pudieron cargar precios del universo", "prev_date": None}, {}
     universe = [t for t in universe if t in prices_df.columns]
     prices_df = prices_df[universe]
     prices_m = prices_df.resample("ME").last().dropna(how="all")
     if prices_m.empty:
-        return [], {"reason": "Sin datos mensuales"}, {"prices": None, "spy_m": None, "safety_m": None}
+        return [], {"reason": "Sin datos mensuales", "prev_date": None}, {}
+
+    prev_date = prices_m.index[-1]
 
     # SPY y Safety (warmup)
-    spy_df = download_prices(["SPY"], warmup_start, end, load_full_data=False)
-    spy_prices = spy_df[0] if isinstance(spy_df, tuple) else spy_df
+    spy_prices = _dl_prices_single(["SPY"], warmup_start, end)
     spy_m = None
     if isinstance(spy_prices, pd.DataFrame) and "SPY" in spy_prices.columns:
         spy_m = spy_prices["SPY"].resample("ME").last().dropna()
 
-    safety_df = download_prices(["IEF", "BIL"], warmup_start, end, load_full_data=False)
-    safety_prices = safety_df[0] if isinstance(safety_df, tuple) else safety_df
+    safety_prices = _dl_prices_single(["IEF", "BIL"], warmup_start, end)
     safety_m = None
     if isinstance(safety_prices, pd.DataFrame):
         safety_m = safety_prices.resample("ME").last()
 
-    # Calcula scores (mensuales)
+    # Scores
     scores = inertia_score(prices_m, corte=corte, ohlc_data=None)
     if not scores or "ScoreAdjusted" not in scores or "InerciaAlcista" not in scores:
-        return [], {"reason": "No se pudieron calcular scores"}, {"prices": prices_m, "spy_m": spy_m, "safety_m": safety_m}
+        return [], {"reason": "No se pudieron calcular scores", "prev_date": prev_date}, {}
 
     score_df = scores["ScoreAdjusted"]
     inercia_df = scores["InerciaAlcista"]
-    if score_df.empty or inercia_df.empty:
-        return [], {"reason": "Scores vacíos"}, {"prices": prices_m, "spy_m": spy_m, "safety_m": safety_m}
+    if score_df.empty or inercia_df.empty or (prev_date not in score_df.index):
+        return [], {"reason": "Scores vacíos", "prev_date": prev_date}, {}
 
-    # Último mes completo (prev_date)
-    prev_date = prices_m.index[-1]
-    # Filtro mercado: ROC12<0 o Precio<SMA10
+    # Filtro de mercado activo (ROC12<0 o precio<SMA10)
     market_filter_active = False
     if spy_m is not None and prev_date in spy_m.index:
-        try:
-            sp = spy_m.loc[:prev_date]
-            if len(sp) >= 13:
-                roc12 = ((sp.iloc[-1] - sp.iloc[-13]) / sp.iloc[-13]) * 100 if sp.iloc[-13] != 0 else 0
-            else:
-                roc12 = 0
-            sma10_ok = False
-            if len(sp) >= 10:
-                sma10 = sp.iloc[-10:].mean()
-                sma10_ok = (sp.iloc[-1] < sma10)
-            if (roc12 < 0) or sma10_ok:
-                market_filter_active = True
-        except Exception:
-            market_filter_active = False
+        sp = spy_m.loc[:prev_date]
+        roc12_bad = False
+        sma10_bad = False
+        if len(sp) >= 13:
+            base = sp.iloc[-13]
+            if base and not pd.isna(base):
+                roc12 = ((sp.iloc[-1] - base) / base) * 100
+                roc12_bad = (roc12 < 0)
+        if len(sp) >= 10:
+            sma10 = sp.iloc[-10:].mean()
+            sma10_bad = (sp.iloc[-1] < sma10)
+        market_filter_active = bool(roc12_bad or sma10_bad)
 
-    # Si filtro activo => fallback safety (elige mejor entre IEF/BIL)
+    # Filtro activo -> fallback safety
     if market_filter_active:
         safety_candidates = []
         if safety_m is not None and prev_date in safety_m.index:
             for st in ("IEF", "BIL"):
                 if st in safety_m.columns:
                     try:
-                        # retorno 1m (para desempate)
-                        if len(safety_m.loc[:prev_date, st]) >= 2:
-                            pr0 = safety_m.loc[:prev_date, st].iloc[-2]
-                            pr1 = safety_m.loc[:prev_date, st].iloc[-1]
+                        # retorno 1m
+                        ser = safety_m[st].dropna()
+                        if len(ser) >= 2 and ser.index[-1] == prev_date:
+                            pr0 = ser.iloc[-2]
+                            pr1 = ser.iloc[-1]
                             ret_1m = (pr1 / pr0) - 1 if pr0 else 0.0
                         else:
                             ret_1m = 0.0
+                        safety_candidates.append({"ticker": st, "score_adj": float(ret_1m), "price": float(ser.loc[prev_date]) if prev_date in ser.index else float("nan")})
                     except Exception:
-                        ret_1m = 0.0
-                    # score raw usando inertia_score sobre solo safety
-                    # más sencillo: aproximar score_adj_raw = ret_1m si no hay suficientes datos
-                    # (los safety no siempre tienen OHLC completo)
-                    score_adj_raw = ret_1m
-                    safety_candidates.append({"ticker": st, "score_adj": float(score_adj_raw), "ret_1m": float(ret_1m)})
+                        continue
         if safety_candidates:
             safety_candidates = sorted(safety_candidates, key=lambda x: x["score_adj"], reverse=True)
             best = safety_candidates[0]
-            # devolvemos pick único
-            return [{"ticker": best["ticker"], "inercia": 0.0, "score_adj": best["score_adj"], "price": float(safety_m.loc[prev_date, best["ticker"]]) if safety_m is not None and best["ticker"] in safety_m.columns else float("nan")}], {"filter": True, "prev_date": prev_date}, {"prices": prices_m, "spy_m": spy_m, "safety_m": safety_m}
+            pick = {"ticker": best["ticker"], "inercia": 0.0, "score_adj": best["score_adj"], "price": best["price"]}
+            return [pick], {"filter": True, "prev_date": prev_date}, {}
 
-        # No hay datos safety -> sin picks
-        return [], {"filter": True, "reason": "Sin datos safety", "prev_date": prev_date}, {"prices": prices_m, "spy_m": spy_m, "safety_m": safety_m}
+        return [], {"filter": True, "reason": "Sin datos safety", "prev_date": prev_date}, {}
 
-    # Si NO hay filtro => picks normales por corte
-    last_scores = score_df.loc[prev_date].dropna() if prev_date in score_df.index else pd.Series(dtype=float)
+    # Sin filtro -> picks normales (por corte)
+    last_scores = score_df.loc[prev_date].dropna()
     last_inercia = inercia_df.loc[prev_date] if prev_date in inercia_df.index else pd.Series(dtype=float)
 
     candidates = []
     last_prices_row = prices_m.loc[prev_date] if prev_date in prices_m.index else pd.Series(dtype=float)
     for t in last_scores.index:
-        if t in last_inercia.index:
-            ine = float(last_inercia.get(t))
-            sca = float(last_scores.get(t))
-            if ine >= corte and sca > 0 and not np.isnan(sca):
-                pr = float(last_prices_row.get(t)) if t in last_prices_row.index else float("nan")
-                candidates.append({"ticker": t, "inercia": ine, "score_adj": sca, "price": pr})
-
-    # Fallback blando si no hay ninguno por corte: coge top por ScoreAdjusted (sin corte aplicado)
-    if not candidates:
-        last_raw = score_df.loc[prev_date].dropna().sort_values(ascending=False)
-        for t in list(last_raw.index)[:top_n]:
-            ine = float(last_inercia.get(t)) if t in last_inercia.index else 0.0
-            sca = float(last_raw.get(t))
+        ine = float(last_inercia.get(t)) if t in last_inercia.index else 0.0
+        sca = float(last_scores.get(t))
+        if ine >= corte and sca > 0 and not np.isnan(sca):
             pr = float(last_prices_row.get(t)) if t in last_prices_row.index else float("nan")
             candidates.append({"ticker": t, "inercia": ine, "score_adj": sca, "price": pr})
 
-    if candidates:
-        candidates = sorted(candidates, key=lambda x: x["score_adj"], reverse=True)[:top_n]
+    # Fallback blando a top por ScoreAdjusted si nadie pasa el corte
+    if not candidates:
+        last_raw_sorted = last_scores.sort_values(ascending=False)
+        for t in list(last_raw_sorted.index)[:top_n]:
+            ine = float(last_inercia.get(t)) if t in last_inercia.index else 0.0
+            sca = float(last_raw_sorted.get(t))
+            pr = float(last_prices_row.get(t)) if t in last_prices_row.index else float("nan")
+            candidates.append({"ticker": t, "inercia": ine, "score_adj": sca, "price": pr})
 
-    return candidates, {"filter": False, "prev_date": prev_date}, {"prices": prices_m, "spy_m": spy_m, "safety_m": safety_m}
+    candidates = sorted(candidates, key=lambda x: x["score_adj"], reverse=True)[:top_n] if candidates else []
+    return candidates, {"filter": False, "prev_date": prev_date}, {}
 
 def build_telegram_message(index_choice, picks, meta, name_map):
     idx_label = "SP500" if index_choice.upper().startswith("SP") else ("NDX" if index_choice.upper().startswith("NDX") else "SP500 + NDX")
@@ -258,27 +250,25 @@ def build_telegram_message(index_choice, picks, meta, name_map):
     for i, p in enumerate(picks, 1):
         nm = name_map.get(p['ticker'], p['ticker'])
         nm = nm if len(nm) <= 28 else (nm[:25] + "...")
-        rows.append(f"{i:>2} {p['ticker']:<7} {nm:<28} {p['inercia']:>8.0f} {p['score_adj']:>9.2f} {p['price']:>10.2f}" if not np.isnan(p['price']) else f"{i:>2} {p['ticker']:<7} {nm:<28} {p['inercia']:>8.0f} {p['score_adj']:>9.2f} {'N/A':>10}")
+        price_str = f"{p['price']:>10.2f}" if (isinstance(p['price'], (int, float)) and np.isfinite(p['price'])) else f"{'N/A':>10}"
+        rows.append(f"{i:>2} {p['ticker']:<7} {nm:<28} {p['inercia']:>8.0f} {p['score_adj']:>9.2f} {price_str}")
     table = "\n".join([header] + rows) if rows else "Sin candidatos"
 
-    # Entradas/Salidas/Mantener comparando con estado previo
+    # ENTRAN/SALEN/MANTIENEN
     state_key = "BOTH" if idx_label == "SP500 + NDX" else idx_label
     state_path = f"data/last_picks_{state_key}.json"
     prev_set = set()
     try:
         if os.path.exists(state_path):
             with open(state_path, "r", encoding="utf-8") as f:
-                prev = json.load(f)
-                prev_set = set(prev.get("tickers", []))
+                prev = json.load(f); prev_set = set(prev.get("tickers", []))
     except Exception:
         prev_set = set()
-
     new_set = set([p["ticker"] for p in picks])
     comprar = sorted(new_set - prev_set)
     vender = sorted(prev_set - new_set)
     mantener = sorted(prev_set & new_set)
-
-    # Guardar nuevo estado
+    # Guardar estado
     try:
         with open(state_path, "w", encoding="utf-8") as f:
             json.dump({"timestamp": datetime.utcnow().isoformat(), "index": idx_label, "tickers": sorted(list(new_set))}, f, ensure_ascii=False, indent=2)
@@ -297,8 +287,6 @@ def build_telegram_message(index_choice, picks, meta, name_map):
     comprar_txt = fmt_list(comprar, "✅ Comprar")
     vender_txt = fmt_list(vender, "❌ Vender")
     mantener_txt = fmt_list(mantener, "♻️ Mantener")
-
-    # Cabecera informando si hay filtro
     filt_note = "🛡️ Filtro ACTIVO (fallback safety)" if meta.get("filter") else "✅ Filtro INACTIVO (picks normales)"
 
     msg = (
@@ -330,7 +318,7 @@ def main():
     start = pd.to_datetime(args.start).date()
     end = pd.to_datetime(args.end).date() if args.end else date.today()
 
-    picks, meta, ctx = compute_signals_with_filters(
+    picks, meta, _ = compute_signals_with_filters(
         index_choice=args.index,
         top_n=args.top,
         corte=args.corte,
