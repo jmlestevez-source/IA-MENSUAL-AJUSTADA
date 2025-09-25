@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 # telegram_signals.py
-# Señales prospectivas mensuales:
-# - Universo = (constituyentes actuales SP500/NDX via Wikipedia, con fallback a CSVs locales) ∩ CSVs de data/
-# - Warm-up 24m para indicadores (como el backtest)
-# - Indicadores = backtest.precalculate_all_indicators (ScoreAdjusted + InerciaAlcista)
-# - Filtros ACTIVOS (ROC12<0 o Precio<SMA10). Si se activan -> fallback IEF/BIL (esa es la señal)
-# - Si NO hay picks que pasen corte: “No hay candidatos” (sin fallback extra)
-# - COMPRAR / VENDER / MANTENER: calcula picks de mes actual y del mes anterior
+# Señales prospectivas mensuales SÓLO con universos limpios:
+# - Universo = (constituyentes actuales SP500/NDX via Wikipedia) ∩ CSVs locales
+# - Si Wikipedia falla o devuelve vacío -> fallback a snapshots del repo:
+#       data/constituents_sp500.csv y/o data/constituents_ndx.csv (Symbol,Name)
+# - Warm-up 24m, indicadores = backtest.precalculate_all_indicators
+# - Filtros ACTIVOS (ROC12<0 o Precio<SMA10). Si se activan -> fallback IEF/BIL
+# - Si NO hay picks que pasen corte: “No hay candidatos” (sin fallback adicional)
+# - COMPRAR / VENDER / MANTENER: mes actual vs mes anterior
 import os
 import sys
 import html
@@ -20,7 +21,7 @@ import glob
 from pytz import timezone
 
 from data_loader import download_prices
-from backtest import precalculate_all_indicators  # mismo cálculo de indicadores que el backtest
+from backtest import precalculate_all_indicators  # mismos indicadores que el backtest
 
 # ===================== Helpers: Wikipedia con UA =====================
 def _read_html_with_ua(url, attrs=None):
@@ -91,19 +92,37 @@ def get_ndx_constituents():
         name_map = dict(zip(s["Symbol"], s["Name"]))
     return set(s for s in syms if s and s.strip()), name_map
 
-def get_name_map(index_choice):
+# ===================== Snapshots locales (sin explorar toda data/) =====================
+def load_constituents_snapshot(index_choice):
+    """
+    Carga snapshots limpios del repo:
+    - data/constituents_sp500.csv (Symbol,Name)
+    - data/constituents_ndx.csv (Symbol,Name)
+    Devuelve (set_simbolos, name_map)
+    """
+    def load_csv(path):
+        if os.path.exists(path):
+            try:
+                df = pd.read_csv(path)
+                if 'Symbol' in df.columns:
+                    syms = df['Symbol'].astype(str).str.upper().str.replace(".", "-", regex=False).tolist()
+                    names = {}
+                    if 'Name' in df.columns:
+                        tmp = df[['Symbol', 'Name']].copy()
+                        tmp['Symbol'] = tmp['Symbol'].astype(str).str.upper().str.replace(".", "-", regex=False)
+                        names = dict(zip(tmp['Symbol'], tmp['Name']))
+                    return set(syms), names
+            except Exception:
+                pass
+        return set(), {}
+
     ic = index_choice.upper()
-    if ic in ("SP500", "S&P500", "S&P 500"):
-        sp, m = get_sp500_constituents()
-        return m
-    elif ic in ("NDX", "NASDAQ-100", "NASDAQ100"):
-        nd, m = get_ndx_constituents()
-        return m
-    else:
-        _, m1 = get_sp500_constituents()
-        _, m2 = get_ndx_constituents()
-        m1.update(m2)
-        return m1
+    total = set(); names_total = {}
+    if ic in ("SP500", "S&P500", "S&P 500", "BOTH", "SP500 + NDX", "AMBOS", "AMBOS (SP500 + NDX)"):
+        s, n = load_csv("data/constituents_sp500.csv"); total |= s; names_total.update(n)
+    if ic in ("NDX", "NASDAQ-100", "NASDAQ100", "BOTH", "SP500 + NDX", "AMBOS", "AMBOS (SP500 + NDX)"):
+        s, n = load_csv("data/constituents_ndx.csv"); total |= s; names_total.update(n)
+    return total, names_total
 
 # ===================== Helpers: CSV locales, warm-up, filtros =====================
 def _dl_prices_single(objs, start, end, full=False):
@@ -122,29 +141,8 @@ def _latest_month_end_available(df_m, target_me):
     idx = idx[idx <= target_me]
     return idx[-1] if len(idx) else None
 
-def _build_universe(index_choice):
-    ic = index_choice.upper()
-    wanted = set()
-    names = {}
-    try:
-        if ic in ("SP500", "S&P500", "S&P 500", "BOTH", "SP500 + NDX", "AMBOS", "AMBOS (SP500 + NDX)"):
-            sp, nm_sp = get_sp500_constituents()
-            wanted |= sp
-            names.update(nm_sp)
-        if ic in ("NDX", "NASDAQ-100", "NASDAQ100", "BOTH", "SP500 + NDX", "AMBOS", "AMBOS (SP500 + NDX)"):
-            nd, nm_nd = get_ndx_constituents()
-            wanted |= nd
-            names.update(nm_nd)
-    except Exception:
-        wanted = set()
-
-    csv_tickers = set(os.path.basename(p)[:-4].upper().replace('.', '-') for p in glob.glob('data/*.csv'))
-    exclude = {"SPY", "QQQ", "IEF", "BIL"}
-    universe = sorted(((wanted & csv_tickers) if wanted else csv_tickers) - exclude)
-    return universe, names, (len(wanted) > 0)
-
 def market_filter(spy_m, at_date):
-    if spy_m is None or spy_m.empty:
+    if spy_m is None or spy_m.empty or at_date is None:
         return False
     sp = spy_m.loc[:at_date]
     if sp.empty:
@@ -162,8 +160,10 @@ def market_filter(spy_m, at_date):
     return bool(roc12_bad or sma10_bad)
 
 def picks_for_date(prices_m, indicators, at_date, corte, top_n, filter_active, safety_m=None):
+    if at_date is None:
+        return []
     if filter_active:
-        # Fallback safety: elegir IEF/BIL con mejor ret_1m al mes at_date
+        # Fallback safety: mejor IEF/BIL por ret_1m al mes at_date
         if safety_m is not None and not safety_m.empty:
             s_idx = safety_m.index[safety_m.index <= at_date]
             if len(s_idx):
@@ -178,13 +178,14 @@ def picks_for_date(prices_m, indicators, at_date, corte, top_n, filter_active, s
                             ret_1m = (pr1 / pr0) - 1 if pr0 else 0.0
                         else:
                             ret_1m = 0.0
-                        cand = {"ticker": st, "inercia": 0.0, "score_adj": float(ret_1m), "price": float(ser.loc[s_prev]) if s_prev in ser.index else float("nan")}
+                        cand = {"ticker": st, "inercia": 0.0, "score_adj": float(ret_1m),
+                                "price": float(ser.loc[s_prev]) if s_prev in ser.index else float("nan")}
                         if (best is None) or (cand["score_adj"] > best["score_adj"]):
                             best = cand
                 return [best] if best else []
         return []
 
-    # Sin filtro: picks estrictos por corte
+    # Sin filtro: picks estrictos por corte (como el backtest)
     candidates = []
     for tkr, bundle in indicators.items():
         try:
@@ -199,7 +200,7 @@ def picks_for_date(prices_m, indicators, at_date, corte, top_n, filter_active, s
     candidates = sorted(candidates, key=lambda x: x["score_adj"], reverse=True)[:top_n]
     return candidates
 
-# ===================== Señales (actual y mes anterior) =====================
+# ===================== Señales (actual y mes anterior), con snapshots =====================
 def compute_signals_with_prev(index_choice="BOTH", top_n=5, corte=680, start=None, end=None, warmup_months=24, verbose=True):
     if end is None:
         end = date.today()
@@ -208,38 +209,53 @@ def compute_signals_with_prev(index_choice="BOTH", top_n=5, corte=680, start=Non
     warmup_start = (pd.Timestamp(start) - pd.DateOffset(months=warmup_months)).date()
     month_end = _month_end(end)
 
-    # Universo y nombres (fallback a CSV si Wikipedia falla)
-    universe, name_map_wiki, had_wiki = _build_universe(index_choice)
-    if verbose:
-        print(f"Universo via Wikipedia={had_wiki}: {len(universe)} tickers")
+    # 1) Intentar universo y nombres desde Wikipedia
+    ic = index_choice.upper()
+    wanted = set(); names = {}
+    try:
+        if ic in ("SP500", "S&P500", "S&P 500", "BOTH", "SP500 + NDX", "AMBOS", "AMBOS (SP500 + NDX)"):
+            s, n = get_sp500_constituents(); wanted |= s; names.update(n)
+        if ic in ("NDX", "NASDAQ-100", "NASDAQ100", "BOTH", "SP500 + NDX", "AMBOS", "AMBOS (SP500 + NDX)"):
+            s, n = get_ndx_constituents(); wanted |= s; names.update(n)
+    except Exception:
+        wanted = set()
+
+    # 2) Intersección con CSV locales
+    csv_tickers = set(os.path.basename(p)[:-4].upper().replace('.', '-') for p in glob.glob('data/*.csv'))
+    exclude = {"SPY", "QQQ", "IEF", "BIL"}
+    universe = sorted(((wanted & csv_tickers) if wanted else set()) - exclude)
+
+    # 3) Si Wikipedia falló o devolvió 0, usar snapshots limpios del repo
     if not universe:
-        csv_tickers = set(os.path.basename(p)[:-4].upper().replace('.', '-') for p in glob.glob('data/*.csv'))
-        universe = sorted(csv_tickers - {"SPY", "QQQ", "IEF", "BIL"})
+        snap_syms, snap_names = load_constituents_snapshot(index_choice)
+        names.update(snap_names)
+        universe = sorted((snap_syms & csv_tickers) - exclude)
         if verbose:
-            print(f"Fallback a CSV locales: {len(universe)} tickers")
+            print(f"Snapshot fallback: {len(universe)} tickers")
+
+    if verbose:
+        print(f"Universo usado: {len(universe)} tickers")
+
     if not universe:
-        return [], [], [], {"prev_date": None, "filter": False, "reason": "Universo vacío"}
+        return [], [], [], {"prev_date": None, "filter": False, "reason": "Universo vacío", "name_map": names}
 
     # Precios (warm-up)
     prices_df = _dl_prices_single(universe, warmup_start, end, full=False)
     if prices_df is None or prices_df.empty:
-        return [], [], [], {"prev_date": None, "filter": False, "reason": "Sin precios universo"}
+        return [], [], [], {"prev_date": None, "filter": False, "reason": "Sin precios universo", "name_map": names}
 
-    # Ajustar universe a los que realmente cargaron
+    # Ajustar universe a columnas realmente cargadas
     universe = [t for t in universe if t in prices_df.columns]
     prices_df = prices_df[universe]
     prices_m = prices_df.resample("ME").last()
     current_me = _latest_month_end_available(prices_m, month_end)
     if current_me is None:
-        return [], [], [], {"prev_date": None, "filter": False, "reason": "Sin mensual"}
+        return [], [], [], {"prev_date": None, "filter": False, "reason": "Sin mensual", "name_map": names}
 
     # Mes anterior
     idx = prices_m.index
-    try:
-        pos = idx.get_loc(current_me)
-    except KeyError:
-        pos = len(idx) - 1
-        current_me = idx[pos]
+    pos = idx.get_indexer([current_me])[0] if current_me in idx else len(idx) - 1
+    if pos == -1: pos = len(idx) - 1; current_me = idx[pos]
     prev_me = idx[pos - 1] if pos >= 1 else None
 
     # SPY y Safety
@@ -248,33 +264,27 @@ def compute_signals_with_prev(index_choice="BOTH", top_n=5, corte=680, start=Non
     safety_df = _dl_prices_single(["IEF", "BIL"], warmup_start, end, full=False)
     safety_m = safety_df.resample("ME").last() if isinstance(safety_df, pd.DataFrame) else None
 
-    # Indicadores
+    # Indicadores del backtest
     indicators = precalculate_all_indicators(prices_m, ohlc_data=None, corte=corte)
     if not indicators:
-        return [], [], [], {"prev_date": current_me, "filter": False, "reason": "Indicadores vacíos"}
+        return [], [], [], {"prev_date": current_me, "filter": False, "reason": "Indicadores vacíos", "name_map": names}
 
-    # Filtro actual y anterior
+    # Filtros (actual y anterior)
     filt_now = market_filter(spy_m, current_me)
     filt_prev = market_filter(spy_m, prev_me) if prev_me is not None else False
 
-    # Picks ahora y mes anterior
+    # Picks actual y anterior
     picks_now = picks_for_date(prices_m, indicators, current_me, corte, top_n, filt_now, safety_m=safety_m)
     picks_prev = picks_for_date(prices_m, indicators, prev_me, corte, top_n, filt_prev, safety_m=safety_m) if prev_me is not None else []
 
-    # Conjuntos para comprar/vender/mantener
+    # Comprar/Vender/Mantener
     now_set = set(p["ticker"] for p in picks_now)
     prev_set = set(p["ticker"] for p in picks_prev)
     comprar = sorted(now_set - prev_set)
     vender = sorted(prev_set - now_set)
     mantener = sorted(now_set & prev_set)
 
-    # Name map robusto
-    name_map = get_name_map(index_choice)
-    if not name_map:
-        # fallback a mapa vacío (mostraremos ticker como nombre)
-        name_map = {}
-
-    return picks_now, comprar, vender, mantener, {"prev_date": current_me, "filter": filt_now, "name_map": name_map}
+    return picks_now, comprar, vender, mantener, {"prev_date": current_me, "filter": filt_now, "name_map": names}
 
 # ===================== Mensaje y envío =====================
 def build_message(index_choice, picks, comprar, vender, mantener, meta):
@@ -343,20 +353,19 @@ def send_telegram(token, chat_id, text):
 def es_ultimo_dia_mes_y_despues_23_madrid():
     tz = timezone('Europe/Madrid')
     now = datetime.now(tz)
-    # último día del mes: mañana es día 1
     manana = now + timedelta(days=1)
     es_ultimo = (manana.month != now.month)
     return es_ultimo and (now.hour >= 23)
 
 # ===================== Main =====================
 def main():
-    parser = argparse.ArgumentParser(description="Enviar señales prospectivas por Telegram (workflow dedicado)")
+    parser = argparse.ArgumentParser(description="Enviar señales prospectivas por Telegram (workflow dedicado, snapshots limpios)")
     parser.add_argument("--index", default="BOTH", choices=["SP500", "NDX", "BOTH"], help="Índice: SP500 | NDX | BOTH")
     parser.add_argument("--top", type=int, default=5, help="Número de picks (default 5)")
     parser.add_argument("--corte", type=int, default=680, help="Corte de inercia (default 680)")
     parser.add_argument("--start", type=str, default="2007-01-01", help="Fecha inicio datos (YYYY-MM-DD)")
     parser.add_argument("--end", type=str, default=None, help="Fecha fin datos (YYYY-MM-DD, default hoy)")
-    parser.add_argument("--force", action="store_true", help="Ignorar chequeo de último día a las 23:00 Madrid")
+    parser.add_argument("--force", action="store_true", help="Ignorar chequeo de último día ≥ 23:00 Madrid")
     args = parser.parse_args()
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
