@@ -11,7 +11,7 @@ import numpy as np
 import re
 from dateutil import parser
 import glob
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pickle
 import hashlib
@@ -55,7 +55,7 @@ def load_cache(key, prefix="cache", max_age_days=7):
 def _read_html_with_ua(url, attrs=None):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, como Gecko) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
                       "Chrome/122.0 Safari/537.36"
     }
     try:
@@ -250,7 +250,7 @@ def get_sp500_historical_changes():
     try:
         if loaded_from_local:
             last_date = pd.to_datetime(changes_df['Date'], errors='coerce').max()
-            if pd.isna(last_date) o
+            if pd.isna(last_date) or (datetime.now() - last_date.to_pydatetime()).days > 7:
                 wikipedia_df = download_sp500_changes_from_wikipedia()
                 if not wikipedia_df.empty:
                     merged = pd.concat([changes_df, wikipedia_df], ignore_index=True)
@@ -287,7 +287,7 @@ def download_nasdaq100_changes_from_wikipedia():
                 continue
             cand_add = [c for c in t.columns if 'add' in str(c).lower() or 'addition' in str(c).lower()]
             cand_rem = [c for c in t.columns if 'remov' in str(c).lower()]
-            if not cand_add y not cand_rem:
+            if not cand_add and not cand_rem:
                 continue
             df = t.copy()
             col_map = {}
@@ -385,7 +385,7 @@ def download_prices_parallel(tickers, start_date, end_date, load_full_data=True,
         ticker_list = []
 
     ticker_list = [str(t).strip().upper().replace('.', '-') for t in ticker_list]
-    ticker_list = [t for t in ticker_list if t and len(t) <= 6 y not t.isdigit()]
+    ticker_list = [t for t in ticker_list if t and len(t) <= 6 and not t.isdigit()]
     ticker_list = list(dict.fromkeys(ticker_list))
 
     if not ticker_list:
@@ -408,10 +408,11 @@ def download_prices_parallel(tickers, start_date, end_date, load_full_data=True,
             if hasattr(df.index, 'tz') and df.index.tz is not None:
                 df.index = df.index.tz_localize(None)
 
-            start_filter = start_date.date() if isinstance(start_date, datetime) else start_date
-            end_filter = end_date.date() if isinstance(end_date, datetime) else end_date
-            mask = (df.index.date >= start_filter) & (df.index.date <= end_filter)
-            df_filtered = df[mask]
+            # start_date y end_date pueden ser date o datetime; normalizamos a date
+            sd = start_date.date() if hasattr(start_date, "date") else start_date
+            ed = end_date.date() if hasattr(end_date, "date") else end_date
+            mask = (df.index.date >= sd) & (df.index.date <= ed)
+            df_filtered = df.loc[mask]
             if df_filtered.empty:
                 return ticker, None, None
 
@@ -428,7 +429,7 @@ def download_prices_parallel(tickers, start_date, end_date, load_full_data=True,
                     'High': df_filtered['High'],
                     'Low': df_filtered['Low'],
                     'Close': df_filtered['Adj Close'] if 'Adj Close' in df_filtered.columns else df_filtered['Close'],
-                    'Volume': df_filtered.get('Volume')
+                    'Volume': df_filtered['Volume'] if 'Volume' in df_filtered.columns else None
                 }
 
             save_cache(cache_key, {'price': price_series, 'ohlc': ohlc}, prefix="price")
@@ -539,7 +540,7 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
             if not fn.endswith(".csv"):
                 continue
             tk = _norm_t(fn[:-4])
-            if tk y len(tk) <= 6 y not tk.isdigit() y tk not in {'SPY', 'QQQ', 'IEF', 'BIL'}:
+            if tk and len(tk) <= 6 and not tk.isdigit() and tk not in {'SPY', 'QQQ', 'IEF', 'BIL'}:
                 available.add(tk)
 
         idx = str(index_name).strip().upper()
@@ -570,14 +571,14 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
                 inc_nd = None
 
                 if in_sp:
-                    if isinstance(sp_grp, dict) or t not in sp_grp.groups:
+                    if isinstance(sp_grp, dict) or t not in getattr(sp_grp, "groups", {}):
                         inc_sp = True  # no hay registros -> histórico
                     else:
                         tdf = sp_grp.get_group(t)
                         inc_sp = _included_by_last_event(tdf, selection_date)
 
                 if in_nd:
-                    if isinstance(nd_grp, dict) o t not in nd_grp.groups:
+                    if isinstance(nd_grp, dict) or t not in getattr(nd_grp, "groups", {}):
                         inc_nd = True
                     else:
                         tdf = nd_grp.get_group(t)
@@ -614,7 +615,7 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
             details = []
 
             for t in candidates:
-                if isinstance(grp, dict) o t not in grp.groups:
+                if isinstance(grp, dict) or t not in getattr(grp, "groups", {}):
                     included.append(t)
                     status = 'Incluido (sin registros en changes: histórico)'
                 else:
@@ -651,7 +652,7 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
             details = []
 
             for t in candidates:
-                if isinstance(grp, dict) o t not in grp.groups:
+                if isinstance(grp, dict) or t not in getattr(grp, "groups", {}):
                     included.append(t)
                     status = 'Incluido (sin registros en changes: histórico)'
                 else:
