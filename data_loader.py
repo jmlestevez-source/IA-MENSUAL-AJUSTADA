@@ -55,7 +55,7 @@ def load_cache(key, prefix="cache", max_age_days=7):
 def _read_html_with_ua(url, attrs=None):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "AppleWebKit/537.36 (KHTML, como Gecko) "
                       "Chrome/122.0 Safari/537.36"
     }
     try:
@@ -216,8 +216,7 @@ def download_sp500_changes_from_wikipedia():
                     raw = str(row.get(col))
                     parts = re.split(r'[\n,;]+', raw)
                     for p in parts:
-                        tk = re.sub(r'```math
-.*?```|KATEX_INLINE_OPEN.*?KATEX_INLINE_CLOSE', '', str(p)).strip()
+                        tk = re.sub(r'\[.*?\]|\(.*?\)', '', str(p)).strip()
                         tk = tk.split()[0] if ' ' in tk else tk
                         tk = _normalize_ticker_str(tk)
                         if tk and len(tk) <= 6 and not tk.isdigit():
@@ -313,8 +312,7 @@ def download_nasdaq100_changes_from_wikipedia():
                         raw = str(row.get(col))
                         parts = re.split(r'[\n,;]+', raw)
                         for p in parts:
-                            tk = re.sub(r'```math
-.*?```|KATEX_INLINE_OPEN.*?KATEX_INLINE_CLOSE', '', str(p)).strip()
+                            tk = re.sub(r'\[.*?\]|\(.*?\)', '', str(p)).strip()
                             tk = tk.split()[0] if ' ' in tk else tk
                             tk = _normalize_ticker_str(tk)
                             if tk and len(tk) <= 6 and not tk.isdigit():
