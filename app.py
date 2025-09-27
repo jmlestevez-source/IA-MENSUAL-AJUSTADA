@@ -252,7 +252,7 @@ def is_filter_active_for_next_month(spy_df, use_roc, use_sma):
     try:
         if spy_df is None or spy_df.empty or "SPY" not in spy_df.columns:
             return False
-        spy_m = spy_df["SPY"].resample("ME").last().dropna()
+        spy_m = spy_df["SPY"].resample("M").last().dropna()
         if len(spy_m) < 15:
             return False
         prev_date = spy_m.index[-1]
@@ -581,7 +581,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
     bench_drawdown_m = None
     if benchmark_series is not None and not benchmark_series.empty:
         try:
-            bench_prices_m = benchmark_series.resample("ME").last()
+            bench_prices_m = benchmark_series.resample("M").last()
             bench_prices_aligned = bench_prices_m.reindex(bt_results.index)
             valid_idx = bench_prices_aligned.dropna().index
             if len(valid_idx) > 1:
@@ -708,7 +708,7 @@ if st.session_state.backtest_completed and st.session_state.bt_results is not No
                     ticker = row["Ticker"]
                     try:
                         if ticker in prices_df.columns:
-                            ticker_monthly = prices_df[ticker].resample("ME").last()
+                            ticker_monthly = prices_df[ticker].resample("M").last()
                             if selected_dt in ticker_monthly.index:
                                 idx = ticker_monthly.index.get_loc(selected_dt)
                                 if idx < len(ticker_monthly) - 1:
