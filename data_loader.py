@@ -216,7 +216,8 @@ def download_sp500_changes_from_wikipedia():
                     raw = str(row.get(col))
                     parts = re.split(r'[\n,;]+', raw)
                     for p in parts:
-                        tk = re.sub(r'\[.*?\]|\(.*?\)', '', str(p)).strip()
+                        tk = re.sub(r'```math
+.*?```|KATEX_INLINE_OPEN.*?KATEX_INLINE_CLOSE', '', str(p)).strip()
                         tk = tk.split()[0] if ' ' in tk else tk
                         tk = _normalize_ticker_str(tk)
                         if tk and len(tk) <= 6 and not tk.isdigit():
@@ -312,7 +313,8 @@ def download_nasdaq100_changes_from_wikipedia():
                         raw = str(row.get(col))
                         parts = re.split(r'[\n,;]+', raw)
                         for p in parts:
-                            tk = re.sub(r'\[.*?\]|\(.*?\)', '', str(p)).strip()
+                            tk = re.sub(r'```math
+.*?```|KATEX_INLINE_OPEN.*?KATEX_INLINE_CLOSE', '', str(p)).strip()
                             tk = tk.split()[0] if ' ' in tk else tk
                             tk = _normalize_ticker_str(tk)
                             if tk and len(tk) <= 6 and not tk.isdigit():
@@ -550,6 +552,8 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
             sp_curr = set(map(_norm_t, sp_list))
             nd_curr = set(map(_norm_t, nd_list))
             current_tickers = sp_curr | nd_curr
+            if not current_tickers:
+                current_tickers = available.copy()
 
             sp_ch = _normalize_changes_df(get_sp500_historical_changes())
             nd_ch = _normalize_changes_df(get_nasdaq100_historical_changes())
@@ -602,6 +606,8 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
 
         elif idx in {"SP500", "S&P500", "S&P 500"}:
             current_tickers = set(map(_norm_t, get_current_constituents("SP500").get('tickers', [])))
+            if not current_tickers:
+                current_tickers = available.copy()
             changes = _normalize_changes_df(get_sp500_historical_changes())
             grp = changes.groupby('Ticker') if not changes.empty else {}
 
@@ -637,6 +643,8 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
 
         elif idx in {"NDX", "NASDAQ-100", "NASDAQ100"}:
             current_tickers = set(map(_norm_t, get_current_constituents("NDX").get('tickers', [])))
+            if not current_tickers:
+                current_tickers = available.copy()
             changes = _normalize_changes_df(get_nasdaq100_historical_changes())
             grp = changes.groupby('Ticker') if not changes.empty else {}
 
