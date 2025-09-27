@@ -104,19 +104,6 @@ def parse_wikipedia_date(date_str):
 def _normalize_ticker_str(x):
     return str(x).strip().upper().replace('.', '-')
 
-# Helper: lista de tickers disponibles por CSV local
-def _available_tickers_from_data_dir():
-    csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
-    available = set()
-    for p in csv_files:
-        fn = os.path.basename(p)
-        if not fn.endswith(".csv"):
-            continue
-        tk = _normalize_ticker_str(fn[:-4])
-        if tk and len(tk) <= 6 and not tk.isdigit() and tk not in {'SPY', 'QQQ', 'IEF', 'BIL'}:
-            available.add(tk)
-    return sorted(available)
-
 # -------------------------
 # Constituyentes actuales (Wikipedia)
 # -------------------------
@@ -180,10 +167,6 @@ def get_current_constituents(index_name):
         result = {'tickers': tickers}
     else:
         raise ValueError(f"Índice {index_name} no soportado")
-
-    # Fallback si Wikipedia no devuelve nada: usa CSVs locales en data/
-    if not result.get('tickers'):
-        result = {'tickers': _available_tickers_from_data_dir(), 'note': 'Fallback a CSVs locales'}
 
     save_cache(cache_key, result, prefix="constituents")
     return result
@@ -455,7 +438,7 @@ def download_prices_parallel(tickers, start_date, end_date, load_full_data=True,
         except Exception:
             return ticker, None, None
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(load_single_ticker, ticker): ticker for ticker in ticker_list}
         for future in as_completed(futures):
             ticker, price, ohlc = future.result()
@@ -497,22 +480,19 @@ def get_constituents_at_date(index_name, start_date, end_date):
         result, error = get_all_available_tickers_with_historical_validation(
             index_name, start_date, end_date
         )
-        if result and result.get('tickers'):
+        if result:
             _constituents_cache[cache_key] = result
             save_cache(cache_key, result, prefix="constituents")
             return result, error
         else:
-            # Fallback: usar CSVs locales
-            fallback_tickers = _available_tickers_from_data_dir()
+            current_data = get_current_constituents(index_name)
             fallback_result = {
-                'tickers': fallback_tickers,
-                'data': [{'ticker': t, 'added': 'Unknown', 'in_current': True, 'status': 'Current fallback (CSVs)'} for t in fallback_tickers],
+                'tickers': current_data.get('tickers', []),
+                'data': [{'ticker': t, 'added': 'Unknown', 'in_current': True, 'status': 'Current fallback'} for t in current_data.get('tickers', [])],
                 'historical_data_available': False,
-                'note': 'Fallback a CSVs locales por universo vacío'
+                'note': 'Fallback to current constituents'
             }
-            _constituents_cache[cache_key] = fallback_result
-            save_cache(cache_key, fallback_result, prefix="constituents")
-            return fallback_result, "Warning: Using local CSVs as fallback"
+            return fallback_result, "Warning: Using current constituents as fallback"
     except Exception as e:
         return None, f"Error obteniendo constituyentes para {index_name}: {e}"
 
@@ -571,11 +551,6 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
             nd_list = get_current_constituents("NDX").get('tickers', [])
             sp_curr = set(map(_norm_t, sp_list))
             nd_curr = set(map(_norm_t, nd_list))
-            # Fallback si alguno viene vacío
-            if not sp_curr and not nd_curr:
-                sp_curr = set(available)
-                nd_curr = set(available)
-
             current_tickers = sp_curr | nd_curr
 
             sp_ch = _normalize_changes_df(get_sp500_historical_changes())
@@ -629,8 +604,6 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
 
         elif idx in {"SP500", "S&P500", "S&P 500"}:
             current_tickers = set(map(_norm_t, get_current_constituents("SP500").get('tickers', [])))
-            if not current_tickers:
-                current_tickers = set(available)
             changes = _normalize_changes_df(get_sp500_historical_changes())
             grp = changes.groupby('Ticker') if not changes.empty else {}
 
@@ -666,8 +639,6 @@ def get_all_available_tickers_with_historical_validation(index_name, start_date,
 
         elif idx in {"NDX", "NASDAQ-100", "NASDAQ100"}:
             current_tickers = set(map(_norm_t, get_current_constituents("NDX").get('tickers', [])))
-            if not current_tickers:
-                current_tickers = set(available)
             changes = _normalize_changes_df(get_nasdaq100_historical_changes())
             grp = changes.groupby('Ticker') if not changes.empty else {}
 
