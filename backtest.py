@@ -1,6 +1,4 @@
-# =========================
-# ===== backtest.py =====
-# =========================
+# backtest.py
 # -*- coding: utf-8 -*-
 # backtest.py (warm-up fuerte, arranque correcto del primer mes real, y fallback robusto)
 import pandas as pd
@@ -24,7 +22,7 @@ def convertir_a_mensual_con_ohlc(ohlc_data):
     for ticker, data in (ohlc_data or {}).items():
         try:
             df = pd.DataFrame({'High': data['High'], 'Low': data['Low'], 'Close': data['Close']}).dropna(how='all')
-            if df.empty: 
+            if df.empty:
                 continue
             df_m = df.resample('M').agg({'High': 'max', 'Low': 'min', 'Close': 'last'})
             monthly_data[ticker] = {'High': df_m['High'], 'Low': df_m['Low'], 'Close': df_m['Close']}
@@ -65,11 +63,9 @@ def precalculate_valid_tickers_by_date(monthly_dates, historical_changes_data, c
             if t not in grouped.groups:
                 valids.add(t); continue
             tdf = grouped.get_group(t); tdf_before = tdf[tdf['Date'] <= td]
-            if tdf_before.empty: 
-                continue
+            if tdf_before.empty: continue
             last_action = str(tdf_before.sort_values('Date').iloc[-1]['Action']).lower()
-            if 'add' in last_action: 
-                valids.add(t)
+            if 'add' in last_action: valids.add(t)
         valid_by_date[target_date] = valids
     return valid_by_date
 
@@ -80,22 +76,27 @@ def precalculate_all_indicators(prices_df_m, ohlc_data, corte=680):
         for ticker in prices_df_m.columns:
             try:
                 close_series = prices_df_m[ticker].dropna()
-                if close_series.empty: 
+                if close_series.empty:
                     continue
                 if monthly_ohlc and ticker in monthly_ohlc:
                     high = monthly_ohlc[ticker]['High']; low = monthly_ohlc[ticker]['Low']; close = monthly_ohlc[ticker]['Close']
                 else:
                     close = close_series
-                    if getattr(close.index, 'freq', None) not in ['M']:
+                    if getattr(close.index, 'freq', None) not in ['M', 'ME']:
                         close = close.resample('M').last()
                     monthly_returns = close.pct_change().dropna()
                     vol = monthly_returns.rolling(3, min_periods=1).std().fillna(0.02).clip(0.005, 0.03)
                     high = close * (1 + vol * 0.5); low = close * (1 - vol * 0.5)
+                    # Garantizar consistencia
+                    high = pd.Series(np.maximum(high, close), index=close.index)
+                    low = pd.Series(np.minimum(low, close), index=close.index)
+
                 close = close.replace([np.inf, -np.inf], np.nan).ffill().bfill()
                 high = high.replace([np.inf, -np.inf], np.nan).ffill().bfill()
                 low = low.replace([np.inf, -np.inf], np.nan).ffill().bfill()
-                if close.isna().all() or high.isna().all() or low.isna().all(): 
+                if close.isna().all() or high.isna().all() or low.isna().all():
                     continue
+
                 roc_10 = _adaptive_roc(close, max_period=10, min_period=3)
                 f1 = roc_10 * 0.6
                 atr_14 = calcular_atr_optimizado(high, low, close, periods=14)
@@ -130,24 +131,26 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
         for ticker in monthly_prices_df.columns:
             try:
                 close_series = monthly_prices_df[ticker].dropna()
-                if close_series.empty: 
+                if close_series.empty:
                     continue
                 if monthly_ohlc and ticker in monthly_ohlc:
                     high = monthly_ohlc[ticker]['High']; low = monthly_ohlc[ticker]['Low']; close = monthly_ohlc[ticker]['Close']
                 else:
                     close = close_series
-                    if getattr(close.index, 'freq', None) not in ['M']:
+                    if getattr(close.index, 'freq', None) not in ['M', 'ME']:
                         close = close.resample('M').last()
                     monthly_returns = close.pct_change().dropna()
                     vol = monthly_returns.rolling(3, min_periods=1).std().fillna(0.02).clip(0.005, 0.03)
                     high = close * (1 + vol * 0.5); low = close * (1 - vol * 0.5)
                     high = pd.Series(np.maximum(high, close), index=close.index)
                     low = pd.Series(np.minimum(low, close), index=close.index)
+
                 close = close.replace([np.inf, -np.inf], np.nan).ffill().bfill()
                 high = high.replace([np.inf, -np.inf], np.nan).ffill().bfill()
                 low = low.replace([np.inf, -np.inf], np.nan).ffill().bfill()
-                if close.isna().all() or high.isna().all() or low.isna().all(): 
+                if close.isna().all() or high.isna().all() or low.isna().all():
                     continue
+
                 roc_10 = _adaptive_roc(close, max_period=10, min_period=3)
                 f1 = roc_10 * 0.6
                 atr_14 = calcular_atr_optimizado(high, low, close, periods=14)
@@ -169,12 +172,12 @@ def inertia_score(monthly_prices_df, corte=680, ohlc_data=None):
                 }
             except Exception:
                 continue
-        if not results: 
+        if not results:
             return {}
         out = {}
         for metric in ["InerciaAlcista","ATR14","Score","ScoreAdjusted","RawScoreAdjusted","F1","F2","ROC10","VolatilityRatio"]:
             md = {t: results[t][metric] for t in results if metric in results[t] and results[t][metric] is not None}
-            if md: 
+            if md:
                 out[metric] = pd.DataFrame(md)
         return out
     except Exception:
@@ -293,8 +296,9 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                 if market_filter_active:
                     if use_safety_etfs and safety_prices_m is not None and not safety_prices_m.empty:
                         best_t, best_sc = None, None
+                        # 1) Intentar elegir por ScoreAdjusted (consistente con la app)
                         try:
-                            s_scores = inertia_score(safety_prices_m, corte=corte, ohlc_data=None)
+                            s_scores = inertia_score(safety_prices_m, corte=corte, ohlc_data=monthly_safety_ohlc)
                             s_sa = s_scores.get("ScoreAdjusted") if s_scores else None
                             if s_sa is not None and prev_date in s_sa.index:
                                 last_sa = s_sa.loc[prev_date].dropna()
@@ -304,11 +308,11 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                         except Exception:
                             pass
 
-                        # Fallback a retorno 1m si no hubiera ScoreAdjusted
+                        # 2) Fallback a retorno 1m si no hay ScoreAdjusted
                         if best_t is None:
                             candidates = []
                             for st in safety_tickers:
-                                if st not in safety_prices_m.columns: 
+                                if st not in safety_prices_m.columns:
                                     continue
                                 try:
                                     if prev_date in safety_prices_m.index and date_i in safety_prices_m.index:
@@ -324,8 +328,8 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                                 best_sc = 0.0
 
                         if best_t is not None:
-                            pr0 = safety_prices_m.loc[prev_date, best_t]
-                            pr1 = safety_prices_m.loc[date_i, best_t]
+                            pr0 = safety_prices_m.loc[prev_date, best_t] if (prev_date in safety_prices_m.index) else np.nan
+                            pr1 = safety_prices_m.loc[date_i, best_t] if (date_i in safety_prices_m.index) else np.nan
                             ret_1m = ((pr1 / pr0) - 1) if (pd.notna(pr0) and pd.notna(pr1) and pr0 != 0) else 0.0
                             commission_effect = 0.0 if (avoid_rebuy_unchanged and last_mode == 'safety' and last_safety_ticker == best_t) else commission
                             portfolio_return = ret_1m - commission_effect
@@ -342,8 +346,7 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                 candidates = []
                 for ticker in valid_tickers_for_date:
                     indic = all_indicators.get(ticker)
-                    if not indic: 
-                        continue
+                    if not indic: continue
                     try:
                         if prev_date in indic['InerciaAlcista'].index:
                             inercia = indic['InerciaAlcista'].loc[prev_date]
@@ -359,8 +362,7 @@ def run_backtest_optimized(prices, benchmark, commission=0.003, top_n=10, corte=
                     fb = []
                     for ticker in valid_tickers_for_date:
                         indic = all_indicators.get(ticker)
-                        if not indic: 
-                            continue
+                        if not indic: continue
                         try:
                             if prev_date in indic['RawScoreAdjusted'].index:
                                 raw_sa = float(indic['RawScoreAdjusted'].loc[prev_date])
